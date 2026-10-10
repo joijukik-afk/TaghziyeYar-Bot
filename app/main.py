@@ -1,6 +1,9 @@
 """Bot entry point. Wires together all handlers and starts polling."""
 
 import logging
+import os
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatType
@@ -31,6 +34,33 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+#  Health-check HTTP server (required by Render)
+# ---------------------------------------------------------------------------
+
+class _HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(b"TaghziyeYar bot is running")
+
+    def do_HEAD(self):
+        self.send_response(200)
+        self.end_headers()
+
+    def log_message(self, format, *args):
+        pass  # silence default logging
+
+
+def _start_health_server() -> None:
+    port = int(os.environ.get("PORT", "8080"))
+    server = HTTPServer(("0.0.0.0", port), _HealthHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    logger.info("Health server listening on port %s", port)
+
+
+# ---------------------------------------------------------------------------
 #  Helpers
 # ---------------------------------------------------------------------------
 
@@ -41,7 +71,6 @@ def is_group(update: Update) -> bool:
 
 
 def is_for_me(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """In groups, only respond to mentions or replies to the bot."""
     if not is_group(update):
         return True
     bot_username = context.bot.username or ""
@@ -202,10 +231,6 @@ async def cmd_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     )
 
 
-# ---------------------------------------------------------------------------
-#  Setup wrapper (ensure_user before wizard)
-# ---------------------------------------------------------------------------
-
 async def cmd_setup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     await wizard.start_setup(update, context)
@@ -217,10 +242,6 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     context.user_data["awaiting_weight"] = False
     await wizard.cancel_setup(update, context)
 
-
-# ---------------------------------------------------------------------------
-#  Calculation commands
-# ---------------------------------------------------------------------------
 
 async def cmd_bmi(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
@@ -260,15 +281,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if not text:
         return
 
-    # 1) Try setup wizard first (takes priority)
     if await wizard.handle_setup_input(update, context):
         return
 
-    # 2) Try weight input
     if await pcmd.handle_weight_input(update, context):
         return
 
-    # 3) Fallback echo (Phase 2). AI will replace this in Phase 3.
     reply = (
         f"پیام تو رو گرفتم: {text}\n\n"
         "برای استفاده از امکانات من:\n"
@@ -279,10 +297,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     )
     await update.message.reply_text(with_signature(reply))
 
-
-# ---------------------------------------------------------------------------
-#  Callback queries (menu buttons)
-# ---------------------------------------------------------------------------
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
@@ -299,11 +313,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     if data == "menu_profile":
-        # Reuse /profile by simulating? simpler: inline text
         await query.edit_message_text(
-            with_signature(
-                "👤 برای دیدن پروفایل، دستور /profile رو بزن."
-            ),
+            with_signature("👤 برای دیدن پروفایل، دستور /profile رو بزن."),
             parse_mode="Markdown",
         )
         return
@@ -319,10 +330,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await query.edit_message_text(with_signature(text), parse_mode="Markdown")
 
 
-# ---------------------------------------------------------------------------
-#  Error handler
-# ---------------------------------------------------------------------------
-
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.exception("Exception while handling update", exc_info=context.error)
     if isinstance(update, Update) and update.effective_message is not None:
@@ -333,10 +340,6 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
         except Exception:
             pass
 
-
-# ---------------------------------------------------------------------------
-#  Lifecycle
-# ---------------------------------------------------------------------------
 
 async def post_init(app: Application) -> None:
     init_engine()
@@ -360,7 +363,6 @@ def build_application() -> Application:
         .build()
     )
 
-    # --- Commands ---
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("menu", cmd_menu))
@@ -377,19 +379,15 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("weight", cmd_weight))
     app.add_handler(CommandHandler("progress", cmd_progress))
 
-    # --- Callback buttons ---
     app.add_handler(CallbackQueryHandler(handle_callback))
-
-    # --- Free text ---
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-
-    # --- Errors ---
     app.add_error_handler(on_error)
 
     return app
 
 
 def main() -> None:
+    _start_health_server()
     app = build_application()
     logger.info("Starting bot...")
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)

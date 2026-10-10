@@ -23,6 +23,7 @@ from app.bot import setup_wizard as wizard
 from app.config import get_settings
 from app.database import repository as repo
 from app.database.session import create_all, dispose_engine, init_engine
+from app.services.ai_service import get_ai_service
 from app.utils.message_formatter import with_signature
 
 
@@ -34,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-#  Health-check HTTP server (required by Render)
+#  Health server (required by Render)
 # ---------------------------------------------------------------------------
 
 class _HealthHandler(BaseHTTPRequestHandler):
@@ -49,7 +50,7 @@ class _HealthHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def log_message(self, format, *args):
-        pass  # silence default logging
+        pass
 
 
 def _start_health_server() -> None:
@@ -124,7 +125,7 @@ async def ensure_user_and_group(update: Update) -> None:
 
 
 # ---------------------------------------------------------------------------
-#  Command handlers
+#  Commands
 # ---------------------------------------------------------------------------
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -142,10 +143,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     if update.message is None:
         return
-    await update.message.reply_text(
-        with_signature(msg.HELP),
-        parse_mode="Markdown",
-    )
+    await update.message.reply_text(with_signature(msg.HELP), parse_mode="Markdown")
 
 
 async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -225,7 +223,6 @@ async def cmd_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         lines.append(f"• فعالیت: {act_fa}")
 
     lines.append("\n✏️ برای ویرایش اطلاعات، /setup رو بزن.")
-
     await update.message.reply_text(
         with_signature("\n".join(lines)), parse_mode="Markdown"
     )
@@ -264,7 +261,7 @@ async def cmd_progress(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 # ---------------------------------------------------------------------------
-#  Generic text router
+#  Text router -> AI
 # ---------------------------------------------------------------------------
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -287,14 +284,43 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if await pcmd.handle_weight_input(update, context):
         return
 
-    reply = (
-        f"پیام تو رو گرفتم: {text}\n\n"
-        "برای استفاده از امکانات من:\n"
-        "• /setup — ساخت پروفایل\n"
-        "• /bmi — محاسبه BMI\n"
-        "• /calories — کالری روزانه\n"
-        "• /help — راهنمای کامل"
+    user = update.effective_user
+    profile_summary = ""
+    if user:
+        db_user = await repo.get_user_by_telegram_id(user.id)
+        if db_user:
+            profile = await repo.get_profile(db_user.id)
+            if profile and profile.setup_complete:
+                parts = []
+                if profile.age:
+                    parts.append(f"سن: {profile.age}")
+                if profile.height_cm:
+                    parts.append(f"قد: {profile.height_cm:.0f}")
+                if profile.weight_kg:
+                    parts.append(f"وزن: {profile.weight_kg:.1f}")
+                if profile.goal:
+                    parts.append(f"هدف: {profile.goal}")
+                profile_summary = "، ".join(parts)
+
+    try:
+        await context.bot.send_chat_action(
+            chat_id=update.effective_chat.id,
+            action="typing",
+        )
+    except Exception:
+        pass
+
+    ai = get_ai_service()
+    reply, _ = await ai.ask(
+        user_message=text,
+        user_name=(user.first_name or "") if user else "",
+        user_profile_summary=profile_summary,
+        user_id=user.id if user else 0,
     )
+
+    if not reply:
+        reply = "متأسفانه پاسخی دریافت نشد. دوباره تلاش کن."
+
     await update.message.reply_text(with_signature(reply))
 
 

@@ -1,0 +1,317 @@
+"""Bot entry point. Runs the Telegram application."""
+
+import logging
+
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.constants import ChatType
+from telegram.ext import (
+    Application,
+    ApplicationBuilder,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
+
+from app.bot import messages as msg
+from app.config import get_settings
+from app.database import repository as repo
+from app.database.session import create_all, dispose_engine, init_engine
+from app.utils.message_formatter import with_signature
+
+
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=get_settings().log_level,
+)
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+#  Helpers
+# ---------------------------------------------------------------------------
+
+def is_group(update: Update) -> bool:
+    if update.effective_chat is None:
+        return False
+    return update.effective_chat.type in (ChatType.GROUP, ChatType.SUPERGROUP)
+
+
+def main_menu_keyboard() -> InlineKeyboardMarkup:
+    kb = [
+        [InlineKeyboardButton("🥗 برنامه غذایی من", callback_data="menu_plan")],
+        [
+            InlineKeyboardButton("⚖️ ثبت وزن", callback_data="menu_weight"),
+            InlineKeyboardButton("🔥 محاسبه کالری", callback_data="menu_calories"),
+        ],
+        [
+            InlineKeyboardButton("📊 گزارش پیشرفت", callback_data="menu_progress"),
+            InlineKeyboardButton("🛒 فهرست خرید", callback_data="menu_shopping"),
+        ],
+        [InlineKeyboardButton("📖 راهنما", callback_data="menu_help")],
+    ]
+    return InlineKeyboardMarkup(kb)
+
+
+async def ensure_user_and_group(update: Update) -> None:
+    """Create user/group rows on first contact."""
+    user = update.effective_user
+    chat = update.effective_chat
+    if user is None:
+        return
+    await repo.get_or_create_user(
+        telegram_id=user.id,
+        username=user.username,
+        first_name=user.first_name,
+        last_name=user.last_name,
+    )
+    if chat and chat.type in (ChatType.GROUP, ChatType.SUPERGROUP):
+        await repo.get_or_create_group(chat_id=chat.id, title=chat.title)
+
+
+# ---------------------------------------------------------------------------
+#  Command handlers
+# ---------------------------------------------------------------------------
+
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await ensure_user_and_group(update)
+    if update.message is None:
+        return
+    await update.message.reply_text(
+        with_signature(msg.WELCOME),
+        parse_mode="Markdown",
+        reply_markup=main_menu_keyboard(),
+    )
+
+
+async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await ensure_user_and_group(update)
+    if update.message is None:
+        return
+    await update.message.reply_text(
+        with_signature(msg.HELP),
+        parse_mode="Markdown",
+    )
+
+
+async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await ensure_user_and_group(update)
+    if update.message is None:
+        return
+    await update.message.reply_text(
+        with_signature(msg.MENU_TEXT),
+        parse_mode="Markdown",
+        reply_markup=main_menu_keyboard(),
+    )
+
+
+async def cmd_about(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None:
+        return
+    await update.message.reply_text(
+        with_signature(msg.ABOUT),
+        parse_mode="Markdown",
+    )
+
+
+async def cmd_privacy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None:
+        return
+    await update.message.reply_text(
+        with_signature(msg.PRIVACY),
+        parse_mode="Markdown",
+    )
+
+
+async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None:
+        return
+    await update.message.reply_text(
+        with_signature(msg.SETTINGS_TEXT),
+        parse_mode="Markdown",
+    )
+
+
+async def cmd_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await ensure_user_and_group(update)
+    user = update.effective_user
+    if user is None or update.message is None:
+        return
+    db_user = await repo.get_user_by_telegram_id(user.id)
+    if db_user is None:
+        return
+    profile = await repo.get_profile(db_user.id)
+    if profile is None or not profile.setup_complete:
+        await update.message.reply_text(
+            with_signature(msg.NOT_SETUP_YET),
+            parse_mode="Markdown",
+        )
+        return
+
+    lines = ["👤 **پروفایل من**\n"]
+    if profile.age:
+        lines.append(f"• سن: {profile.age}")
+    if profile.height_cm:
+        lines.append(f"• قد: {profile.height_cm:.0f} سانتی‌متر")
+    if profile.weight_kg:
+        lines.append(f"• وزن: {profile.weight_kg:.1f} کیلوگرم")
+    if profile.target_weight_kg:
+        lines.append(f"• وزن هدف: {profile.target_weight_kg:.1f} کیلوگرم")
+    if profile.goal:
+        goal_fa = {
+            "lose": "کاهش وزن",
+            "gain": "افزایش وزن",
+            "muscle": "عضله‌سازی",
+            "maintain": "حفظ وزن",
+            "quality": "بهبود کیفیت تغذیه",
+            "sport": "هدف ورزشی",
+        }.get(profile.goal, profile.goal)
+        lines.append(f"• هدف: {goal_fa}")
+    if profile.activity_level:
+        act_fa = {
+            "sedentary": "کم‌تحرک",
+            "light": "سبک",
+            "moderate": "متوسط",
+            "high": "زیاد",
+        }.get(profile.activity_level, profile.activity_level)
+        lines.append(f"• فعالیت: {act_fa}")
+
+    await update.message.reply_text(
+        with_signature("\n".join(lines)),
+        parse_mode="Markdown",
+    )
+
+
+# ---------------------------------------------------------------------------
+#  Generic text handler (Phase 1: simple reply)
+# ---------------------------------------------------------------------------
+
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await ensure_user_and_group(update)
+    if update.message is None or update.message.text is None:
+        return
+
+    text = update.message.text.strip()
+
+    # In groups, respond only to mentions or replies to the bot
+    if is_group(update):
+        bot_username = context.bot.username or ""
+        mentioned = f"@{bot_username}" in text
+        replied_to_bot = (
+            update.message.reply_to_message is not None
+            and update.message.reply_to_message.from_user is not None
+            and update.message.reply_to_message.from_user.id == context.bot.id
+        )
+        if not (mentioned or replied_to_bot):
+            return
+        # clean the mention
+        text = text.replace(f"@{bot_username}", "").strip()
+
+    if not text:
+        return
+
+    # Phase 1: echo-style reply so the user can verify wiring
+    reply = f"پیام تو: {text}\n\n(قابلیت هوش مصنوعی در فاز بعدی فعال می‌شه)"
+    await update.message.reply_text(
+        with_signature(reply),
+    )
+
+
+# ---------------------------------------------------------------------------
+#  Callback query handler (menu buttons)
+# ---------------------------------------------------------------------------
+
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if query is None:
+        return
+    await query.answer()
+
+    data = query.data or ""
+    mapping = {
+        "menu_plan": "🥗 برنامه غذایی هنوز فعال نشده. تو فاز بعدی میاد.",
+        "menu_weight": "⚖️ ثبت وزن هنوز فعال نشده.",
+        "menu_calories": "🔥 محاسبه کالری هنوز فعال نشده.",
+        "menu_progress": "📊 گزارش پیشرفت هنوز فعال نشده.",
+        "menu_shopping": "🛒 فهرست خرید هنوز فعال نشده.",
+        "menu_help": msg.HELP,
+    }
+    text = mapping.get(data, msg.UNKNOWN_COMMAND)
+    await query.edit_message_text(
+        with_signature(text),
+        parse_mode="Markdown",
+    )
+
+
+# ---------------------------------------------------------------------------
+#  Error handler
+# ---------------------------------------------------------------------------
+
+async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logger.exception("Exception while handling update", exc_info=context.error)
+    if isinstance(update, Update) and update.effective_message is not None:
+        try:
+            await update.effective_message.reply_text(
+                with_signature(msg.ERROR_GENERIC),
+            )
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
+#  Lifecycle
+# ---------------------------------------------------------------------------
+
+async def post_init(app: Application) -> None:
+    init_engine()
+    await create_all()
+    me = await app.bot.get_me()
+    logger.info("Bot started as @%s (id=%s)", me.username, me.id)
+
+
+async def post_shutdown(app: Application) -> None:
+    await dispose_engine()
+    logger.info("Bot stopped.")
+
+
+def build_application() -> Application:
+    settings = get_settings()
+    app = (
+        ApplicationBuilder()
+        .token(settings.telegram_bot_token)
+        .post_init(post_init)
+        .post_shutdown(post_shutdown)
+        .build()
+    )
+
+    # Commands
+    app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("help", cmd_help))
+    app.add_handler(CommandHandler("menu", cmd_menu))
+    app.add_handler(CommandHandler("about", cmd_about))
+    app.add_handler(CommandHandler("privacy", cmd_privacy))
+    app.add_handler(CommandHandler("settings", cmd_settings))
+    app.add_handler(CommandHandler("profile", cmd_profile))
+
+    # Callback buttons
+    from telegram.ext import CallbackQueryHandler
+
+    app.add_handler(CallbackQueryHandler(handle_callback))
+
+    # Generic text
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+
+    # Errors
+    app.add_error_handler(on_error)
+
+    return app
+
+
+def main() -> None:
+    app = build_application()
+    logger.info("Starting bot...")
+    app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+
+
+if __name__ == "__main__":
+    main()

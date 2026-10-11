@@ -1,4 +1,4 @@
-"""Bot entry point. Wires together all handlers and starts polling."""
+"""Bot entry point."""
 
 import logging
 import os
@@ -17,9 +17,12 @@ from telegram.ext import (
     filters,
 )
 
+from app.bot import extra_commands as ecmd
+from app.bot import meal_commands as mcmd
 from app.bot import messages as msg
 from app.bot import profile_commands as pcmd
 from app.bot import setup_wizard as wizard
+from app.bot.content import get_fact, get_myth, get_tip
 from app.config import get_settings
 from app.database import repository as repo
 from app.database.session import create_all, dispose_engine, init_engine
@@ -33,10 +36,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-
-# ---------------------------------------------------------------------------
-#  Health server (required by Render)
-# ---------------------------------------------------------------------------
 
 class _HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -56,14 +55,9 @@ class _HealthHandler(BaseHTTPRequestHandler):
 def _start_health_server() -> None:
     port = int(os.environ.get("PORT", "8080"))
     server = HTTPServer(("0.0.0.0", port), _HealthHandler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
+    threading.Thread(target=server.serve_forever, daemon=True).start()
     logger.info("Health server listening on port %s", port)
 
-
-# ---------------------------------------------------------------------------
-#  Helpers
-# ---------------------------------------------------------------------------
 
 def is_group(update: Update) -> bool:
     if update.effective_chat is None:
@@ -92,17 +86,36 @@ def clean_mention(text: str, bot_username: str) -> str:
 
 def main_menu_keyboard() -> InlineKeyboardMarkup:
     kb = [
-        [InlineKeyboardButton("🥗 برنامه غذایی من", callback_data="menu_plan")],
+        [
+            InlineKeyboardButton("🍽 برنامه غذا", callback_data="menu_plan"),
+            InlineKeyboardButton("📅 برنامه امروز", callback_data="menu_today"),
+        ],
+        [
+            InlineKeyboardButton("🛒 فهرست خرید", callback_data="menu_shopping"),
+            InlineKeyboardButton("🥗 ارزش غذایی", callback_data="menu_food"),
+        ],
+        [
+            InlineKeyboardButton("💡 نکته روز", callback_data="menu_tip"),
+            InlineKeyboardButton("🍎 فکت", callback_data="menu_fact"),
+        ],
+        [
+            InlineKeyboardButton("❌ باور اشتباه", callback_data="menu_myth"),
+            InlineKeyboardButton("🎯 تحلیل کامل", callback_data="menu_ideal"),
+        ],
         [
             InlineKeyboardButton("⚖️ ثبت وزن", callback_data="menu_weight"),
-            InlineKeyboardButton("🔥 محاسبه کالری", callback_data="menu_calories"),
+            InlineKeyboardButton("🔥 کالری", callback_data="menu_calories"),
         ],
         [
-            InlineKeyboardButton("📊 گزارش پیشرفت", callback_data="menu_progress"),
-            InlineKeyboardButton("🛒 فهرست خرید", callback_data="menu_shopping"),
+            InlineKeyboardButton("🥩 پروتئین", callback_data="menu_protein"),
+            InlineKeyboardButton("🧮 درشت‌مغذی", callback_data="menu_macros"),
         ],
         [
-            InlineKeyboardButton("👤 پروفایل من", callback_data="menu_profile"),
+            InlineKeyboardButton("📊 پیشرفت", callback_data="menu_progress"),
+            InlineKeyboardButton("👤 پروفایل", callback_data="menu_profile"),
+        ],
+        [
+            InlineKeyboardButton("💬 سوال از AI", callback_data="menu_ai"),
             InlineKeyboardButton("📖 راهنما", callback_data="menu_help"),
         ],
     ]
@@ -115,26 +128,21 @@ async def ensure_user_and_group(update: Update) -> None:
     if user is None:
         return
     await repo.get_or_create_user(
-        telegram_id=user.id,
-        username=user.username,
-        first_name=user.first_name,
-        last_name=user.last_name,
+        telegram_id=user.id, username=user.username,
+        first_name=user.first_name, last_name=user.last_name,
     )
     if chat and chat.type in (ChatType.GROUP, ChatType.SUPERGROUP):
         await repo.get_or_create_group(chat_id=chat.id, title=chat.title)
 
 
-# ---------------------------------------------------------------------------
-#  Commands
-# ---------------------------------------------------------------------------
+# ===== BASE =====
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     if update.message is None:
         return
     await update.message.reply_text(
-        with_signature(msg.WELCOME),
-        parse_mode="Markdown",
+        with_signature(msg.WELCOME), parse_mode="Markdown",
         reply_markup=main_menu_keyboard(),
     )
 
@@ -151,8 +159,7 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message is None:
         return
     await update.message.reply_text(
-        with_signature(msg.MENU_TEXT),
-        parse_mode="Markdown",
+        with_signature(msg.MENU_TEXT), parse_mode="Markdown",
         reply_markup=main_menu_keyboard(),
     )
 
@@ -191,7 +198,6 @@ async def cmd_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             with_signature(msg.NOT_SETUP_YET), parse_mode="Markdown"
         )
         return
-
     lines = ["👤 **پروفایل من**\n"]
     if profile.age:
         lines.append(f"• سن: {profile.age} سال")
@@ -205,24 +211,18 @@ async def cmd_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         lines.append(f"• وزن هدف: {profile.target_weight_kg:.1f} کیلوگرم")
     if profile.goal:
         goal_fa = {
-            "lose": "کاهش وزن",
-            "gain": "افزایش وزن",
-            "muscle": "عضله‌سازی",
-            "maintain": "حفظ وزن",
-            "quality": "بهبود کیفیت تغذیه",
-            "sport": "هدف ورزشی",
+            "lose": "کاهش وزن", "gain": "افزایش وزن",
+            "muscle": "عضله‌سازی", "maintain": "حفظ وزن",
+            "quality": "بهبود کیفیت تغذیه", "sport": "هدف ورزشی",
         }.get(profile.goal, profile.goal)
         lines.append(f"• هدف: {goal_fa}")
     if profile.activity_level:
         act_fa = {
-            "sedentary": "کم‌تحرک",
-            "light": "سبک",
-            "moderate": "متوسط",
-            "high": "زیاد",
+            "sedentary": "کم‌تحرک", "light": "سبک",
+            "moderate": "متوسط", "high": "زیاد",
         }.get(profile.activity_level, profile.activity_level)
         lines.append(f"• فعالیت: {act_fa}")
-
-    lines.append("\n✏️ برای ویرایش اطلاعات، /setup رو بزن.")
+    lines.append("\n✏️ برای ویرایش، /setup رو بزن.")
     await update.message.reply_text(
         with_signature("\n".join(lines)), parse_mode="Markdown"
     )
@@ -239,6 +239,8 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     context.user_data["awaiting_weight"] = False
     await wizard.cancel_setup(update, context)
 
+
+# ===== CALC =====
 
 async def cmd_bmi(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
@@ -260,30 +262,91 @@ async def cmd_progress(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await pcmd.cmd_progress(update, context)
 
 
-# ---------------------------------------------------------------------------
-#  Text router -> AI
-# ---------------------------------------------------------------------------
+# ===== EXTRA =====
+
+async def cmd_tip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await ensure_user_and_group(update)
+    await ecmd.cmd_tip(update, context)
+
+
+async def cmd_fact(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await ensure_user_and_group(update)
+    await ecmd.cmd_fact(update, context)
+
+
+async def cmd_myth(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await ensure_user_and_group(update)
+    await ecmd.cmd_myth(update, context)
+
+
+async def cmd_water(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await ensure_user_and_group(update)
+    await ecmd.cmd_water(update, context)
+
+
+async def cmd_macros(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await ensure_user_and_group(update)
+    await ecmd.cmd_macros(update, context)
+
+
+async def cmd_protein(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await ensure_user_and_group(update)
+    await ecmd.cmd_protein(update, context)
+
+
+async def cmd_ideal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await ensure_user_and_group(update)
+    await ecmd.cmd_ideal(update, context)
+
+
+async def cmd_bodyfat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await ensure_user_and_group(update)
+    await ecmd.cmd_bodyfat(update, context)
+
+
+async def cmd_bmr(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await ensure_user_and_group(update)
+    await ecmd.cmd_bmr(update, context)
+
+
+# ===== MEAL =====
+
+async def cmd_plan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await ensure_user_and_group(update)
+    await mcmd.cmd_plan(update, context)
+
+
+async def cmd_today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await ensure_user_and_group(update)
+    await mcmd.cmd_today(update, context)
+
+
+async def cmd_shopping(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await ensure_user_and_group(update)
+    await mcmd.cmd_shopping(update, context)
+
+
+async def cmd_food(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await ensure_user_and_group(update)
+    await mcmd.cmd_food(update, context)
+
+
+# ===== TEXT → AI =====
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message is None or update.message.text is None:
         return
     await ensure_user_and_group(update)
-
     if not is_for_me(update, context):
         return
-
     bot_username = context.bot.username or ""
     text = clean_mention(update.message.text, bot_username)
-
     if not text:
         return
-
     if await wizard.handle_setup_input(update, context):
         return
-
     if await pcmd.handle_weight_input(update, context):
         return
-
     user = update.effective_user
     profile_summary = ""
     if user:
@@ -301,15 +364,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 if profile.goal:
                     parts.append(f"هدف: {profile.goal}")
                 profile_summary = "، ".join(parts)
-
     try:
         await context.bot.send_chat_action(
-            chat_id=update.effective_chat.id,
-            action="typing",
+            chat_id=update.effective_chat.id, action="typing"
         )
     except Exception:
         pass
-
     ai = get_ai_service()
     reply, _ = await ai.ask(
         user_message=text,
@@ -317,47 +377,61 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         user_profile_summary=profile_summary,
         user_id=user.id if user else 0,
     )
-
     if not reply:
-        reply = "متأسفانه پاسخی دریافت نشد. دوباره تلاش کن."
-
+        reply = "متأسفانه پاسخی دریافت نشد."
     await update.message.reply_text(with_signature(reply))
 
+
+# ===== CALLBACKS =====
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     if query is None:
         return
     await query.answer()
-
     data = query.data or ""
 
     if data == "menu_help":
+        await query.edit_message_text(with_signature(msg.HELP), parse_mode="Markdown")
+        return
+    if data == "menu_tip":
         await query.edit_message_text(
-            with_signature(msg.HELP), parse_mode="Markdown"
+            with_signature(f"💡 **نکته**\n\n{get_tip()}"), parse_mode="Markdown"
         )
         return
-
-    if data == "menu_profile":
+    if data == "menu_fact":
         await query.edit_message_text(
-            with_signature("👤 برای دیدن پروفایل، دستور /profile رو بزن."),
+            with_signature(f"🍎 **فکت**\n\n{get_fact()}"), parse_mode="Markdown"
+        )
+        return
+    if data == "menu_myth":
+        myth, truth = get_myth()
+        await query.edit_message_text(
+            with_signature(f"❌ **باور اشتباه**\n\n{myth}\n\n✅ **واقعیت**\n{truth}"),
             parse_mode="Markdown",
         )
         return
 
-    mapping = {
-        "menu_plan": "🥗 برنامه غذایی هنوز فعال نشده. تو فاز بعدی میاد.",
-        "menu_weight": "⚖️ برای ثبت وزن، دستور /weight رو بزن.",
-        "menu_calories": "🔥 برای محاسبه کالری، دستور /calories رو بزن.",
-        "menu_progress": "📊 برای گزارش پیشرفت، دستور /progress رو بزن.",
-        "menu_shopping": "🛒 فهرست خرید هنوز فعال نشده.",
+    hints = {
+        "menu_plan": "🍽 برای ساخت برنامه: /plan",
+        "menu_today": "📅 برای برنامه امروز: /today",
+        "menu_shopping": "🛒 برای فهرست خرید: /shopping",
+        "menu_food": "🥗 مثال: `/food تخم مرغ`",
+        "menu_ideal": "🎯 برای تحلیل کامل: /ideal",
+        "menu_weight": "⚖️ برای ثبت وزن: /weight",
+        "menu_calories": "🔥 برای کالری: /calories",
+        "menu_protein": "🥩 برای پروتئین: /protein",
+        "menu_macros": "🧮 برای درشت‌مغذی: /macros",
+        "menu_progress": "📊 برای گزارش: /progress",
+        "menu_profile": "👤 برای پروفایل: /profile",
+        "menu_ai": "💬 هر پیام آزاد بفرست (بدون /) → AI جواب می‌ده.",
     }
-    text = mapping.get(data, msg.UNKNOWN_COMMAND)
+    text = hints.get(data, msg.UNKNOWN_COMMAND)
     await query.edit_message_text(with_signature(text), parse_mode="Markdown")
 
 
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logger.exception("Exception while handling update", exc_info=context.error)
+    logger.exception("Exception", exc_info=context.error)
     if isinstance(update, Update) and update.effective_message is not None:
         try:
             await update.effective_message.reply_text(
@@ -367,11 +441,18 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
             pass
 
 
+# ===== LIFECYCLE =====
+
 async def post_init(app: Application) -> None:
     init_engine()
     await create_all()
     me = await app.bot.get_me()
     logger.info("Bot started as @%s (id=%s)", me.username, me.id)
+    try:
+        from app.bot.commands_setup import setup_commands
+        await setup_commands(app.bot)
+    except Exception as e:
+        logger.warning("Setup commands error: %s", e)
 
 
 async def post_shutdown(app: Application) -> None:
@@ -389,6 +470,7 @@ def build_application() -> Application:
         .build()
     )
 
+    # Base
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("menu", cmd_menu))
@@ -396,15 +478,33 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("privacy", cmd_privacy))
     app.add_handler(CommandHandler("settings", cmd_settings))
     app.add_handler(CommandHandler("profile", cmd_profile))
-
     app.add_handler(CommandHandler("setup", cmd_setup))
     app.add_handler(CommandHandler("cancel", cmd_cancel))
 
+    # Calc
     app.add_handler(CommandHandler("bmi", cmd_bmi))
     app.add_handler(CommandHandler("calories", cmd_calories))
     app.add_handler(CommandHandler("weight", cmd_weight))
     app.add_handler(CommandHandler("progress", cmd_progress))
+    app.add_handler(CommandHandler("macros", cmd_macros))
+    app.add_handler(CommandHandler("protein", cmd_protein))
+    app.add_handler(CommandHandler("ideal", cmd_ideal))
+    app.add_handler(CommandHandler("bodyfat", cmd_bodyfat))
+    app.add_handler(CommandHandler("bmr", cmd_bmr))
 
+    # Content
+    app.add_handler(CommandHandler("tip", cmd_tip))
+    app.add_handler(CommandHandler("fact", cmd_fact))
+    app.add_handler(CommandHandler("myth", cmd_myth))
+    app.add_handler(CommandHandler("water", cmd_water))
+
+    # Meal
+    app.add_handler(CommandHandler("plan", cmd_plan))
+    app.add_handler(CommandHandler("today", cmd_today))
+    app.add_handler(CommandHandler("shopping", cmd_shopping))
+    app.add_handler(CommandHandler("food", cmd_food))
+
+    # Text + callbacks
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_error_handler(on_error)

@@ -1,4 +1,4 @@
-"""Bot entry point."""
+"""Bot entry point. Wires together all handlers and starts polling."""
 
 import logging
 import os
@@ -18,6 +18,7 @@ from telegram.ext import (
 )
 
 from app.bot import extra_commands as ecmd
+from app.bot import group_quiz as gquiz
 from app.bot import meal_commands as mcmd
 from app.bot import messages as msg
 from app.bot import profile_commands as pcmd
@@ -36,6 +37,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+# ---------------------------------------------------------------------------
+#  Health server
+# ---------------------------------------------------------------------------
 
 class _HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -58,6 +63,10 @@ def _start_health_server() -> None:
     threading.Thread(target=server.serve_forever, daemon=True).start()
     logger.info("Health server listening on port %s", port)
 
+
+# ---------------------------------------------------------------------------
+#  Helpers
+# ---------------------------------------------------------------------------
 
 def is_group(update: Update) -> bool:
     if update.effective_chat is None:
@@ -86,6 +95,10 @@ def clean_mention(text: str, bot_username: str) -> str:
 
 def main_menu_keyboard() -> InlineKeyboardMarkup:
     kb = [
+        [
+            InlineKeyboardButton("🎮 کوییز زنده", callback_data="menu_quiz"),
+            InlineKeyboardButton("🏆 جدول قهرمانان", callback_data="menu_lb"),
+        ],
         [
             InlineKeyboardButton("🍽 برنامه غذا", callback_data="menu_plan"),
             InlineKeyboardButton("📅 برنامه امروز", callback_data="menu_today"),
@@ -135,7 +148,9 @@ async def ensure_user_and_group(update: Update) -> None:
         await repo.get_or_create_group(chat_id=chat.id, title=chat.title)
 
 
-# ===== BASE =====
+# ---------------------------------------------------------------------------
+#  Base commands
+# ---------------------------------------------------------------------------
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
@@ -240,7 +255,9 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     await wizard.cancel_setup(update, context)
 
 
-# ===== CALC =====
+# ---------------------------------------------------------------------------
+#  Calculation commands
+# ---------------------------------------------------------------------------
 
 async def cmd_bmi(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
@@ -262,7 +279,9 @@ async def cmd_progress(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await pcmd.cmd_progress(update, context)
 
 
-# ===== EXTRA =====
+# ---------------------------------------------------------------------------
+#  Extra commands
+# ---------------------------------------------------------------------------
 
 async def cmd_tip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
@@ -309,7 +328,9 @@ async def cmd_bmr(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ecmd.cmd_bmr(update, context)
 
 
-# ===== MEAL =====
+# ---------------------------------------------------------------------------
+#  Meal commands
+# ---------------------------------------------------------------------------
 
 async def cmd_plan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
@@ -331,7 +352,9 @@ async def cmd_food(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await mcmd.cmd_food(update, context)
 
 
-# ===== TEXT → AI =====
+# ---------------------------------------------------------------------------
+#  Text -> AI
+# ---------------------------------------------------------------------------
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message is None or update.message.text is None:
@@ -347,6 +370,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
     if await pcmd.handle_weight_input(update, context):
         return
+
     user = update.effective_user
     profile_summary = ""
     if user:
@@ -364,12 +388,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 if profile.goal:
                     parts.append(f"هدف: {profile.goal}")
                 profile_summary = "، ".join(parts)
+
     try:
         await context.bot.send_chat_action(
             chat_id=update.effective_chat.id, action="typing"
         )
     except Exception:
         pass
+
     ai = get_ai_service()
     reply, _ = await ai.ask(
         user_message=text,
@@ -382,7 +408,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await update.message.reply_text(with_signature(reply))
 
 
-# ===== CALLBACKS =====
+# ---------------------------------------------------------------------------
+#  Callbacks
+# ---------------------------------------------------------------------------
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
@@ -391,19 +419,41 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await query.answer()
     data = query.data or ""
 
+    # Quiz actions
+    if data == "menu_quiz":
+        await query.edit_message_text(
+            with_signature(
+                "🎮 **کوییز زنده**\n\n"
+                "برای شروع، دستور /quiz رو بزن.\n\n"
+                "💡 همه می‌تونن شرکت کنن — سریع‌تر = امتیاز بیشتر!"
+            ),
+            parse_mode="Markdown",
+        )
+        return
+
+    if data == "menu_lb":
+        await query.edit_message_text(
+            with_signature("🏆 برای جدول قهرمانان: /leaderboard"),
+            parse_mode="Markdown",
+        )
+        return
+
     if data == "menu_help":
         await query.edit_message_text(with_signature(msg.HELP), parse_mode="Markdown")
         return
+
     if data == "menu_tip":
         await query.edit_message_text(
             with_signature(f"💡 **نکته**\n\n{get_tip()}"), parse_mode="Markdown"
         )
         return
+
     if data == "menu_fact":
         await query.edit_message_text(
             with_signature(f"🍎 **فکت**\n\n{get_fact()}"), parse_mode="Markdown"
         )
         return
+
     if data == "menu_myth":
         myth, truth = get_myth()
         await query.edit_message_text(
@@ -441,10 +491,13 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
             pass
 
 
-# ===== LIFECYCLE =====
+# ---------------------------------------------------------------------------
+#  Lifecycle
+# ---------------------------------------------------------------------------
 
 async def post_init(app: Application) -> None:
     init_engine()
+    import app.database.quiz_models  # noqa: F401
     await create_all()
     me = await app.bot.get_me()
     logger.info("Bot started as @%s (id=%s)", me.username, me.id)
@@ -481,7 +534,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("setup", cmd_setup))
     app.add_handler(CommandHandler("cancel", cmd_cancel))
 
-    # Calc
+    # Calculations
     app.add_handler(CommandHandler("bmi", cmd_bmi))
     app.add_handler(CommandHandler("calories", cmd_calories))
     app.add_handler(CommandHandler("weight", cmd_weight))
@@ -503,6 +556,15 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("today", cmd_today))
     app.add_handler(CommandHandler("shopping", cmd_shopping))
     app.add_handler(CommandHandler("food", cmd_food))
+
+    # Live group quiz
+    app.add_handler(CommandHandler("quiz", gquiz.cmd_quiz))
+    app.add_handler(CommandHandler("leaderboard", gquiz.cmd_leaderboard))
+    app.add_handler(CommandHandler("mystats", gquiz.cmd_mystats))
+    app.add_handler(CallbackQueryHandler(
+        gquiz.handle_group_quiz_answer,
+        pattern=r"^gq_",
+    ))
 
     # Text + callbacks
     app.add_handler(CallbackQueryHandler(handle_callback))

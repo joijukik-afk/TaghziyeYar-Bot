@@ -1,4 +1,4 @@
-"""Live group quiz — with stable timer via job_queue."""
+"""Live group quiz with a 1-second live timer."""
 
 import logging
 from datetime import datetime, timezone
@@ -76,7 +76,16 @@ def _options_keyboard(options: list[str]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
+def _progress_bar(seconds_left: int) -> str:
+    """Visual progress bar for the timer."""
+    total = TIMEOUT_SECONDS
+    filled = int((seconds_left / total) * 10)
+    bar = "🟩" * filled + "⬜" * (10 - filled)
+    return bar
+
+
 def _live_text(q_num, category, question, seconds_left, answers):
+    bar = _progress_bar(seconds_left)
     lines = [
         f"🎮 {DIVIDER} 🎮",
         "   🧠 کوییز زنده تغذیه",
@@ -88,7 +97,8 @@ def _live_text(q_num, category, question, seconds_left, answers):
         f"❓ {_sanitize(question, 300)}",
         "",
         DIVIDER,
-        f"⏱ {seconds_left} ثانیه مونده",
+        f"⏱ **{seconds_left}** ثانیه مونده",
+        f"{bar}",
         "",
     ]
     if not answers:
@@ -104,7 +114,6 @@ def _live_text(q_num, category, question, seconds_left, answers):
     lines.append("")
     lines.append(DIVIDER)
     lines.append("🎯 هر کی سریع‌تر بزنه، امتیاز بیشتر!")
-    lines.append("💡 همه می‌تونن شرکت کنن")
     return "\n".join(lines)
 
 
@@ -142,7 +151,7 @@ def _now():
 
 
 # ============================================================
-#  /quiz — start a new round
+#  /quiz
 # ============================================================
 
 async def cmd_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -150,12 +159,17 @@ async def cmd_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     chat_id = update.effective_chat.id
+    chat_title = update.effective_chat.title or ""
 
     if chat_id in _active_games:
         await update.message.reply_text(
             with_signature("⏳ یه کوییز در حال اجراست — صبر کن تموم بشه."),
         )
         return
+
+    # Clean any old jobs
+    for j in context.job_queue.get_jobs_by_name(f"gq_timer_{chat_id}"):
+        j.schedule_removal()
 
     loading = await update.message.reply_text(
         with_signature("🧠 در حال ساخت سوال...\n\nچند لحظه صبر کن"),
@@ -190,32 +204,32 @@ async def cmd_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "answered_user_ids": set(),
         "q_num": q_num,
         "ended": False,
-        "chat_title": update.effective_chat.title or "",
+        "chat_title": chat_title,
+        "last_seconds": TIMEOUT_SECONDS,
     }
 
-    # Start timer via job_queue (every 2 seconds to avoid rate limit)
+    # Start timer via job_queue — fires every 1 second
     context.job_queue.run_repeating(
         _timer_tick,
-        interval=2.0,
-        first=2.0,
+        interval=1.0,
+        first=1.0,
         chat_id=chat_id,
         name=f"gq_timer_{chat_id}",
     )
 
 
 # ============================================================
-#  Timer tick (called every 2 seconds)
+#  Timer — runs every second
 # ============================================================
 
 async def _timer_tick(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Called every 2 seconds by job_queue. Updates live message."""
     job = context.job
     if job is None:
         return
     chat_id = job.chat_id
     game = _active_games.get(chat_id)
 
-    # no game or game already ended → remove timer
+    # no game? stop the timer
     if game is None or game["ended"]:
         for j in context.job_queue.get_jobs_by_name(f"gq_timer_{chat_id}"):
             j.schedule_removal()
@@ -253,7 +267,12 @@ async def _timer_tick(context: ContextTypes.DEFAULT_TYPE) -> None:
             j.schedule_removal()
         return
 
-    # ---- still running: update live message ----
+    # ---- only update if seconds changed (avoid rate limit) ----
+    if seconds_left == game.get("last_seconds"):
+        return
+
+    game["last_seconds"] = seconds_left
+
     text = _live_text(
         q_num=game["q_num"],
         category=q.get("category", "تغذیه"),
@@ -272,9 +291,9 @@ async def _timer_tick(context: ContextTypes.DEFAULT_TYPE) -> None:
     except Exception as e:
         err = str(e).lower()
         if "not modified" in err:
-            pass  # nothing changed, ignore
+            pass
         elif "retry" in err or "flood" in err or "too many" in err:
-            logger.info("Rate limited, will retry next tick")
+            logger.info("Rate limited on tick %d", seconds_left)
         else:
             logger.warning("timer edit failed: %s", e)
 
@@ -366,7 +385,7 @@ async def handle_group_quiz_answer(update: Update, context: ContextTypes.DEFAULT
         logger.warning("record answer failed: %s", e)
 
     await query.answer(f"✅ درست! 🏅 {position} — +{points} امتیاز", show_alert=False)
-    # timer tick will refresh the message on next run
+    # timer will refresh on next tick
 
 
 # ============================================================

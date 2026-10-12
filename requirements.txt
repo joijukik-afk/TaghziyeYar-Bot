@@ -1,4 +1,4 @@
-python-telegram-bot==21.6
+python-telegram-bot[job-queue]==21.6
 sqlalchemy==2.0.35
 aiosqlite==0.20.0
 pydantic==2.9.2

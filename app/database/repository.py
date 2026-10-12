@@ -1,8 +1,8 @@
 """CRUD helpers — thin wrappers around the SQLAlchemy session."""
 
-from datetime import datetime
+from datetime import date, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import desc, func, select
 
 from app.database.models import (
     AuditLog,
@@ -11,6 +11,7 @@ from app.database.models import (
     User,
     WeightLog,
 )
+from app.database.quiz_models import QuizLeaderboard, QuizLog
 from app.database.session import session_scope
 
 
@@ -72,6 +73,14 @@ async def get_or_create_group(chat_id: int, title: str | None) -> Group:
         return group
 
 
+async def list_all_groups() -> list[Group]:
+    async with session_scope() as session:
+        result = await session.execute(
+            select(Group).where(Group.is_active == True)
+        )
+        return list(result.scalars().all())
+
+
 # ---------------------------------------------------------------- profile
 async def get_profile(user_id: int) -> Profile | None:
     async with session_scope() as session:
@@ -124,3 +133,188 @@ async def audit(telegram_id: int | None, event: str, details: str | None = None)
         session.add(
             AuditLog(telegram_id=telegram_id, event=event, details=details)
         )
+
+
+# ================================================================
+#  QUIZ
+# ================================================================
+
+def _current_week_start() -> str:
+    """Return the Saturday of the current week (YYYY-MM-DD)."""
+    today = date.today()
+    # Saturday = weekday 5 (Monday=0)
+    days_since_saturday = (today.weekday() - 5) % 7
+    saturday = today - timedelta(days=days_since_saturday)
+    return saturday.isoformat()
+
+
+async def record_quiz_answer(
+    telegram_id: int,
+    display_name: str,
+    chat_id: int,
+    chat_title: str,
+    points: int,
+    elapsed_ms: int,
+    question_text: str,
+    position: int,
+) -> None:
+    """Record a correct quiz answer (updates leaderboard + logs)."""
+    week = _current_week_start()
+
+    async with session_scope() as session:
+        # get or create user
+        result = await session.execute(
+            select(User).where(User.telegram_id == telegram_id)
+        )
+        user = result.scalar_one_or_none()
+        if user is None:
+            user = User(telegram_id=telegram_id, first_name=display_name)
+            session.add(user)
+            await session.flush()
+            session.add(Profile(user_id=user.id))
+            await session.flush()
+
+        # get or create leaderboard entry for this week
+        result = await session.execute(
+            select(QuizLeaderboard).where(
+                QuizLeaderboard.user_id == user.id,
+                QuizLeaderboard.chat_id == chat_id,
+                QuizLeaderboard.week_start == week,
+            )
+        )
+        entry = result.scalar_one_or_none()
+
+        if entry is None:
+            entry = QuizLeaderboard(
+                user_id=user.id,
+                telegram_id=telegram_id,
+                display_name=display_name,
+                chat_id=chat_id,
+                chat_title=chat_title,
+                week_start=week,
+                points=points,
+                wins=1,
+                total_games=1,
+                correct_answers=1,
+                streak=1,
+                best_streak=1,
+            )
+            session.add(entry)
+        else:
+            entry.points += points
+            entry.wins += 1
+            entry.total_games += 1
+            entry.correct_answers += 1
+            entry.streak += 1
+            if entry.streak > entry.best_streak:
+                entry.best_streak = entry.streak
+            entry.display_name = display_name
+
+        # log the answer
+        session.add(
+            QuizLog(
+                chat_id=chat_id,
+                question=question_text[:500],
+                user_telegram_id=telegram_id,
+                user_name=display_name,
+                points=points,
+                elapsed_ms=elapsed_ms,
+                position=position,
+            )
+        )
+
+        await session.flush()
+
+
+async def record_quiz_wrong(telegram_id: int, chat_id: int) -> None:
+    """Record a wrong answer (resets streak)."""
+    week = _current_week_start()
+    async with session_scope() as session:
+        result = await session.execute(
+            select(User).where(User.telegram_id == telegram_id)
+        )
+        user = result.scalar_one_or_none()
+        if user is None:
+            return
+
+        result = await session.execute(
+            select(QuizLeaderboard).where(
+                QuizLeaderboard.user_id == user.id,
+                QuizLeaderboard.chat_id == chat_id,
+                QuizLeaderboard.week_start == week,
+            )
+        )
+        entry = result.scalar_one_or_none()
+        if entry is not None:
+            entry.streak = 0
+
+
+async def get_leaderboard(
+    chat_id: int,
+    limit: int = 10,
+    week: bool = True,
+) -> list[QuizLeaderboard]:
+    """Return top players for this chat."""
+    async with session_scope() as session:
+        q = select(QuizLeaderboard).where(QuizLeaderboard.chat_id == chat_id)
+        if week:
+            q = q.where(QuizLeaderboard.week_start == _current_week_start())
+        q = q.order_by(desc(QuizLeaderboard.points)).limit(limit)
+        result = await session.execute(q)
+        return list(result.scalars().all())
+
+
+async def get_user_rank(
+    telegram_id: int,
+    chat_id: int,
+) -> tuple[int, int, int]:
+    """Return (rank, points, streak). rank 1-based; 0 means not found."""
+    week = _current_week_start()
+    async with session_scope() as session:
+        result = await session.execute(
+            select(User).where(User.telegram_id == telegram_id)
+        )
+        user = result.scalar_one_or_none()
+        if user is None:
+            return 0, 0, 0
+
+        result = await session.execute(
+            select(QuizLeaderboard).where(
+                QuizLeaderboard.user_id == user.id,
+                QuizLeaderboard.chat_id == chat_id,
+                QuizLeaderboard.week_start == week,
+            )
+        )
+        entry = result.scalar_one_or_none()
+        if entry is None:
+            return 0, 0, 0
+
+        result = await session.execute(
+            select(func.count(QuizLeaderboard.id)).where(
+                QuizLeaderboard.chat_id == chat_id,
+                QuizLeaderboard.week_start == week,
+                QuizLeaderboard.points > entry.points,
+            )
+        )
+        above = result.scalar_one() or 0
+        return above + 1, entry.points, entry.streak
+
+
+async def get_chat_quiz_stats(chat_id: int) -> dict:
+    """Return overall stats for a chat."""
+    week = _current_week_start()
+    async with session_scope() as session:
+        result = await session.execute(
+            select(func.count(QuizLeaderboard.id)).where(
+                QuizLeaderboard.chat_id == chat_id,
+                QuizLeaderboard.week_start == week,
+            )
+        )
+        players = result.scalar_one() or 0
+
+        result = await session.execute(
+            select(func.count(QuizLog.id)).where(QuizLog.chat_id == chat_id)
+        )
+        total_answers = result.scalar_one() or 0
+
+        return {"players_this_week": players, "total_answers": total_answers}

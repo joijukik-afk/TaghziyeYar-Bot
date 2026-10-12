@@ -1,10 +1,14 @@
-"""Live group quiz with REAL working live timer."""
+"""Quiz with Telegram's native Poll feature (live timer built-in)."""
 
-import asyncio
 import logging
 from datetime import datetime, timezone
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Poll,
+    Update,
+)
 from telegram.ext import ContextTypes
 
 from app.database import repository as repo
@@ -13,7 +17,11 @@ from app.utils.message_formatter import with_signature
 
 logger = logging.getLogger(__name__)
 
-_active_games: dict[int, dict] = {}
+# poll_id -> game state
+_active_polls: dict[str, dict] = {}
+# chat_id -> poll_id (for "one active quiz per chat")
+_chat_active_poll: dict[int, str] = {}
+
 TIMEOUT_SECONDS = 30
 MAX_PLAYERS = 20
 
@@ -64,168 +72,110 @@ def _medal(pos: int) -> str:
     return f"{pos}."
 
 
-def _options_keyboard(options: list[str]) -> InlineKeyboardMarkup:
-    letters = ["🅰️", "🅱️", "🅲", "🅳"]
-    rows = []
-    for i, opt in enumerate(options):
-        letter = letters[i] if i < len(letters) else f"{i+1}."
-        opt_text = opt if len(opt) <= 40 else opt[:38] + "..."
-        rows.append([InlineKeyboardButton(f"{letter} {opt_text}", callback_data=f"gq_{i}")])
-    return InlineKeyboardMarkup(rows)
-
-
-def _progress_bar(seconds_left: int) -> str:
-    total = TIMEOUT_SECONDS
-    filled = int((seconds_left / total) * 10)
-    filled = max(0, min(10, filled))
-    return "🟩" * filled + "⬜" * (10 - filled)
-
-
-def _live_text(q_num, category, question, seconds_left, answers):
-    bar = _progress_bar(seconds_left)
-    lines = [
-        f"🎮 {DIVIDER} 🎮",
-        "   🧠 کوییز زنده تغذیه",
-        f"🎮 {DIVIDER} 🎮",
-        "",
-        f"🏷 دسته: {_sanitize(category, 60)}",
-        f"🎯 سوال: #{q_num}",
-        "",
-        f"❓ {_sanitize(question, 300)}",
-        "",
-        DIVIDER,
-        f"⏱ {seconds_left} ثانیه مونده",
-        f"{bar}",
-        "",
-    ]
-    if not answers:
-        lines.append("🏆 پاسخ‌دهندگان:")
-        lines.append("هنوز کسی جواب نداده — تو اولین باش!")
-    else:
-        lines.append(f"🏆 پاسخ‌دهندگان ({len(answers)}):")
-        for a in answers:
-            badge = _speed_badge(a["elapsed"])
-            medal = _medal(a["position"])
-            name = _sanitize(a["name"], 30)
-            lines.append(f"{medal} {name} — {badge} {a['elapsed']:.1f}s — +{a['points']}")
-    lines.append("")
-    lines.append(DIVIDER)
-    lines.append("🎯 هر کی سریع‌تر بزنه، امتیاز بیشتر!")
-    return "\n".join(lines)
-
-
-def _final_text(q_num, question, correct_answer, explanation, answers):
-    lines = [
-        f"⏱ {DIVIDER} ⏱",
-        "   زمان تموم شد!",
-        f"⏱ {DIVIDER} ⏱",
-        "",
-        f"❓ {_sanitize(question, 300)}",
-        "",
-        f"✅ جواب درست: {_sanitize(correct_answer, 80)}",
-        "",
-    ]
-    if explanation:
-        lines.append(f"💡 {_sanitize(explanation, 300)}")
-        lines.append("")
-    lines.append(DIVIDER)
-    if not answers:
-        lines.append("😴 هیچ‌کس جواب درست نداد!")
-    else:
-        lines.append(f"🏆 نتایج نهایی ({len(answers)} پاسخ‌دهنده):")
-        for a in answers:
-            medal = _medal(a["position"])
-            name = _sanitize(a["name"], 30)
-            badge = _speed_badge(a["elapsed"])
-            lines.append(f"{medal} {name} — {badge} {a['elapsed']:.1f}s — +{a['points']}")
-    lines.append("")
-    lines.append(DIVIDER)
-    return "\n".join(lines)
-
-
 def _now():
     return datetime.now(timezone.utc)
 
 
 # ============================================================
-#  LIVE TIMER — asyncio task (bulletproof)
+#  Send a quiz poll
 # ============================================================
 
-async def _live_timer_loop(bot, chat_id: int) -> None:
-    """Run continuously, update the quiz message every second."""
+async def _send_quiz_poll(
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: int,
+    chat_title: str,
+) -> None:
+    """Generate question + send as native Telegram quiz poll."""
+    bot = context.bot
+
     try:
-        while True:
-            await asyncio.sleep(1.0)
-
-            game = _active_games.get(chat_id)
-            if game is None or game.get("ended"):
-                return
-
-            elapsed = (_now() - game["started_at"]).total_seconds()
-            seconds_left = max(0, int(TIMEOUT_SECONDS - elapsed))
-            q = game["question"]
-
-            # ---- time's up ----
-            if seconds_left <= 0:
-                game["ended"] = True
-                correct_answer = q["options"][q["correct"]]
-                final = _final_text(
-                    q_num=game["q_num"],
-                    question=q["question"],
-                    correct_answer=correct_answer,
-                    explanation=q.get("explanation", ""),
-                    answers=game["answers"],
-                )
-                next_kb = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔄 سوال بعدی", callback_data="gq_next")],
-                ])
-                try:
-                    await bot.edit_message_text(
-                        chat_id=chat_id,
-                        message_id=game["message_id"],
-                        text=final,
-                        reply_markup=next_kb,
-                    )
-                except Exception as e:
-                    logger.warning("final edit failed: %s", e)
-                return
-
-            # ---- skip if seconds unchanged ----
-            if seconds_left == game.get("last_seconds"):
-                continue
-
-            game["last_seconds"] = seconds_left
-
-            # ---- update ----
-            text = _live_text(
-                q_num=game["q_num"],
-                category=q.get("category", "تغذیه"),
-                question=q["question"],
-                seconds_left=seconds_left,
-                answers=game["answers"],
-            )
-
-            try:
-                await bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=game["message_id"],
-                    text=text,
-                    reply_markup=_options_keyboard(q["options"]),
-                )
-            except Exception as e:
-                err = str(e).lower()
-                if "not modified" in err:
-                    pass
-                elif "retry" in err or "flood" in err or "too many" in err:
-                    # wait longer next time
-                    await asyncio.sleep(1.0)
-                else:
-                    logger.debug("timer edit failed: %s", e)
-
-    except asyncio.CancelledError:
-        return
+        q = await generate_question()
     except Exception as e:
-        logger.exception("Timer loop crashed: %s", e)
+        logger.exception("Question gen failed: %s", e)
+        try:
+            await bot.send_message(
+                chat_id=chat_id,
+                text=with_signature("😔 خطا در ساخت سوال. دوباره /quiz بزن."),
+            )
+        except Exception:
+            pass
+        return
+
+    q_num = int(_now().timestamp()) % 10000
+
+    # Build question text
+    question_text = (
+        f"🧠 کوییز تغذیه #{q_num}\n"
+        f"🏷 دسته: {_sanitize(q.get('category', 'تغذیه'), 60)}\n\n"
+        f"❓ {_sanitize(q['question'], 300)}"
+    )
+
+    # Validate options (Telegram requires 2-10 options)
+    options = [_sanitize(o, 100) for o in q["options"]]
+    if len(options) < 2:
+        logger.warning("Too few options, aborting")
+        try:
+            await bot.send_message(
+                chat_id=chat_id,
+                text=with_signature("😔 خطا در ساخت سوال. دوباره /quiz بزن."),
+            )
+        except Exception:
+            pass
+        return
+
+    correct_idx = int(q["correct"])
+    if correct_idx < 0 or correct_idx >= len(options):
+        correct_idx = 0
+
+    explanation = _sanitize(q.get("explanation", ""), 200)
+
+    try:
+        msg = await bot.send_poll(
+            chat_id=chat_id,
+            question=question_text,
+            options=options,
+            type=Poll.QUIZ,
+            correct_option_id=correct_idx,
+            is_anonymous=False,
+            open_period=TIMEOUT_SECONDS,
+            explanation=explanation if explanation else None,
+        )
+    except Exception as e:
+        logger.exception("Failed to send poll: %s", e)
+        try:
+            await bot.send_message(
+                chat_id=chat_id,
+                text=with_signature("😔 خطا در ارسال کوییز. دوباره تلاش کن."),
+            )
+        except Exception:
+            pass
+        return
+
+    poll_id = msg.poll.id
+
+    _active_polls[poll_id] = {
+        "chat_id": chat_id,
+        "chat_title": chat_title,
+        "question": q,
+        "started_at": _now(),
+        "message_id": msg.message_id,
+        "q_num": q_num,
+        "answers": [],
+        "answered_user_ids": set(),
+        "finalized": False,
+    }
+    _chat_active_poll[chat_id] = poll_id
+
+    # Schedule finalize job (2 seconds after poll closes)
+    context.job_queue.run_once(
+        finalize_quiz,
+        when=TIMEOUT_SECONDS + 2,
+        chat_id=chat_id,
+        data={"poll_id": poll_id},
+        name=f"gq_finalize_{poll_id}",
+    )
+
+    logger.info("Quiz poll sent: %s in chat %s", poll_id, chat_id)
 
 
 # ============================================================
@@ -239,151 +189,187 @@ async def cmd_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
     chat_title = update.effective_chat.title or ""
 
-    if chat_id in _active_games:
-        await update.message.reply_text(
-            with_signature("⏳ یه کوییز در حال اجراست — صبر کن تموم بشه."),
-        )
-        return
-
-    # cancel previous task if any
-    old = _active_games.get(chat_id, {}).get("task")
-    if old is not None and not old.done():
-        old.cancel()
-
-    loading = await update.message.reply_text(
-        with_signature("🧠 در حال ساخت سوال...\n\nچند لحظه صبر کن"),
-    )
-
-    try:
-        q = await generate_question()
-    except Exception as e:
-        logger.exception("Question gen failed: %s", e)
-        try:
-            await loading.edit_text(
-                with_signature("😔 خطا در ساخت سوال. دوباره /quiz بزن.")
+    # If there's already an active quiz
+    existing_poll_id = _chat_active_poll.get(chat_id)
+    if existing_poll_id and existing_poll_id in _active_polls:
+        game = _active_polls[existing_poll_id]
+        if not game["finalized"]:
+            await update.message.reply_text(
+                with_signature("⏳ یه کوییز در حال اجراست — صبر کن تموم بشه."),
             )
-        except Exception:
-            pass
-        return
+            return
 
-    q_num = int(_now().timestamp()) % 10000
-
-    text = _live_text(q_num, q.get("category", "تغذیه"), q["question"], TIMEOUT_SECONDS, [])
-    keyboard = _options_keyboard(q["options"])
-
-    try:
-        await loading.edit_text(text=text, reply_markup=keyboard)
-    except Exception as e:
-        logger.exception("Failed to edit loading msg: %s", e)
-        return
-
-    game = {
-        "question": q,
-        "message_id": loading.message_id,
-        "started_at": _now(),
-        "answers": [],
-        "answered_user_ids": set(),
-        "q_num": q_num,
-        "ended": False,
-        "chat_title": chat_title,
-        "last_seconds": TIMEOUT_SECONDS,
-        "task": None,
-    }
-    _active_games[chat_id] = game
-
-    # Start live timer task (store in game so it isn't garbage collected)
-    task = asyncio.create_task(_live_timer_loop(context.bot, chat_id))
-    game["task"] = task
+    await _send_quiz_poll(context, chat_id, chat_title)
 
 
 # ============================================================
-#  Answer handler
+#  Poll answer handler
 # ============================================================
 
-async def handle_group_quiz_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    if query is None:
+async def on_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Called each time a user answers the poll."""
+    answer = update.poll_answer
+    if answer is None:
         return
 
-    chat_id = update.effective_chat.id if update.effective_chat else None
-    user = query.from_user
-
-    if chat_id is None or user is None:
-        await query.answer()
-        return
-
-    game = _active_games.get(chat_id)
+    poll_id = answer.poll_id
+    game = _active_polls.get(poll_id)
     if game is None:
-        await query.answer("⌛ این کوییز تموم شده!", show_alert=False)
         return
 
-    elapsed = (_now() - game["started_at"]).total_seconds()
-    if game["ended"] or elapsed > TIMEOUT_SECONDS:
-        await query.answer("⏱ زمان تموم شده!", show_alert=False)
+    user = answer.user
+    if user is None:
         return
 
     if user.id in game["answered_user_ids"]:
-        await query.answer("✅ قبلاً جواب دادید!", show_alert=False)
         return
 
     if len(game["answers"]) >= MAX_PLAYERS:
-        await query.answer("👥 تعداد پر شده!", show_alert=False)
         return
 
-    try:
-        selected = int((query.data or "").replace("gq_", ""))
-    except ValueError:
-        await query.answer()
-        return
+    selected = answer.option_ids[0] if answer.option_ids else -1
+    is_correct = (selected == game["question"]["correct"])
 
-    q = game["question"]
-    correct = (selected == q["correct"])
-
-    game["answered_user_ids"].add(user.id)
-
-    # ---- wrong ----
-    if not correct:
-        await query.answer("❌ اشتباه! دفعه بعد بهتر.", show_alert=False)
-        try:
-            await repo.record_quiz_wrong(user.id, chat_id)
-        except Exception:
-            pass
-        return
-
-    # ---- correct ----
     elapsed = (_now() - game["started_at"]).total_seconds()
-    points = _points_for_elapsed(elapsed)
-    position = len(game["answers"]) + 1
 
     display_name = (
         f"@{user.username}" if user.username
         else (user.first_name or user.last_name or "کاربر")
     )
 
+    game["answered_user_ids"].add(user.id)
     game["answers"].append({
         "user_id": user.id,
         "name": display_name,
         "elapsed": elapsed,
-        "points": points,
-        "position": position,
+        "is_correct": is_correct,
+        "selected": selected,
     })
 
+    # ---- Persist to DB ----
+    if is_correct:
+        points = _points_for_elapsed(elapsed)
+        position = sum(1 for a in game["answers"] if a["is_correct"])
+        try:
+            await repo.record_quiz_answer(
+                telegram_id=user.id,
+                display_name=display_name,
+                chat_id=game["chat_id"],
+                chat_title=game["chat_title"],
+                points=points,
+                elapsed_ms=int(elapsed * 1000),
+                question_text=game["question"]["question"],
+                position=position,
+            )
+        except Exception as e:
+            logger.warning("record answer failed: %s", e)
+    else:
+        try:
+            await repo.record_quiz_wrong(user.id, game["chat_id"])
+        except Exception:
+            pass
+
+
+# ============================================================
+#  Finalize
+# ============================================================
+
+async def finalize_quiz(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Send summary message after the poll closes."""
+    job = context.job
+    if job is None:
+        return
+    data = job.data or {}
+    poll_id = data.get("poll_id")
+    if not poll_id:
+        return
+
+    game = _active_polls.get(poll_id)
+    if game is None or game["finalized"]:
+        return
+
+    game["finalized"] = True
+
+    if _chat_active_poll.get(game["chat_id"]) == poll_id:
+        _chat_active_poll.pop(game["chat_id"], None)
+
+    q = game["question"]
+    answers = game["answers"]
+    correct_answers = [a for a in answers if a["is_correct"]]
+    correct_answers.sort(key=lambda a: a["elapsed"])
+
+    lines = [
+        f"⏱ {DIVIDER} ⏱",
+        f"   نتایج کوییز #{game['q_num']}",
+        f"⏱ {DIVIDER} ⏱",
+        "",
+        f"❓ {_sanitize(q['question'], 300)}",
+        "",
+        f"✅ جواب درست: {_sanitize(q['options'][q['correct']], 80)}",
+    ]
+
+    explanation = q.get("explanation", "")
+    if explanation:
+        lines.append("")
+        lines.append(f"💡 {_sanitize(explanation, 300)}")
+
+    lines.append("")
+    lines.append(DIVIDER)
+
+    if not answers:
+        lines.append("😴 هیچ‌کس شرکت نکرد!")
+    elif not correct_answers:
+        lines.append(f"😔 هیچ‌کس درست جواب نداد! ({len(answers)} پاسخ‌دهنده)")
+    else:
+        lines.append(f"🏆 برندگان ({len(correct_answers)}):")
+        for i, a in enumerate(correct_answers[:10]):
+            pos = i + 1
+            medal = _medal(pos)
+            name = _sanitize(a["name"], 30)
+            badge = _speed_badge(a["elapsed"])
+            points = _points_for_elapsed(a["elapsed"])
+            lines.append(
+                f"{medal} {name} — {badge} {a['elapsed']:.1f}s — +{points}"
+            )
+        wrong_count = len(answers) - len(correct_answers)
+        if wrong_count > 0:
+            lines.append("")
+            lines.append(f"❌ {wrong_count} نفر اشتباه جواب دادن")
+
+    lines.append("")
+    lines.append(DIVIDER)
+
+    next_kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔄 سوال بعدی", callback_data="gq_next")],
+    ])
+
     try:
-        await repo.record_quiz_answer(
-            telegram_id=user.id,
-            display_name=display_name,
-            chat_id=chat_id,
-            chat_title=game.get("chat_title", ""),
-            points=points,
-            elapsed_ms=int(elapsed * 1000),
-            question_text=q["question"],
-            position=position,
+        await context.bot.send_message(
+            chat_id=game["chat_id"],
+            text=with_signature("\n".join(lines)),
+            reply_markup=next_kb,
+            disable_web_page_preview=True,
         )
     except Exception as e:
-        logger.warning("record answer failed: %s", e)
+        logger.warning("final message failed: %s", e)
 
-    await query.answer(f"✅ درست! 🏅 {position} — +{points} امتیاز", show_alert=False)
-    # live timer will refresh the message on next tick
+    _active_polls.pop(poll_id, None)
+
+
+# ============================================================
+#  Helper for gq_next
+# ============================================================
+
+async def send_quiz_from_callback(
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: int,
+    chat_title: str,
+) -> None:
+    """Start a new poll from the 'next question' button."""
+    for j in context.job_queue.get_jobs_by_name(f"gq_finalize_{chat_id}"):
+        j.schedule_removal()
+
+    await _send_quiz_poll(context, chat_id, chat_title)
 
 
 # ============================================================

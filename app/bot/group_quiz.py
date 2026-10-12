@@ -77,9 +77,12 @@ def _options_keyboard(options: list[str]) -> InlineKeyboardMarkup:
 
 
 def _progress_bar(seconds_left: int) -> str:
-    """Visual progress bar for the timer."""
     total = TIMEOUT_SECONDS
     filled = int((seconds_left / total) * 10)
+    if filled < 0:
+        filled = 0
+    if filled > 10:
+        filled = 10
     bar = "🟩" * filled + "⬜" * (10 - filled)
     return bar
 
@@ -167,6 +170,17 @@ async def cmd_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
 
+    # Safety check: job_queue available?
+    if context.job_queue is None:
+        logger.error("JobQueue not available! Install python-telegram-bot[job-queue]")
+        await update.message.reply_text(
+            with_signature(
+                "⚠️ خطای فنی: تایمر در دسترس نیست.\n"
+                "لطفاً به ادمین خبر بده."
+            ),
+        )
+        return
+
     # Clean any old jobs
     for j in context.job_queue.get_jobs_by_name(f"gq_timer_{chat_id}"):
         j.schedule_removal()
@@ -179,7 +193,12 @@ async def cmd_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         q = await generate_question()
     except Exception as e:
         logger.exception("Question gen failed: %s", e)
-        await loading.edit_text(with_signature("😔 خطا در ساخت سوال. دوباره /quiz بزن."))
+        try:
+            await loading.edit_text(
+                with_signature("😔 خطا در ساخت سوال. دوباره /quiz بزن.")
+            )
+        except Exception:
+            pass
         return
 
     q_num = int(_now().timestamp()) % 10000

@@ -1,4 +1,4 @@
-"""Bot entry point. Wires together all handlers and starts polling."""
+"""Bot entry point."""
 
 import logging
 import os
@@ -30,11 +30,13 @@ from app.database.session import create_all, dispose_engine, init_engine
 from app.services.ai_service import get_ai_service
 from app.utils.message_formatter import with_signature
 
+
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=get_settings().log_level,
 )
 logger = logging.getLogger(__name__)
+
 
 # ---------------------------------------------------------------------------
 #  Health server
@@ -54,11 +56,13 @@ class _HealthHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
+
 def _start_health_server() -> None:
     port = int(os.environ.get("PORT", "8080"))
     server = HTTPServer(("0.0.0.0", port), _HealthHandler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     logger.info("Health server listening on port %s", port)
+
 
 # ---------------------------------------------------------------------------
 #  Helpers
@@ -68,6 +72,7 @@ def is_group(update: Update) -> bool:
     if update.effective_chat is None:
         return False
     return update.effective_chat.type in (ChatType.GROUP, ChatType.SUPERGROUP)
+
 
 def is_for_me(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     if not is_group(update):
@@ -83,8 +88,10 @@ def is_for_me(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
         return True
     return False
 
+
 def clean_mention(text: str, bot_username: str) -> str:
     return text.replace(f"@{bot_username}", "").strip()
+
 
 def main_menu_keyboard() -> InlineKeyboardMarkup:
     kb = [
@@ -127,6 +134,7 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
     ]
     return InlineKeyboardMarkup(kb)
 
+
 async def ensure_user_and_group(update: Update) -> None:
     user = update.effective_user
     chat = update.effective_chat
@@ -139,6 +147,7 @@ async def ensure_user_and_group(update: Update) -> None:
     if chat and chat.type in (ChatType.GROUP, ChatType.SUPERGROUP):
         await repo.get_or_create_group(chat_id=chat.id, title=chat.title)
 
+
 # ---------------------------------------------------------------------------
 #  Base commands
 # ---------------------------------------------------------------------------
@@ -148,41 +157,45 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message is None:
         return
     await update.message.reply_text(
-        with_signature(msg.WELCOME), parse_mode="Markdown",
+        with_signature(msg.WELCOME),
         reply_markup=main_menu_keyboard(),
     )
+
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     if update.message is None:
         return
-    await update.message.reply_text(with_signature(msg.HELP), parse_mode="Markdown")
+    await update.message.reply_text(with_signature(msg.HELP))
+
 
 async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     if update.message is None:
         return
     await update.message.reply_text(
-        with_signature(msg.MENU_TEXT), parse_mode="Markdown",
+        with_signature(msg.MENU_TEXT),
         reply_markup=main_menu_keyboard(),
     )
+
 
 async def cmd_about(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message is None:
         return
-    await update.message.reply_text(with_signature(msg.ABOUT), parse_mode="Markdown")
+    await update.message.reply_text(with_signature(msg.ABOUT))
+
 
 async def cmd_privacy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message is None:
         return
-    await update.message.reply_text(with_signature(msg.PRIVACY), parse_mode="Markdown")
+    await update.message.reply_text(with_signature(msg.PRIVACY))
+
 
 async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message is None:
         return
-    await update.message.reply_text(
-        with_signature(msg.SETTINGS_TEXT), parse_mode="Markdown"
-    )
+    await update.message.reply_text(with_signature(msg.SETTINGS_TEXT))
+
 
 async def cmd_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
@@ -194,11 +207,9 @@ async def cmd_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
     profile = await repo.get_profile(db_user.id)
     if profile is None or not profile.setup_complete:
-        await update.message.reply_text(
-            with_signature(msg.NOT_SETUP_YET), parse_mode="Markdown"
-        )
+        await update.message.reply_text(with_signature(msg.NOT_SETUP_YET))
         return
-    lines = ["👤 **پروفایل من**\n"]
+    lines = ["👤 پروفایل من\n"]
     if profile.age:
         lines.append(f"• سن: {profile.age} سال")
     if profile.gender:
@@ -223,19 +234,20 @@ async def cmd_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         }.get(profile.activity_level, profile.activity_level)
         lines.append(f"• فعالیت: {act_fa}")
     lines.append("\n✏️ برای ویرایش، /setup رو بزن.")
-    await update.message.reply_text(
-        with_signature("\n".join(lines)), parse_mode="Markdown"
-    )
+    await update.message.reply_text(with_signature("\n".join(lines)))
+
 
 async def cmd_setup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     await wizard.start_setup(update, context)
+
 
 async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message is None:
         return
     context.user_data["awaiting_weight"] = False
     await wizard.cancel_setup(update, context)
+
 
 # ---------------------------------------------------------------------------
 #  Calculation commands
@@ -245,17 +257,21 @@ async def cmd_bmi(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     await pcmd.cmd_bmi(update, context)
 
+
 async def cmd_calories(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     await pcmd.cmd_calories(update, context)
+
 
 async def cmd_weight(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     await pcmd.cmd_weight(update, context)
 
+
 async def cmd_progress(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     await pcmd.cmd_progress(update, context)
+
 
 # ---------------------------------------------------------------------------
 #  Extra commands
@@ -265,37 +281,46 @@ async def cmd_tip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     await ecmd.cmd_tip(update, context)
 
+
 async def cmd_fact(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     await ecmd.cmd_fact(update, context)
+
 
 async def cmd_myth(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     await ecmd.cmd_myth(update, context)
 
+
 async def cmd_water(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     await ecmd.cmd_water(update, context)
+
 
 async def cmd_macros(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     await ecmd.cmd_macros(update, context)
 
+
 async def cmd_protein(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     await ecmd.cmd_protein(update, context)
+
 
 async def cmd_ideal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     await ecmd.cmd_ideal(update, context)
 
+
 async def cmd_bodyfat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     await ecmd.cmd_bodyfat(update, context)
 
+
 async def cmd_bmr(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     await ecmd.cmd_bmr(update, context)
+
 
 # ---------------------------------------------------------------------------
 #  Meal commands
@@ -305,17 +330,21 @@ async def cmd_plan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     await mcmd.cmd_plan(update, context)
 
+
 async def cmd_today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     await mcmd.cmd_today(update, context)
+
 
 async def cmd_shopping(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     await mcmd.cmd_shopping(update, context)
 
+
 async def cmd_food(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     await mcmd.cmd_food(update, context)
+
 
 # ---------------------------------------------------------------------------
 #  Text -> AI
@@ -372,6 +401,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         reply = "متأسفانه پاسخی دریافت نشد."
     await update.message.reply_text(with_signature(reply))
 
+
 # ---------------------------------------------------------------------------
 #  Callbacks
 # ---------------------------------------------------------------------------
@@ -383,56 +413,56 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await query.answer()
     data = query.data or ""
 
-    # دکمه سوال بعدی
+    # --- Next question button ---
     if data == "gq_next":
-        # پاک کردن بازی قبلی
         chat_id = update.effective_chat.id if update.effective_chat else None
-        if chat_id and chat_id in gquiz._active_games:
+        if chat_id:
             gquiz._active_games.pop(chat_id, None)
 
-        # شروع بازی جدید
-        await gquiz.cmd_quiz(update, context)
+        # Send a new quiz message
+        if update.effective_chat is None:
+            return
+        # Build a fake update message for cmd_quiz — instead just re-use message
+        # We'll start a fresh quiz via a helper
+        await _start_new_quiz(update, context)
         return
 
     if data == "menu_quiz":
         await query.edit_message_text(
             with_signature(
-                "🎮 **کوییز زنده**\n\n"
+                "🎮 کوییز زنده\n\n"
                 "برای شروع، دستور /quiz رو بزن.\n\n"
                 "💡 همه می‌تونن شرکت کنن — سریع‌تر = امتیاز بیشتر!"
             ),
-            parse_mode="Markdown",
         )
         return
 
     if data == "menu_lb":
         await query.edit_message_text(
             with_signature("🏆 برای جدول قهرمانان: /leaderboard"),
-            parse_mode="Markdown",
         )
         return
 
     if data == "menu_help":
-        await query.edit_message_text(with_signature(msg.HELP), parse_mode="Markdown")
+        await query.edit_message_text(with_signature(msg.HELP))
         return
 
     if data == "menu_tip":
         await query.edit_message_text(
-            with_signature(f"💡 **نکته**\n\n{get_tip()}"), parse_mode="Markdown"
+            with_signature(f"💡 نکته\n\n{get_tip()}"),
         )
         return
 
     if data == "menu_fact":
         await query.edit_message_text(
-            with_signature(f"🍎 **فکت**\n\n{get_fact()}"), parse_mode="Markdown"
+            with_signature(f"🍎 فکت\n\n{get_fact()}"),
         )
         return
 
     if data == "menu_myth":
         myth, truth = get_myth()
         await query.edit_message_text(
-            with_signature(f"❌ **باور اشتباه**\n\n{myth}\n\n✅ **واقعیت**\n{truth}"),
-            parse_mode="Markdown",
+            with_signature(f"❌ باور اشتباه\n\n{myth}\n\n✅ واقعیت\n{truth}"),
         )
         return
 
@@ -440,7 +470,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         "menu_plan": "🍽 برای ساخت برنامه: /plan",
         "menu_today": "📅 برای برنامه امروز: /today",
         "menu_shopping": "🛒 برای فهرست خرید: /shopping",
-        "menu_food": "🥗 مثال: `/food تخم مرغ`",
+        "menu_food": "🥗 مثال: /food تخم مرغ",
         "menu_ideal": "🎯 برای تحلیل کامل: /ideal",
         "menu_weight": "⚖️ برای ثبت وزن: /weight",
         "menu_calories": "🔥 برای کالری: /calories",
@@ -448,10 +478,59 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         "menu_macros": "🧮 برای درشت‌مغذی: /macros",
         "menu_progress": "📊 برای گزارش: /progress",
         "menu_profile": "👤 برای پروفایل: /profile",
-        "menu_ai": "💬 هر پیام آزاد بفرست (بدون /) → AI جواب می‌ده.",
+        "menu_ai": "💬 هر پیام آزاد بفرست → AI جواب می‌ده.",
     }
     text = hints.get(data, msg.UNKNOWN_COMMAND)
-    await query.edit_message_text(with_signature(text), parse_mode="Markdown")
+    await query.edit_message_text(with_signature(text))
+
+
+async def _start_new_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Start a new quiz sending a new message (for the 'next' button)."""
+    chat = update.effective_chat
+    if chat is None:
+        return
+
+    chat_id = chat.id
+
+    loading = await context.bot.send_message(
+        chat_id=chat_id,
+        text=with_signature("🧠 در حال ساخت سوال...\n\nچند لحظه صبر کن"),
+    )
+
+    try:
+        q = await gquiz.generate_question()
+    except Exception as e:
+        logger.warning("Question gen failed: %s", e)
+        await loading.edit_text(with_signature("😔 خطا در ساخت سوال. دوباره /quiz بزن."))
+        return
+
+    q_num = int(gquiz._now().timestamp()) % 10000
+    text = gquiz._live_text(q_num, q.get("category", "تغذیه"), q["question"], gquiz.TIMEOUT_SECONDS, [])
+    keyboard = gquiz._options_keyboard(q["options"])
+
+    try:
+        await loading.edit_text(
+            text=with_signature(text),
+            reply_markup=keyboard,
+        )
+    except Exception as e:
+        logger.warning("Failed to edit: %s", e)
+        return
+
+    gquiz._active_games[chat_id] = {
+        "question": q,
+        "message_id": loading.message_id,
+        "started_at": gquiz._now(),
+        "answers": [],
+        "answered_user_ids": set(),
+        "q_num": q_num,
+        "ended": False,
+        "chat_title": chat.title or "",
+    }
+
+    import asyncio
+    asyncio.create_task(gquiz._run_timer(context, chat_id))
+
 
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.exception("Exception", exc_info=context.error)
@@ -462,6 +541,7 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
             )
         except Exception:
             pass
+
 
 # ---------------------------------------------------------------------------
 #  Lifecycle
@@ -479,9 +559,11 @@ async def post_init(application: Application) -> None:
     except Exception as e:
         logger.warning("Setup commands error: %s", e)
 
+
 async def post_shutdown(application: Application) -> None:
     await dispose_engine()
     logger.info("Bot stopped.")
+
 
 def build_application() -> Application:
     settings = get_settings()
@@ -493,7 +575,6 @@ def build_application() -> Application:
         .build()
     )
 
-    # Base
     application.add_handler(CommandHandler("start", cmd_start))
     application.add_handler(CommandHandler("help", cmd_help))
     application.add_handler(CommandHandler("menu", cmd_menu))
@@ -504,7 +585,6 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("setup", cmd_setup))
     application.add_handler(CommandHandler("cancel", cmd_cancel))
 
-    # Calculations
     application.add_handler(CommandHandler("bmi", cmd_bmi))
     application.add_handler(CommandHandler("calories", cmd_calories))
     application.add_handler(CommandHandler("weight", cmd_weight))
@@ -515,13 +595,11 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("bodyfat", cmd_bodyfat))
     application.add_handler(CommandHandler("bmr", cmd_bmr))
 
-    # Content
     application.add_handler(CommandHandler("tip", cmd_tip))
     application.add_handler(CommandHandler("fact", cmd_fact))
     application.add_handler(CommandHandler("myth", cmd_myth))
     application.add_handler(CommandHandler("water", cmd_water))
 
-    # Meal
     application.add_handler(CommandHandler("plan", cmd_plan))
     application.add_handler(CommandHandler("today", cmd_today))
     application.add_handler(CommandHandler("shopping", cmd_shopping))
@@ -531,23 +609,28 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("quiz", gquiz.cmd_quiz))
     application.add_handler(CommandHandler("leaderboard", gquiz.cmd_leaderboard))
     application.add_handler(CommandHandler("mystats", gquiz.cmd_mystats))
+
+    # Quiz answer callbacks (gq_0, gq_1, ...) - must come BEFORE general callback
     application.add_handler(CallbackQueryHandler(
         gquiz.handle_group_quiz_answer,
-        pattern=r"^gq_(?!next)",  # الگو برای دکمه‌های پاسخ، به جز "next"
+        pattern=r"^gq_\d+$",
     ))
 
-    # Text + callbacks
+    # General callbacks (menu_*, gq_next)
     application.add_handler(CallbackQueryHandler(handle_callback))
+
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     application.add_error_handler(on_error)
 
     return application
+
 
 def main() -> None:
     _start_health_server()
     application = build_application()
     logger.info("Starting bot...")
     application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+
 
 if __name__ == "__main__":
     main()

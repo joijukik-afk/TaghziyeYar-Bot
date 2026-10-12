@@ -1,5 +1,6 @@
-"""Live group quiz with a 1-second live timer."""
+"""Live group quiz with REAL working live timer."""
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 
@@ -22,10 +23,7 @@ DIVIDER = "━━━━━━━━━━━━━━━━"
 def _sanitize(text: str, max_len: int = 400) -> str:
     if not text:
         return ""
-    text = str(text)[:max_len]
-    for ch in ["_", "*", "`", "[", "]"]:
-        text = text.replace(ch, " ")
-    return text.strip()
+    return str(text)[:max_len].strip()
 
 
 def _points_for_elapsed(elapsed: float) -> int:
@@ -79,12 +77,8 @@ def _options_keyboard(options: list[str]) -> InlineKeyboardMarkup:
 def _progress_bar(seconds_left: int) -> str:
     total = TIMEOUT_SECONDS
     filled = int((seconds_left / total) * 10)
-    if filled < 0:
-        filled = 0
-    if filled > 10:
-        filled = 10
-    bar = "🟩" * filled + "⬜" * (10 - filled)
-    return bar
+    filled = max(0, min(10, filled))
+    return "🟩" * filled + "⬜" * (10 - filled)
 
 
 def _live_text(q_num, category, question, seconds_left, answers):
@@ -100,7 +94,7 @@ def _live_text(q_num, category, question, seconds_left, answers):
         f"❓ {_sanitize(question, 300)}",
         "",
         DIVIDER,
-        f"⏱ **{seconds_left}** ثانیه مونده",
+        f"⏱ {seconds_left} ثانیه مونده",
         f"{bar}",
         "",
     ]
@@ -154,6 +148,87 @@ def _now():
 
 
 # ============================================================
+#  LIVE TIMER — asyncio task (bulletproof)
+# ============================================================
+
+async def _live_timer_loop(bot, chat_id: int) -> None:
+    """Run continuously, update the quiz message every second."""
+    try:
+        while True:
+            await asyncio.sleep(1.0)
+
+            game = _active_games.get(chat_id)
+            if game is None or game.get("ended"):
+                return
+
+            elapsed = (_now() - game["started_at"]).total_seconds()
+            seconds_left = max(0, int(TIMEOUT_SECONDS - elapsed))
+            q = game["question"]
+
+            # ---- time's up ----
+            if seconds_left <= 0:
+                game["ended"] = True
+                correct_answer = q["options"][q["correct"]]
+                final = _final_text(
+                    q_num=game["q_num"],
+                    question=q["question"],
+                    correct_answer=correct_answer,
+                    explanation=q.get("explanation", ""),
+                    answers=game["answers"],
+                )
+                next_kb = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔄 سوال بعدی", callback_data="gq_next")],
+                ])
+                try:
+                    await bot.edit_message_text(
+                        chat_id=chat_id,
+                        message_id=game["message_id"],
+                        text=final,
+                        reply_markup=next_kb,
+                    )
+                except Exception as e:
+                    logger.warning("final edit failed: %s", e)
+                return
+
+            # ---- skip if seconds unchanged ----
+            if seconds_left == game.get("last_seconds"):
+                continue
+
+            game["last_seconds"] = seconds_left
+
+            # ---- update ----
+            text = _live_text(
+                q_num=game["q_num"],
+                category=q.get("category", "تغذیه"),
+                question=q["question"],
+                seconds_left=seconds_left,
+                answers=game["answers"],
+            )
+
+            try:
+                await bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=game["message_id"],
+                    text=text,
+                    reply_markup=_options_keyboard(q["options"]),
+                )
+            except Exception as e:
+                err = str(e).lower()
+                if "not modified" in err:
+                    pass
+                elif "retry" in err or "flood" in err or "too many" in err:
+                    # wait longer next time
+                    await asyncio.sleep(1.0)
+                else:
+                    logger.debug("timer edit failed: %s", e)
+
+    except asyncio.CancelledError:
+        return
+    except Exception as e:
+        logger.exception("Timer loop crashed: %s", e)
+
+
+# ============================================================
 #  /quiz
 # ============================================================
 
@@ -170,20 +245,10 @@ async def cmd_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
 
-    # Safety check: job_queue available?
-    if context.job_queue is None:
-        logger.error("JobQueue not available! Install python-telegram-bot[job-queue]")
-        await update.message.reply_text(
-            with_signature(
-                "⚠️ خطای فنی: تایمر در دسترس نیست.\n"
-                "لطفاً به ادمین خبر بده."
-            ),
-        )
-        return
-
-    # Clean any old jobs
-    for j in context.job_queue.get_jobs_by_name(f"gq_timer_{chat_id}"):
-        j.schedule_removal()
+    # cancel previous task if any
+    old = _active_games.get(chat_id, {}).get("task")
+    if old is not None and not old.done():
+        old.cancel()
 
     loading = await update.message.reply_text(
         with_signature("🧠 در حال ساخت سوال...\n\nچند لحظه صبر کن"),
@@ -207,15 +272,12 @@ async def cmd_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     keyboard = _options_keyboard(q["options"])
 
     try:
-        await loading.edit_text(
-            text=with_signature(text),
-            reply_markup=keyboard,
-        )
+        await loading.edit_text(text=text, reply_markup=keyboard)
     except Exception as e:
         logger.exception("Failed to edit loading msg: %s", e)
         return
 
-    _active_games[chat_id] = {
+    game = {
         "question": q,
         "message_id": loading.message_id,
         "started_at": _now(),
@@ -225,96 +287,13 @@ async def cmd_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "ended": False,
         "chat_title": chat_title,
         "last_seconds": TIMEOUT_SECONDS,
+        "task": None,
     }
+    _active_games[chat_id] = game
 
-    # Start timer via job_queue — fires every 1 second
-    context.job_queue.run_repeating(
-        _timer_tick,
-        interval=1.0,
-        first=1.0,
-        chat_id=chat_id,
-        name=f"gq_timer_{chat_id}",
-    )
-
-
-# ============================================================
-#  Timer — runs every second
-# ============================================================
-
-async def _timer_tick(context: ContextTypes.DEFAULT_TYPE) -> None:
-    job = context.job
-    if job is None:
-        return
-    chat_id = job.chat_id
-    game = _active_games.get(chat_id)
-
-    # no game? stop the timer
-    if game is None or game["ended"]:
-        for j in context.job_queue.get_jobs_by_name(f"gq_timer_{chat_id}"):
-            j.schedule_removal()
-        return
-
-    elapsed = (_now() - game["started_at"]).total_seconds()
-    seconds_left = max(0, int(TIMEOUT_SECONDS - elapsed))
-    q = game["question"]
-
-    # ---- time's up ----
-    if seconds_left <= 0:
-        game["ended"] = True
-        correct_answer = q["options"][q["correct"]]
-        final = _final_text(
-            q_num=game["q_num"],
-            question=q["question"],
-            correct_answer=correct_answer,
-            explanation=q.get("explanation", ""),
-            answers=game["answers"],
-        )
-        next_kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔄 سوال بعدی", callback_data="gq_next")],
-        ])
-        try:
-            await context.bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=game["message_id"],
-                text=with_signature(final),
-                reply_markup=next_kb,
-            )
-        except Exception as e:
-            logger.warning("final edit failed: %s", e)
-
-        for j in context.job_queue.get_jobs_by_name(f"gq_timer_{chat_id}"):
-            j.schedule_removal()
-        return
-
-    # ---- only update if seconds changed (avoid rate limit) ----
-    if seconds_left == game.get("last_seconds"):
-        return
-
-    game["last_seconds"] = seconds_left
-
-    text = _live_text(
-        q_num=game["q_num"],
-        category=q.get("category", "تغذیه"),
-        question=q["question"],
-        seconds_left=seconds_left,
-        answers=game["answers"],
-    )
-
-    try:
-        await context.bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=game["message_id"],
-            text=with_signature(text),
-            reply_markup=_options_keyboard(q["options"]),
-        )
-    except Exception as e:
-        err = str(e).lower()
-        if "not modified" in err:
-            pass
-        elif "retry" in err or "flood" in err or "too many" in err:
-            logger.info("Rate limited on tick %d", seconds_left)
-        else:
-            logger.warning("timer edit failed: %s", e)
+    # Start live timer task (store in game so it isn't garbage collected)
+    task = asyncio.create_task(_live_timer_loop(context.bot, chat_id))
+    game["task"] = task
 
 
 # ============================================================
@@ -404,7 +383,7 @@ async def handle_group_quiz_answer(update: Update, context: ContextTypes.DEFAULT
         logger.warning("record answer failed: %s", e)
 
     await query.answer(f"✅ درست! 🏅 {position} — +{points} امتیاز", show_alert=False)
-    # timer will refresh on next tick
+    # live timer will refresh the message on next tick
 
 
 # ============================================================

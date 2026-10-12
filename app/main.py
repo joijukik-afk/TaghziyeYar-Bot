@@ -30,13 +30,11 @@ from app.database.session import create_all, dispose_engine, init_engine
 from app.services.ai_service import get_ai_service
 from app.utils.message_formatter import with_signature
 
-
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=get_settings().log_level,
 )
 logger = logging.getLogger(__name__)
-
 
 # ---------------------------------------------------------------------------
 #  Health server
@@ -56,13 +54,11 @@ class _HealthHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
-
 def _start_health_server() -> None:
     port = int(os.environ.get("PORT", "8080"))
     server = HTTPServer(("0.0.0.0", port), _HealthHandler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     logger.info("Health server listening on port %s", port)
-
 
 # ---------------------------------------------------------------------------
 #  Helpers
@@ -72,7 +68,6 @@ def is_group(update: Update) -> bool:
     if update.effective_chat is None:
         return False
     return update.effective_chat.type in (ChatType.GROUP, ChatType.SUPERGROUP)
-
 
 def is_for_me(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     if not is_group(update):
@@ -88,10 +83,8 @@ def is_for_me(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
         return True
     return False
 
-
 def clean_mention(text: str, bot_username: str) -> str:
     return text.replace(f"@{bot_username}", "").strip()
-
 
 def main_menu_keyboard() -> InlineKeyboardMarkup:
     kb = [
@@ -134,7 +127,6 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
     ]
     return InlineKeyboardMarkup(kb)
 
-
 async def ensure_user_and_group(update: Update) -> None:
     user = update.effective_user
     chat = update.effective_chat
@@ -146,7 +138,6 @@ async def ensure_user_and_group(update: Update) -> None:
     )
     if chat and chat.type in (ChatType.GROUP, ChatType.SUPERGROUP):
         await repo.get_or_create_group(chat_id=chat.id, title=chat.title)
-
 
 # ---------------------------------------------------------------------------
 #  Base commands
@@ -161,13 +152,11 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         reply_markup=main_menu_keyboard(),
     )
 
-
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     if update.message is None:
         return
     await update.message.reply_text(with_signature(msg.HELP), parse_mode="Markdown")
-
 
 async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
@@ -178,18 +167,15 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         reply_markup=main_menu_keyboard(),
     )
 
-
 async def cmd_about(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message is None:
         return
     await update.message.reply_text(with_signature(msg.ABOUT), parse_mode="Markdown")
 
-
 async def cmd_privacy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message is None:
         return
     await update.message.reply_text(with_signature(msg.PRIVACY), parse_mode="Markdown")
-
 
 async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message is None:
@@ -197,7 +183,6 @@ async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text(
         with_signature(msg.SETTINGS_TEXT), parse_mode="Markdown"
     )
-
 
 async def cmd_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
@@ -242,18 +227,15 @@ async def cmd_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         with_signature("\n".join(lines)), parse_mode="Markdown"
     )
 
-
 async def cmd_setup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     await wizard.start_setup(update, context)
-
 
 async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message is None:
         return
     context.user_data["awaiting_weight"] = False
     await wizard.cancel_setup(update, context)
-
 
 # ---------------------------------------------------------------------------
 #  Calculation commands
@@ -263,21 +245,17 @@ async def cmd_bmi(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     await pcmd.cmd_bmi(update, context)
 
-
 async def cmd_calories(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     await pcmd.cmd_calories(update, context)
-
 
 async def cmd_weight(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     await pcmd.cmd_weight(update, context)
 
-
 async def cmd_progress(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     await pcmd.cmd_progress(update, context)
-
 
 # ---------------------------------------------------------------------------
 #  Extra commands
@@ -287,46 +265,37 @@ async def cmd_tip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     await ecmd.cmd_tip(update, context)
 
-
 async def cmd_fact(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     await ecmd.cmd_fact(update, context)
-
 
 async def cmd_myth(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     await ecmd.cmd_myth(update, context)
 
-
 async def cmd_water(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     await ecmd.cmd_water(update, context)
-
 
 async def cmd_macros(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     await ecmd.cmd_macros(update, context)
 
-
 async def cmd_protein(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     await ecmd.cmd_protein(update, context)
-
 
 async def cmd_ideal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     await ecmd.cmd_ideal(update, context)
 
-
 async def cmd_bodyfat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     await ecmd.cmd_bodyfat(update, context)
 
-
 async def cmd_bmr(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     await ecmd.cmd_bmr(update, context)
-
 
 # ---------------------------------------------------------------------------
 #  Meal commands
@@ -336,21 +305,17 @@ async def cmd_plan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     await mcmd.cmd_plan(update, context)
 
-
 async def cmd_today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     await mcmd.cmd_today(update, context)
-
 
 async def cmd_shopping(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     await mcmd.cmd_shopping(update, context)
 
-
 async def cmd_food(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     await mcmd.cmd_food(update, context)
-
 
 # ---------------------------------------------------------------------------
 #  Text -> AI
@@ -407,7 +372,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         reply = "متأسفانه پاسخی دریافت نشد."
     await update.message.reply_text(with_signature(reply))
 
-
 # ---------------------------------------------------------------------------
 #  Callbacks
 # ---------------------------------------------------------------------------
@@ -418,6 +382,17 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
     await query.answer()
     data = query.data or ""
+
+    # دکمه سوال بعدی
+    if data == "gq_next":
+        # پاک کردن بازی قبلی
+        chat_id = update.effective_chat.id if update.effective_chat else None
+        if chat_id and chat_id in gquiz._active_games:
+            gquiz._active_games.pop(chat_id, None)
+
+        # شروع بازی جدید
+        await gquiz.cmd_quiz(update, context)
+        return
 
     if data == "menu_quiz":
         await query.edit_message_text(
@@ -478,7 +453,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     text = hints.get(data, msg.UNKNOWN_COMMAND)
     await query.edit_message_text(with_signature(text), parse_mode="Markdown")
 
-
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.exception("Exception", exc_info=context.error)
     if isinstance(update, Update) and update.effective_message is not None:
@@ -488,7 +462,6 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
             )
         except Exception:
             pass
-
 
 # ---------------------------------------------------------------------------
 #  Lifecycle
@@ -506,11 +479,9 @@ async def post_init(application: Application) -> None:
     except Exception as e:
         logger.warning("Setup commands error: %s", e)
 
-
 async def post_shutdown(application: Application) -> None:
     await dispose_engine()
     logger.info("Bot stopped.")
-
 
 def build_application() -> Application:
     settings = get_settings()
@@ -562,7 +533,7 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("mystats", gquiz.cmd_mystats))
     application.add_handler(CallbackQueryHandler(
         gquiz.handle_group_quiz_answer,
-        pattern=r"^gq_",
+        pattern=r"^gq_(?!next)",  # الگو برای دکمه‌های پاسخ، به جز "next"
     ))
 
     # Text + callbacks
@@ -572,13 +543,11 @@ def build_application() -> Application:
 
     return application
 
-
 def main() -> None:
     _start_health_server()
     application = build_application()
     logger.info("Starting bot...")
     application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
-
 
 if __name__ == "__main__":
     main()

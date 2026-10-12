@@ -1,6 +1,6 @@
 """CRUD helpers — thin wrappers around the SQLAlchemy session."""
 
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 
 from sqlalchemy import desc, func, select
 
@@ -142,7 +142,6 @@ async def audit(telegram_id: int | None, event: str, details: str | None = None)
 def _current_week_start() -> str:
     """Return the Saturday of the current week (YYYY-MM-DD)."""
     today = date.today()
-    # Saturday = weekday 5 (Monday=0)
     days_since_saturday = (today.weekday() - 5) % 7
     saturday = today - timedelta(days=days_since_saturday)
     return saturday.isoformat()
@@ -158,11 +157,10 @@ async def record_quiz_answer(
     question_text: str,
     position: int,
 ) -> None:
-    """Record a correct quiz answer (updates leaderboard + logs)."""
+    """Record a correct quiz answer."""
     week = _current_week_start()
 
     async with session_scope() as session:
-        # get or create user
         result = await session.execute(
             select(User).where(User.telegram_id == telegram_id)
         )
@@ -174,7 +172,6 @@ async def record_quiz_answer(
             session.add(Profile(user_id=user.id))
             await session.flush()
 
-        # get or create leaderboard entry for this week
         result = await session.execute(
             select(QuizLeaderboard).where(
                 QuizLeaderboard.user_id == user.id,
@@ -210,7 +207,6 @@ async def record_quiz_answer(
                 entry.best_streak = entry.streak
             entry.display_name = display_name
 
-        # log the answer
         session.add(
             QuizLog(
                 chat_id=chat_id,
@@ -222,7 +218,6 @@ async def record_quiz_answer(
                 position=position,
             )
         )
-
         await session.flush()
 
 
@@ -254,7 +249,6 @@ async def get_leaderboard(
     limit: int = 10,
     week: bool = True,
 ) -> list[QuizLeaderboard]:
-    """Return top players for this chat."""
     async with session_scope() as session:
         q = select(QuizLeaderboard).where(QuizLeaderboard.chat_id == chat_id)
         if week:
@@ -268,7 +262,7 @@ async def get_user_rank(
     telegram_id: int,
     chat_id: int,
 ) -> tuple[int, int, int]:
-    """Return (rank, points, streak). rank 1-based; 0 means not found."""
+    """Return (rank, points, streak). rank 1-based; 0 = not found."""
     week = _current_week_start()
     async with session_scope() as session:
         result = await session.execute(
@@ -301,7 +295,6 @@ async def get_user_rank(
 
 
 async def get_chat_quiz_stats(chat_id: int) -> dict:
-    """Return overall stats for a chat."""
     week = _current_week_start()
     async with session_scope() as session:
         result = await session.execute(

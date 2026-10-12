@@ -419,7 +419,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await query.answer()
     data = query.data or ""
 
-    # Quiz actions
     if data == "menu_quiz":
         await query.edit_message_text(
             with_signature(
@@ -495,27 +494,27 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
 #  Lifecycle
 # ---------------------------------------------------------------------------
 
-async def post_init(app: Application) -> None:
+async def post_init(application: Application) -> None:
     init_engine()
     import app.database.quiz_models  # noqa: F401
     await create_all()
-    me = await app.bot.get_me()
+    me = await application.bot.get_me()
     logger.info("Bot started as @%s (id=%s)", me.username, me.id)
     try:
         from app.bot.commands_setup import setup_commands
-        await setup_commands(app.bot)
+        await setup_commands(application.bot)
     except Exception as e:
         logger.warning("Setup commands error: %s", e)
 
 
-async def post_shutdown(app: Application) -> None:
+async def post_shutdown(application: Application) -> None:
     await dispose_engine()
     logger.info("Bot stopped.")
 
 
 def build_application() -> Application:
     settings = get_settings()
-    app = (
+    application = (
         ApplicationBuilder()
         .token(settings.telegram_bot_token)
         .post_init(post_init)
@@ -524,61 +523,61 @@ def build_application() -> Application:
     )
 
     # Base
-    app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("help", cmd_help))
-    app.add_handler(CommandHandler("menu", cmd_menu))
-    app.add_handler(CommandHandler("about", cmd_about))
-    app.add_handler(CommandHandler("privacy", cmd_privacy))
-    app.add_handler(CommandHandler("settings", cmd_settings))
-    app.add_handler(CommandHandler("profile", cmd_profile))
-    app.add_handler(CommandHandler("setup", cmd_setup))
-    app.add_handler(CommandHandler("cancel", cmd_cancel))
+    application.add_handler(CommandHandler("start", cmd_start))
+    application.add_handler(CommandHandler("help", cmd_help))
+    application.add_handler(CommandHandler("menu", cmd_menu))
+    application.add_handler(CommandHandler("about", cmd_about))
+    application.add_handler(CommandHandler("privacy", cmd_privacy))
+    application.add_handler(CommandHandler("settings", cmd_settings))
+    application.add_handler(CommandHandler("profile", cmd_profile))
+    application.add_handler(CommandHandler("setup", cmd_setup))
+    application.add_handler(CommandHandler("cancel", cmd_cancel))
 
     # Calculations
-    app.add_handler(CommandHandler("bmi", cmd_bmi))
-    app.add_handler(CommandHandler("calories", cmd_calories))
-    app.add_handler(CommandHandler("weight", cmd_weight))
-    app.add_handler(CommandHandler("progress", cmd_progress))
-    app.add_handler(CommandHandler("macros", cmd_macros))
-    app.add_handler(CommandHandler("protein", cmd_protein))
-    app.add_handler(CommandHandler("ideal", cmd_ideal))
-    app.add_handler(CommandHandler("bodyfat", cmd_bodyfat))
-    app.add_handler(CommandHandler("bmr", cmd_bmr))
+    application.add_handler(CommandHandler("bmi", cmd_bmi))
+    application.add_handler(CommandHandler("calories", cmd_calories))
+    application.add_handler(CommandHandler("weight", cmd_weight))
+    application.add_handler(CommandHandler("progress", cmd_progress))
+    application.add_handler(CommandHandler("macros", cmd_macros))
+    application.add_handler(CommandHandler("protein", cmd_protein))
+    application.add_handler(CommandHandler("ideal", cmd_ideal))
+    application.add_handler(CommandHandler("bodyfat", cmd_bodyfat))
+    application.add_handler(CommandHandler("bmr", cmd_bmr))
 
     # Content
-    app.add_handler(CommandHandler("tip", cmd_tip))
-    app.add_handler(CommandHandler("fact", cmd_fact))
-    app.add_handler(CommandHandler("myth", cmd_myth))
-    app.add_handler(CommandHandler("water", cmd_water))
+    application.add_handler(CommandHandler("tip", cmd_tip))
+    application.add_handler(CommandHandler("fact", cmd_fact))
+    application.add_handler(CommandHandler("myth", cmd_myth))
+    application.add_handler(CommandHandler("water", cmd_water))
 
     # Meal
-    app.add_handler(CommandHandler("plan", cmd_plan))
-    app.add_handler(CommandHandler("today", cmd_today))
-    app.add_handler(CommandHandler("shopping", cmd_shopping))
-    app.add_handler(CommandHandler("food", cmd_food))
+    application.add_handler(CommandHandler("plan", cmd_plan))
+    application.add_handler(CommandHandler("today", cmd_today))
+    application.add_handler(CommandHandler("shopping", cmd_shopping))
+    application.add_handler(CommandHandler("food", cmd_food))
 
     # Live group quiz
-    app.add_handler(CommandHandler("quiz", gquiz.cmd_quiz))
-    app.add_handler(CommandHandler("leaderboard", gquiz.cmd_leaderboard))
-    app.add_handler(CommandHandler("mystats", gquiz.cmd_mystats))
-    app.add_handler(CallbackQueryHandler(
+    application.add_handler(CommandHandler("quiz", gquiz.cmd_quiz))
+    application.add_handler(CommandHandler("leaderboard", gquiz.cmd_leaderboard))
+    application.add_handler(CommandHandler("mystats", gquiz.cmd_mystats))
+    application.add_handler(CallbackQueryHandler(
         gquiz.handle_group_quiz_answer,
         pattern=r"^gq_",
     ))
 
     # Text + callbacks
-    app.add_handler(CallbackQueryHandler(handle_callback))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    app.add_error_handler(on_error)
+    application.add_handler(CallbackQueryHandler(handle_callback))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    application.add_error_handler(on_error)
 
-    return app
+    return application
 
 
 def main() -> None:
     _start_health_server()
-    app = build_application()
+    application = build_application()
     logger.info("Starting bot...")
-    app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+    application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 
 if __name__ == "__main__":

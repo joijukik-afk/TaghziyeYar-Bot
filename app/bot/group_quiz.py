@@ -1,4 +1,4 @@
-"""Live AI-powered group quiz — everyone can participate."""
+"""Live AI-powered group quiz — with timer, next question, and multi-player."""
 
 import logging
 from datetime import datetime, timezone
@@ -15,12 +15,10 @@ from app.utils.message_formatter import with_signature
 logger = logging.getLogger(__name__)
 
 _active_games: dict[int, dict] = {}
-
 TIMEOUT_SECONDS = 30
 MAX_PLAYERS = 20
 
 DIVIDER = "━━━━━━━━━━━━━━━━"
-
 
 def _esc(text: str) -> str:
     if not text:
@@ -29,7 +27,6 @@ def _esc(text: str) -> str:
         return escape_markdown(text, version=1)
     except Exception:
         return text
-
 
 def _points_for_elapsed(elapsed: float) -> int:
     if elapsed <= 3:
@@ -44,7 +41,6 @@ def _points_for_elapsed(elapsed: float) -> int:
         return 2
     return 1
 
-
 def _speed_badge(elapsed: float) -> str:
     if elapsed <= 3:
         return "🚀"
@@ -58,7 +54,6 @@ def _speed_badge(elapsed: float) -> str:
         return "👌"
     return "🐢"
 
-
 def _medal(pos: int) -> str:
     if pos == 1:
         return "🥇"
@@ -68,7 +63,6 @@ def _medal(pos: int) -> str:
         return "🥉"
     return f"`{pos}.`"
 
-
 def _options_keyboard(options: list[str]) -> InlineKeyboardMarkup:
     letters = ["🅰️", "🅱️", "🅲", "🅳"]
     rows = []
@@ -77,7 +71,6 @@ def _options_keyboard(options: list[str]) -> InlineKeyboardMarkup:
         opt_text = opt if len(opt) <= 45 else opt[:42] + "..."
         rows.append([InlineKeyboardButton(f"{letter} {opt_text}", callback_data=f"gq_{i}")])
     return InlineKeyboardMarkup(rows)
-
 
 def _format_live_message(
     q_num: int,
@@ -120,7 +113,6 @@ def _format_live_message(
     lines.append("💡 همه می‌تونن شرکت کنن — تا ۳۰ ثانیه")
 
     return "\n".join(lines)
-
 
 def _format_final_message(
     q_num: int,
@@ -166,14 +158,8 @@ def _format_final_message(
 
     return "\n".join(lines)
 
-
 def _now() -> datetime:
     return datetime.now(timezone.utc)
-
-
-# ============================================================
-#  /quiz
-# ============================================================
 
 async def cmd_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message is None or update.effective_chat is None:
@@ -226,32 +212,67 @@ async def cmd_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "chat_title": update.effective_chat.title or "",
     }
 
-    context.job_queue.run_once(
-        _timeout_callback,
-        when=TIMEOUT_SECONDS,
+    # شروع تایمر
+    context.job_queue.run_repeating(
+        _update_timer,
+        interval=1.0,
+        first=1.0,
         chat_id=chat_id,
-        name=f"gq_timeout_{chat_id}",
+        name=f"gq_timer_{chat_id}",
     )
 
-
-async def _timeout_callback(context: ContextTypes.DEFAULT_TYPE) -> None:
+async def _update_timer(context: ContextTypes.DEFAULT_TYPE) -> None:
     job = context.job
     if job is None:
         return
     chat_id = job.chat_id
     game = _active_games.get(chat_id)
     if game is None or game["ended"]:
+        job.schedule_removal()
         return
 
-    game["ended"] = True
-    q = game["question"]
-    correct_answer = q["options"][q["correct"]]
+    elapsed = (_now() - game["started_at"]).total_seconds()
+    seconds_left = max(0, int(TIMEOUT_SECONDS - elapsed))
 
-    text = _format_final_message(
+    if seconds_left <= 0:
+        game["ended"] = True
+        q = game["question"]
+        correct_answer = q["options"][q["correct"]]
+
+        text = _format_final_message(
+            q_num=game["q_num"],
+            question=q["question"],
+            correct_answer=correct_answer,
+            explanation=q.get("explanation", ""),
+            answers=game["answers"],
+        )
+
+        # دکمه سوال بعدی
+        next_keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("سوال بعدی ▶️", callback_data="gq_next")]
+        ])
+
+        try:
+            await context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=game["message_id"],
+                text=with_signature(text),
+                parse_mode="Markdown",
+                reply_markup=next_keyboard,
+            )
+        except Exception as e:
+            logger.warning("Failed to edit final message: %s", e)
+
+        job.schedule_removal()
+        return
+
+    # به‌روزرسانی پیام با زمان جدید
+    q = game["question"]
+    text = _format_live_message(
         q_num=game["q_num"],
+        category=q.get("category", "تغذیه"),
         question=q["question"],
-        correct_answer=correct_answer,
-        explanation=q.get("explanation", ""),
+        seconds_left=seconds_left,
         answers=game["answers"],
     )
 
@@ -261,17 +282,14 @@ async def _timeout_callback(context: ContextTypes.DEFAULT_TYPE) -> None:
             message_id=game["message_id"],
             text=with_signature(text),
             parse_mode="Markdown",
-            reply_markup=None,
+            reply_markup=_options_keyboard(q["options"]),
         )
     except Exception as e:
-        logger.warning("Failed to edit timeout message: %s", e)
+        logger.debug("Timer edit failed: %s", e)
 
-    _active_games.pop(chat_id, None)
-
-
-# ============================================================
-#  answer callback
-# ============================================================
+async def _timeout_callback(context: ContextTypes.DEFAULT_TYPE) -> None:
+    # این تابع دیگر استفاده نمی‌شود، منطق آن به _update_timer منتقل شد
+    pass
 
 async def handle_group_quiz_answer(
     update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -324,7 +342,7 @@ async def handle_group_quiz_answer(
             logger.warning("Failed to record wrong: %s", e)
         return
 
-    # correct answer
+    # پاسخ درست
     elapsed = (_now() - game["started_at"]).total_seconds()
     points = _points_for_elapsed(elapsed)
     position = len(game["answers"]) + 1
@@ -362,6 +380,7 @@ async def handle_group_quiz_answer(
         show_alert=False,
     )
 
+    # پیام زنده را با پاسخ جدید به‌روزرسانی کن
     seconds_left = max(0, int(TIMEOUT_SECONDS - elapsed))
     live_text = _format_live_message(
         q_num=game["q_num"],
@@ -379,11 +398,6 @@ async def handle_group_quiz_answer(
         )
     except Exception as e:
         logger.debug("Failed to edit live msg: %s", e)
-
-
-# ============================================================
-#  /leaderboard
-# ============================================================
 
 async def cmd_leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message is None or update.effective_chat is None:
@@ -432,11 +446,6 @@ async def cmd_leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         with_signature("\n".join(lines)),
         parse_mode="Markdown",
     )
-
-
-# ============================================================
-#  /mystats
-# ============================================================
 
 async def cmd_mystats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message is None or update.effective_chat is None:

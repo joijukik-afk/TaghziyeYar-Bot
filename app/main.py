@@ -414,7 +414,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await query.answer()
     data = query.data or ""
 
-    # --- Next question button ---
     if data == "gq_next":
         chat = update.effective_chat
         if chat is None:
@@ -432,8 +431,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             with_signature(
                 "🎮 کوییز زنده\n\n"
                 "برای شروع، دستور /quiz رو بزن.\n\n"
-                "💡 همه می‌تونن شرکت کنن — سریع‌تر = امتیاز بیشتر!\n"
-                "⏱ تایمر توسط تلگرام نمایش داده می‌شه."
+                "💡 همه می‌تونن شرکت کنن — سریع‌تر = امتیاز بیشتر!"
             ),
         )
         return
@@ -562,14 +560,24 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("shopping", cmd_shopping))
     application.add_handler(CommandHandler("food", cmd_food))
 
-    # Live group quiz — using Telegram native polls
+    # Quiz commands
     application.add_handler(CommandHandler("quiz", gquiz.cmd_quiz))
     application.add_handler(CommandHandler("leaderboard", gquiz.cmd_leaderboard))
     application.add_handler(CommandHandler("mystats", gquiz.cmd_mystats))
+
+    # Poll answers (for native poll mode)
     application.add_handler(PollAnswerHandler(gquiz.on_poll_answer))
 
-    # Text + callbacks
+    # Inline quiz answers (for fallback mode) — MUST be before general callback
+    application.add_handler(CallbackQueryHandler(
+        gquiz.on_inline_answer,
+        pattern=r"^gq_\d+$",
+    ))
+
+    # General callbacks (menu_*, gq_next)
     application.add_handler(CallbackQueryHandler(handle_callback))
+
+    # Text messages
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     application.add_error_handler(on_error)
 

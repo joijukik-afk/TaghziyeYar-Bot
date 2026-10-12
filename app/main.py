@@ -1,4 +1,4 @@
-"""Bot entry point."""
+"""Bot entry point. Wires together all handlers and starts polling."""
 
 import logging
 import os
@@ -14,6 +14,7 @@ from telegram.ext import (
     CommandHandler,
     ContextTypes,
     MessageHandler,
+    PollAnswerHandler,
     filters,
 )
 
@@ -415,16 +416,15 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     # --- Next question button ---
     if data == "gq_next":
-        chat_id = update.effective_chat.id if update.effective_chat else None
-        if chat_id:
-            gquiz._active_games.pop(chat_id, None)
-
-        # Send a new quiz message
-        if update.effective_chat is None:
+        chat = update.effective_chat
+        if chat is None:
             return
-        # Build a fake update message for cmd_quiz — instead just re-use message
-        # We'll start a fresh quiz via a helper
-        await _start_new_quiz(update, context)
+        await query.answer("🔄 در حال ساخت سوال جدید...", show_alert=False)
+        await gquiz.send_quiz_from_callback(
+            context=context,
+            chat_id=chat.id,
+            chat_title=chat.title or "",
+        )
         return
 
     if data == "menu_quiz":
@@ -432,7 +432,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             with_signature(
                 "🎮 کوییز زنده\n\n"
                 "برای شروع، دستور /quiz رو بزن.\n\n"
-                "💡 همه می‌تونن شرکت کنن — سریع‌تر = امتیاز بیشتر!"
+                "💡 همه می‌تونن شرکت کنن — سریع‌تر = امتیاز بیشتر!\n"
+                "⏱ تایمر توسط تلگرام نمایش داده می‌شه."
             ),
         )
         return
@@ -484,54 +485,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await query.edit_message_text(with_signature(text))
 
 
-async def _start_new_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Start a new quiz sending a new message (for the 'next' button)."""
-    chat = update.effective_chat
-    if chat is None:
-        return
-
-    chat_id = chat.id
-
-    loading = await context.bot.send_message(
-        chat_id=chat_id,
-        text=with_signature("🧠 در حال ساخت سوال...\n\nچند لحظه صبر کن"),
-    )
-
-    try:
-        q = await gquiz.generate_question()
-    except Exception as e:
-        logger.warning("Question gen failed: %s", e)
-        await loading.edit_text(with_signature("😔 خطا در ساخت سوال. دوباره /quiz بزن."))
-        return
-
-    q_num = int(gquiz._now().timestamp()) % 10000
-    text = gquiz._live_text(q_num, q.get("category", "تغذیه"), q["question"], gquiz.TIMEOUT_SECONDS, [])
-    keyboard = gquiz._options_keyboard(q["options"])
-
-    try:
-        await loading.edit_text(
-            text=with_signature(text),
-            reply_markup=keyboard,
-        )
-    except Exception as e:
-        logger.warning("Failed to edit: %s", e)
-        return
-
-    gquiz._active_games[chat_id] = {
-        "question": q,
-        "message_id": loading.message_id,
-        "started_at": gquiz._now(),
-        "answers": [],
-        "answered_user_ids": set(),
-        "q_num": q_num,
-        "ended": False,
-        "chat_title": chat.title or "",
-    }
-
-    import asyncio
-    asyncio.create_task(gquiz._run_timer(context, chat_id))
-
-
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.exception("Exception", exc_info=context.error)
     if isinstance(update, Update) and update.effective_message is not None:
@@ -575,6 +528,7 @@ def build_application() -> Application:
         .build()
     )
 
+    # Base
     application.add_handler(CommandHandler("start", cmd_start))
     application.add_handler(CommandHandler("help", cmd_help))
     application.add_handler(CommandHandler("menu", cmd_menu))
@@ -585,6 +539,7 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("setup", cmd_setup))
     application.add_handler(CommandHandler("cancel", cmd_cancel))
 
+    # Calculations
     application.add_handler(CommandHandler("bmi", cmd_bmi))
     application.add_handler(CommandHandler("calories", cmd_calories))
     application.add_handler(CommandHandler("weight", cmd_weight))
@@ -595,30 +550,26 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("bodyfat", cmd_bodyfat))
     application.add_handler(CommandHandler("bmr", cmd_bmr))
 
+    # Content
     application.add_handler(CommandHandler("tip", cmd_tip))
     application.add_handler(CommandHandler("fact", cmd_fact))
     application.add_handler(CommandHandler("myth", cmd_myth))
     application.add_handler(CommandHandler("water", cmd_water))
 
+    # Meal
     application.add_handler(CommandHandler("plan", cmd_plan))
     application.add_handler(CommandHandler("today", cmd_today))
     application.add_handler(CommandHandler("shopping", cmd_shopping))
     application.add_handler(CommandHandler("food", cmd_food))
 
-    # Live group quiz
+    # Live group quiz — using Telegram native polls
     application.add_handler(CommandHandler("quiz", gquiz.cmd_quiz))
     application.add_handler(CommandHandler("leaderboard", gquiz.cmd_leaderboard))
     application.add_handler(CommandHandler("mystats", gquiz.cmd_mystats))
+    application.add_handler(PollAnswerHandler(gquiz.on_poll_answer))
 
-    # Quiz answer callbacks (gq_0, gq_1, ...) - must come BEFORE general callback
-    application.add_handler(CallbackQueryHandler(
-        gquiz.handle_group_quiz_answer,
-        pattern=r"^gq_\d+$",
-    ))
-
-    # General callbacks (menu_*, gq_next)
+    # Text + callbacks
     application.add_handler(CallbackQueryHandler(handle_callback))
-
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     application.add_error_handler(on_error)
 

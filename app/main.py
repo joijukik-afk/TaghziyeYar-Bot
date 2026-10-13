@@ -11,6 +11,7 @@ from telegram.ext import (
     Application,
     ApplicationBuilder,
     CallbackQueryHandler,
+    ChatMemberHandler,
     CommandHandler,
     ContextTypes,
     MessageHandler,
@@ -19,6 +20,7 @@ from telegram.ext import (
 )
 
 from app.bot import extra_commands as ecmd
+from app.bot import group_manager as gmanager
 from app.bot import group_quiz as gquiz
 from app.bot import meal_commands as mcmd
 from app.bot import messages as msg
@@ -29,6 +31,7 @@ from app.config import get_settings
 from app.database import repository as repo
 from app.database.session import create_all, dispose_engine, init_engine
 from app.services.ai_service import get_ai_service
+from app.services.auto_content import broadcast_auto_content, post_auto_content
 from app.utils.message_formatter import with_signature
 
 
@@ -66,32 +69,35 @@ def _start_health_server() -> None:
 
 
 # ---------------------------------------------------------------------------
-#  Auto-post job (تغذیه خودکار)
+#  Auto-post job
 # ---------------------------------------------------------------------------
 
 async def _auto_post_job(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Job خودکار برای ارسال محتوای تغذیه‌ای به گروه."""
-    from app.services.auto_content import post_auto_content
+    """Job خودکار: ارسال محتوا به گروه(ها)."""
+    # اگه AUTO_POST_CHAT_ID تنظیم شده، فقط به همون بفرست
+    specific_chat = os.environ.get("AUTO_POST_CHAT_ID", "").strip()
+    if specific_chat:
+        try:
+            chat_id = int(specific_chat)
+        except ValueError:
+            chat_id = None
+        if chat_id:
+            try:
+                ok = await post_auto_content(context.bot, chat_id)
+                if ok:
+                    logger.info("پست خودکار به %s ارسال شد.", chat_id)
+                else:
+                    logger.info("پست خودکار به %s ارسال نشد.", chat_id)
+            except Exception as e:
+                logger.warning("خطا در ارسال به %s: %s", chat_id, e)
+            return
 
-    chat_id_str = os.environ.get("AUTO_POST_CHAT_ID", "").strip()
-    if not chat_id_str:
-        logger.info("AUTO_POST_CHAT_ID تنظیم نشده — ارسال خودکار غیرفعال.")
-        return
-
+    # در غیر این صورت، به همه گروه‌های ثبت‌شده
     try:
-        chat_id = int(chat_id_str)
-    except ValueError:
-        logger.warning("AUTO_POST_CHAT_ID عدد معتبری نیست.")
-        return
-
-    try:
-        ok = await post_auto_content(context.bot, chat_id)
-        if ok:
-            logger.info("پست خودکار تغذیه ارسال شد به %s", chat_id)
-        else:
-            logger.info("پست خودکار تغذیه ارسال نشد.")
+        sent = await broadcast_auto_content(context.bot)
+        logger.info("پست خودکار به %d گروه ارسال شد.", sent)
     except Exception as e:
-        logger.warning("خطا در ارسال پست خودکار: %s", e)
+        logger.warning("خطا در broadcast: %s", e)
 
 
 # ---------------------------------------------------------------------------
@@ -530,7 +536,6 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def post_init(application: Application) -> None:
     init_engine()
     import app.database.quiz_models  # noqa: F401
-    import app.database.models        # noqa: F401
     await create_all()
     me = await application.bot.get_me()
     logger.info("Bot started as @%s (id=%s)", me.username, me.id)
@@ -542,25 +547,25 @@ async def post_init(application: Application) -> None:
     except Exception as e:
         logger.warning("Setup commands error: %s", e)
 
-    # زمان‌بندی ارسال خودکار تغذیه
+    # زمان‌بندی پست خودکار
     if application.job_queue is not None:
-        auto_chat = os.environ.get("AUTO_POST_CHAT_ID", "").strip()
-        if auto_chat:
+        try:
             interval_seconds = int(
                 os.environ.get("AUTO_POST_INTERVAL_HOURS", "8")
             ) * 3600
-            application.job_queue.run_repeating(
-                _auto_post_job,
-                interval=interval_seconds,
-                first=120,
-                name="auto_nutrition_post",
-            )
-            logger.info(
-                "ارسال خودکار تغذیه هر %s ساعت زمان‌بندی شد.",
-                interval_seconds // 3600,
-            )
-        else:
-            logger.info("AUTO_POST_CHAT_ID تنظیم نشده — پست خودکار غیرفعال.")
+        except ValueError:
+            interval_seconds = 8 * 3600
+
+        application.job_queue.run_repeating(
+            _auto_post_job,
+            interval=interval_seconds,
+            first=120,
+            name="auto_nutrition_post",
+        )
+        logger.info(
+            "✅ ارسال خودکار تغذیه هر %s ساعت زمان‌بندی شد.",
+            interval_seconds // 3600,
+        )
 
 
 async def post_shutdown(application: Application) -> None:
@@ -622,10 +627,26 @@ def build_application() -> Application:
         pattern=r"^gq_\d+$",
     ))
 
-    # General callbacks
-    application.add_handler(CallbackQueryHandler(handle_callback))
+    # ثبت خودکار گروه‌ها
+    application.add_handler(ChatMemberHandler(
+        gmanager.on_bot_added,
+        ChatMemberHandler.MY_CHAT_MEMBER,
+    ))
+    application.add_handler(CommandHandler("setgroup", gmanager.cmd_setgroup))
+    application.add_handler(CommandHandler("groups", gmanager.cmd_groups))
+    application.add_handler(CommandHandler("unsetgroup", gmanager.cmd_unsetgroup))
 
-    # Text
+    # ثبت گروه از هر پیام (group=1 تا با هندلرهای دیگه تداخل نکنه)
+    application.add_handler(
+        MessageHandler(
+            filters.ChatType.GROUPS & filters.ALL,
+            gmanager.on_group_message,
+        ),
+        group=1,
+    )
+
+    # Callbacks + text
+    application.add_handler(CallbackQueryHandler(handle_callback))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     application.add_error_handler(on_error)
 

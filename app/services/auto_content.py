@@ -1,8 +1,9 @@
-"""تولید و ارسال خودکار محتوای تغذیه‌ای به همه گروه‌ها."""
+"""تولید و ارسال خودکار محتوای تغذیه‌ای با عکس به گروه‌ها."""
 
 import logging
 import random
 
+import httpx
 from groq import AsyncGroq
 
 from app.config import get_settings
@@ -59,6 +60,24 @@ SYSTEM_PROMPT = """تو یک متخصص تغذیه و سلامت هستی که �
 
 منبع: [لینک یا نام منبع]
 """
+
+
+# ============================================================
+#  دسته‌بندی‌های عکس (از Foodish و TheMealDB)
+# ============================================================
+
+FOODISH_CATEGORIES = [
+    "biryani", "burger", "butter-chicken", "dessert",
+    "dosa", "idly", "pasta", "pizza", "rice", "samosa",
+]
+
+# TheMealDB دسته‌های عکس: Beef, Breakfast, Chicken, Dessert, Goat,
+# Lamb, Miscellaneous, Pasta, Pork, Seafood, Side, Starter,
+# Vegan, Vegetarian
+THEMEALDB_CATEGORIES = [
+    "Breakfast", "Chicken", "Dessert", "Pasta",
+    "Seafood", "Vegan", "Vegetarian", "Miscellaneous",
+]
 
 
 # ============================================================
@@ -132,10 +151,54 @@ def _extract_image_keyword(topic: str) -> str:
 
 
 # ============================================================
-#  جستجوی تصویر
+#  جستجوی عکس — چند منبع با Fallback
 # ============================================================
 
-def search_food_image(keyword: str) -> str | None:
+async def _get_foodish_image() -> str | None:
+    """عکس رندوم از Foodish API (بدون کلید)."""
+    cat = random.choice(FOODISH_CATEGORIES)
+    url = f"https://foodish-api.com/api/images/{cat}"
+    try:
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            r = await client.get(url)
+            if r.status_code == 200:
+                # Foodish گاهی redirect می‌کنه، گاهی JSON می‌ده
+                ct = r.headers.get("content-type", "")
+                if "application/json" in ct:
+                    data = r.json()
+                    img = data.get("image")
+                    if img and img.startswith("http"):
+                        return img
+                elif "image" in ct:
+                    # خود پاسخ یه عکسه — از URL نهایی استفاده کن
+                    return str(r.url)
+    except Exception as e:
+        logger.debug("Foodish خطا: %s", e)
+    return None
+
+
+async def _get_themealdb_image() -> str | None:
+    """عکس رندوم از TheMealDB (بدون کلید)."""
+    cat = random.choice(THEMEALDB_CATEGORIES)
+    url = f"https://www.themealdb.com/api/json/v1/1/filter.php?c={cat}"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.get(url)
+            if r.status_code == 200:
+                data = r.json()
+                meals = data.get("meals") or []
+                if meals:
+                    m = random.choice(meals)
+                    img = m.get("strMealThumb")
+                    if img and img.startswith("http"):
+                        return img
+    except Exception as e:
+        logger.debug("TheMealDB خطا: %s", e)
+    return None
+
+
+async def _get_duckduckgo_image(keyword: str) -> str | None:
+    """عکس از DuckDuckGo (تلاش نهایی)."""
     try:
         from ddgs import DDGS
         with DDGS() as ddgs:
@@ -146,8 +209,78 @@ def search_food_image(keyword: str) -> str | None:
                 if url and url.startswith("http"):
                     return url
     except Exception as e:
-        logger.warning("جستجوی تصویر خطا داد: %s", e)
+        logger.debug("DuckDuckGo خطا: %s", e)
     return None
+
+
+async def search_food_image(keyword: str) -> str | None:
+    """جستجوی عکس با چندین منبع (به ترتیب)."""
+    # ۱) Foodish
+    img = await _get_foodish_image()
+    if img:
+        logger.info("عکس از Foodish گرفته شد.")
+        return img
+
+    # ۲) TheMealDB
+    img = await _get_themealdb_image()
+    if img:
+        logger.info("عکس از TheMealDB گرفته شد.")
+        return img
+
+    # ۳) DuckDuckGo
+    img = await _get_duckduckgo_image(keyword)
+    if img:
+        logger.info("عکس از DuckDuckGo گرفته شد.")
+        return img
+
+    logger.warning("هیچ عکسی پیدا نشد.")
+    return None
+
+
+# ============================================================
+#  ارسال با عکس + کپشن
+# ============================================================
+
+async def _send_with_photo(bot, chat_id: int, content: str, keyword: str) -> bool:
+    """ارسال محتوا با عکس. اگه عکس نشد، فقط متن."""
+    image_url = await search_food_image(keyword)
+
+    if image_url:
+        try:
+            await bot.send_photo(
+                chat_id=chat_id,
+                photo=image_url,
+                caption=with_signature(content),
+            )
+            logger.info("✅ عکس + متن ارسال شد به %s", chat_id)
+            return True
+        except Exception as e:
+            logger.warning("ارسال عکس خطا داد: %s", e)
+            # تلاش دوم با عکس دیگه
+            try:
+                image_url2 = await _get_foodish_image() or await _get_themealdb_image()
+                if image_url2:
+                    await bot.send_photo(
+                        chat_id=chat_id,
+                        photo=image_url2,
+                        caption=with_signature(content),
+                    )
+                    logger.info("✅ عکس (تلاش دوم) + متن ارسال شد.")
+                    return True
+            except Exception as e2:
+                logger.warning("تلاش دوم عکس خطا داد: %s", e2)
+
+    # Fallback: فقط متن
+    try:
+        await bot.send_message(
+            chat_id=chat_id,
+            text=with_signature(content),
+        )
+        logger.info("✅ فقط متن ارسال شد (بدون عکس).")
+        return True
+    except Exception as e:
+        logger.warning("ارسال متن هم خطا داد: %s", e)
+        return False
 
 
 # ============================================================
@@ -174,30 +307,17 @@ async def broadcast_auto_content(bot) -> int:
         return 0
 
     content, image_keyword = result
-    image_url = search_food_image(image_keyword)
 
     sent = 0
-    failed = 0
     for g in groups:
         try:
-            if image_url:
-                await bot.send_photo(
-                    chat_id=g.chat_id,
-                    photo=image_url,
-                    caption=with_signature(content),
-                )
-            else:
-                await bot.send_message(
-                    chat_id=g.chat_id,
-                    text=with_signature(content),
-                )
-            sent += 1
-            logger.info("✅ ارسال موفق به %s (%s)", g.title, g.chat_id)
+            ok = await _send_with_photo(bot, g.chat_id, content, image_keyword)
+            if ok:
+                sent += 1
         except Exception as e:
-            failed += 1
             logger.warning("❌ ارسال به %s خطا داد: %s", g.chat_id, e)
 
-    logger.info("پست خودکار: %d موفق، %d ناموفق از %d گروه", sent, failed, len(groups))
+    logger.info("پست خودکار: %d از %d گروه موفق.", sent, len(groups))
     return sent
 
 
@@ -208,25 +328,4 @@ async def post_auto_content(bot, chat_id: int) -> bool:
         return False
 
     content, image_keyword = result
-    image_url = search_food_image(image_keyword)
-
-    if image_url:
-        try:
-            await bot.send_photo(
-                chat_id=chat_id,
-                photo=image_url,
-                caption=with_signature(content),
-            )
-            return True
-        except Exception as e:
-            logger.warning("ارسال عکس خطا داد: %s", e)
-
-    try:
-        await bot.send_message(
-            chat_id=chat_id,
-            text=with_signature(content),
-        )
-        return True
-    except Exception as e:
-        logger.warning("ارسال متن خطا داد: %s", e)
-        return False
+    return await _send_with_photo(bot, chat_id, content, image_keyword)

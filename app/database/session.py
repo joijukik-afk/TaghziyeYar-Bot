@@ -21,10 +21,26 @@ def init_engine() -> None:
     """Create the global async engine and session factory."""
     global _engine, _session_factory
     settings = get_settings()
+
+    url = settings.database_url
+
+    # Normalize postgres:// and postgresql:// to asyncpg format
+    if url.startswith("postgres://"):
+        url = url.replace("postgres://", "postgresql+asyncpg://", 1)
+    elif url.startswith("postgresql://") and "+asyncpg" not in url:
+        url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
+
+    # Strip sslmode and other query params (asyncpg doesn't accept them)
+    if "?" in url:
+        url = url.split("?", 1)[0]
+
     _engine = create_async_engine(
-        settings.database_url,
+        url,
         echo=False,
         future=True,
+        pool_pre_ping=True,
+        pool_size=2,
+        max_overflow=2,
     )
     _session_factory = async_sessionmaker(
         bind=_engine,

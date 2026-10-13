@@ -556,14 +556,22 @@ async def post_init(application: Application) -> None:
         except ValueError:
             interval_seconds = 8 * 3600
 
+        try:
+            first_delay = int(
+                os.environ.get("AUTO_POST_FIRST_DELAY", "3600")
+            )
+        except ValueError:
+            first_delay = 3600
+
         application.job_queue.run_repeating(
             _auto_post_job,
             interval=interval_seconds,
-            first=120,
+            first=first_delay,
             name="auto_nutrition_post",
         )
         logger.info(
-            "✅ ارسال خودکار تغذیه هر %s ساعت زمان‌بندی شد.",
+            "✅ اولین پست %s ثانیه بعد، پست‌های بعدی هر %s ساعت.",
+            first_delay,
             interval_seconds // 3600,
         )
 
@@ -636,7 +644,7 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("groups", gmanager.cmd_groups))
     application.add_handler(CommandHandler("unsetgroup", gmanager.cmd_unsetgroup))
 
-    # ثبت گروه از هر پیام (group=1 تا با هندلرهای دیگه تداخل نکنه)
+    # ثبت گروه از هر پیام
     application.add_handler(
         MessageHandler(
             filters.ChatType.GROUPS & filters.ALL,

@@ -81,6 +81,27 @@ async def list_all_groups() -> list[Group]:
         return list(result.scalars().all())
 
 
+async def deactivate_group(chat_id: int) -> None:
+    """غیرفعال کردن یه گروه از لیست پست خودکار."""
+    async with session_scope() as session:
+        result = await session.execute(
+            select(Group).where(Group.chat_id == chat_id)
+        )
+        group = result.scalar_one_or_none()
+        if group is not None:
+            group.is_active = False
+            await session.flush()
+
+
+async def count_groups() -> int:
+    """تعداد گروه‌های فعال."""
+    async with session_scope() as session:
+        result = await session.execute(
+            select(func.count(Group.id)).where(Group.is_active == True)
+        )
+        return result.scalar_one() or 0
+
+
 # ---------------------------------------------------------------- profile
 async def get_profile(user_id: int) -> Profile | None:
     async with session_scope() as session:
@@ -140,7 +161,7 @@ async def audit(telegram_id: int | None, event: str, details: str | None = None)
 # ================================================================
 
 def _current_week_start() -> str:
-    """Return the Saturday of the current week (YYYY-MM-DD)."""
+    """شنبه‌ی هفته‌ی جاری (YYYY-MM-DD)."""
     today = date.today()
     days_since_saturday = (today.weekday() - 5) % 7
     saturday = today - timedelta(days=days_since_saturday)
@@ -157,7 +178,7 @@ async def record_quiz_answer(
     question_text: str,
     position: int,
 ) -> None:
-    """Record a correct quiz answer."""
+    """ثبت یه پاسخ درست."""
     week = _current_week_start()
 
     async with session_scope() as session:
@@ -222,7 +243,7 @@ async def record_quiz_answer(
 
 
 async def record_quiz_wrong(telegram_id: int, chat_id: int) -> None:
-    """Record a wrong answer (resets streak)."""
+    """ثبت یه پاسخ اشتباه (ریست استریک)."""
     week = _current_week_start()
     async with session_scope() as session:
         result = await session.execute(
@@ -262,7 +283,7 @@ async def get_user_rank(
     telegram_id: int,
     chat_id: int,
 ) -> tuple[int, int, int]:
-    """Return (rank, points, streak). rank 1-based; 0 = not found."""
+    """(rank, points, streak). rank 1-based; 0 = پیدا نشد."""
     week = _current_week_start()
     async with session_scope() as session:
         result = await session.execute(

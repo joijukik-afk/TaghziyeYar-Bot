@@ -66,6 +66,35 @@ def _start_health_server() -> None:
 
 
 # ---------------------------------------------------------------------------
+#  Auto-post job (تغذیه خودکار)
+# ---------------------------------------------------------------------------
+
+async def _auto_post_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Job خودکار برای ارسال محتوای تغذیه‌ای به گروه."""
+    from app.services.auto_content import post_auto_content
+
+    chat_id_str = os.environ.get("AUTO_POST_CHAT_ID", "").strip()
+    if not chat_id_str:
+        logger.info("AUTO_POST_CHAT_ID تنظیم نشده — ارسال خودکار غیرفعال.")
+        return
+
+    try:
+        chat_id = int(chat_id_str)
+    except ValueError:
+        logger.warning("AUTO_POST_CHAT_ID عدد معتبری نیست.")
+        return
+
+    try:
+        ok = await post_auto_content(context.bot, chat_id)
+        if ok:
+            logger.info("پست خودکار تغذیه ارسال شد به %s", chat_id)
+        else:
+            logger.info("پست خودکار تغذیه ارسال نشد.")
+    except Exception as e:
+        logger.warning("خطا در ارسال پست خودکار: %s", e)
+
+
+# ---------------------------------------------------------------------------
 #  Helpers
 # ---------------------------------------------------------------------------
 
@@ -501,14 +530,37 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def post_init(application: Application) -> None:
     init_engine()
     import app.database.quiz_models  # noqa: F401
+    import app.database.models        # noqa: F401
     await create_all()
     me = await application.bot.get_me()
     logger.info("Bot started as @%s (id=%s)", me.username, me.id)
+
+    # Register commands
     try:
         from app.bot.commands_setup import setup_commands
         await setup_commands(application.bot)
     except Exception as e:
         logger.warning("Setup commands error: %s", e)
+
+    # زمان‌بندی ارسال خودکار تغذیه
+    if application.job_queue is not None:
+        auto_chat = os.environ.get("AUTO_POST_CHAT_ID", "").strip()
+        if auto_chat:
+            interval_seconds = int(
+                os.environ.get("AUTO_POST_INTERVAL_HOURS", "8")
+            ) * 3600
+            application.job_queue.run_repeating(
+                _auto_post_job,
+                interval=interval_seconds,
+                first=120,
+                name="auto_nutrition_post",
+            )
+            logger.info(
+                "ارسال خودکار تغذیه هر %s ساعت زمان‌بندی شد.",
+                interval_seconds // 3600,
+            )
+        else:
+            logger.info("AUTO_POST_CHAT_ID تنظیم نشده — پست خودکار غیرفعال.")
 
 
 async def post_shutdown(application: Application) -> None:
@@ -560,24 +612,20 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("shopping", cmd_shopping))
     application.add_handler(CommandHandler("food", cmd_food))
 
-    # Quiz commands
+    # Quiz
     application.add_handler(CommandHandler("quiz", gquiz.cmd_quiz))
     application.add_handler(CommandHandler("leaderboard", gquiz.cmd_leaderboard))
     application.add_handler(CommandHandler("mystats", gquiz.cmd_mystats))
-
-    # Poll answers (for native poll mode)
     application.add_handler(PollAnswerHandler(gquiz.on_poll_answer))
-
-    # Inline quiz answers (for fallback mode) — MUST be before general callback
     application.add_handler(CallbackQueryHandler(
         gquiz.on_inline_answer,
         pattern=r"^gq_\d+$",
     ))
 
-    # General callbacks (menu_*, gq_next)
+    # General callbacks
     application.add_handler(CallbackQueryHandler(handle_callback))
 
-    # Text messages
+    # Text
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     application.add_error_handler(on_error)
 

@@ -6,7 +6,7 @@ import random
 import re
 from typing import Optional
 
-from app.services.ai_service import get_ai_service
+from app.config import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -107,10 +107,10 @@ FALLBACK_QUESTIONS = [
         "category": "پروتئین و عضله‌سازی",
     },
     {
-        "question": "چند درصد کالری هر گرم چربی بیشتر از کربوهیدراته؟",
-        "options": ["دقیقاً برابر", "دو برابر", "سه برابر", "نصف"],
-        "correct": 1,
-        "explanation": "هر گرم چربی ۹ کالری و هر گرم کربوهیدرات ۴ کالری داره (بیش از دو برابر).",
+        "question": "هر گرم چربی چند کالری دارد؟",
+        "options": ["۴", "۷", "۹", "۱۲"],
+        "correct": 2,
+        "explanation": "هر گرم چربی ۹ کالری دارد (بیشترین در بین درشت‌مغذی‌ها).",
         "category": "چربی‌های سالم",
     },
     {
@@ -171,18 +171,14 @@ def _extract_json(text: str) -> Optional[dict]:
         return None
 
     text = text.strip()
-
-    # Remove markdown code blocks
     text = re.sub(r"^```(?:json)?\s*", "", text)
     text = re.sub(r"\s*```$", "", text)
 
-    # Try direct parse
     try:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
 
-    # Find first { and last }
     start = text.find("{")
     end = text.rfind("}")
     if start != -1 and end != -1 and end > start:
@@ -227,31 +223,48 @@ def _fallback_question() -> dict:
 
 async def generate_question(category: Optional[str] = None) -> dict:
     """Generate a quiz question using AI. Falls back to predefined on error."""
-    try:
-        ai = get_ai_service()
-    except Exception as e:
-        logger.warning("AI service unavailable: %s", e)
-        return _fallback_question()
+    settings = get_settings()
 
-    # If mock mode, use fallback
-    if getattr(ai, "mock", False):
+    # اگه کلید API نیست، fallback
+    if not settings.deepseek_api_key:
+        logger.info("کلید API تنظیم نشده — استفاده از سوالات آماده.")
         return _fallback_question()
 
     cat = category or random.choice(CATEGORIES)
     prompt = PROMPT_TEMPLATE.format(category=cat)
 
     try:
-        text, status = await ai.ask(
-            user_message=prompt,
-            user_name="سیستم",
-            user_id=0,
+        # import داخل تابع تا circular import پیش نیاد
+        from groq import AsyncGroq
+
+        model_name = settings.deepseek_model or "llama-3.1-8b-instant"
+        logger.info("کوییز با مدل: %s", model_name)
+
+        client = AsyncGroq(api_key=settings.deepseek_api_key)
+
+        response = await client.chat.completions.create(
+            model=model_name,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "تو یک متخصص تغذیه هستی که سوالات چهارگزینه‌ای فارسی می‌سازد. "
+                        "فقط JSON خالص برگردان، هیچ متن اضافی نده."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.7,
+            max_tokens=600,
         )
-        if status != "ok" or not text:
+
+        text = response.choices[0].message.content
+        if not text:
             raise ValueError("AI returned empty")
 
         data = _extract_json(text)
         if data is None or not _validate_question(data):
-            logger.warning("Invalid AI quiz JSON: %s", (text or "")[:200])
+            logger.warning("Invalid AI quiz JSON: %s", text[:200])
             raise ValueError("Invalid JSON structure")
 
         return {
@@ -261,6 +274,7 @@ async def generate_question(category: Optional[str] = None) -> dict:
             "explanation": str(data.get("explanation", "")).strip()[:400],
             "category": cat,
         }
+
     except Exception as e:
         logger.warning("AI question generation failed: %s — using fallback", e)
         return _fallback_question()

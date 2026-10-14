@@ -2,6 +2,7 @@
 
 import logging
 import os
+import re
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -180,6 +181,31 @@ async def ensure_user_and_group(update: Update) -> None:
     )
     if chat and chat.type in (ChatType.GROUP, ChatType.SUPERGROUP):
         await repo.get_or_create_group(chat_id=chat.id, title=chat.title)
+
+
+async def _send_html_safe(bot, chat_id: int, text: str, reply_to: int | None = None) -> None:
+    """ارسال پیام با HTML parse_mode. اگه خطا داد، متن ساده بفرست."""
+    signed = with_signature(text)
+    try:
+        await bot.send_message(
+            chat_id=chat_id,
+            text=signed,
+            parse_mode="HTML",
+            reply_to_message_id=reply_to,
+        )
+    except Exception as e:
+        logger.warning("HTML send failed: %s — trying plain text", e)
+        # حذف تگ‌ها و ارسال متن ساده
+        plain = re.sub(r"<[^>]+>", "", text)
+        plain = plain.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+        try:
+            await bot.send_message(
+                chat_id=chat_id,
+                text=with_signature(plain),
+                reply_to_message_id=reply_to,
+            )
+        except Exception as e2:
+            logger.warning("Plain send also failed: %s", e2)
 
 
 # ---------------------------------------------------------------------------
@@ -381,7 +407,7 @@ async def cmd_food(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 # ---------------------------------------------------------------------------
-#  Text -> AI
+#  Text -> AI (با HTML برای جدول)
 # ---------------------------------------------------------------------------
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -433,7 +459,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     )
     if not reply:
         reply = "متأسفانه پاسخی دریافت نشد."
-    await update.message.reply_text(with_signature(reply))
+
+    # ارسال با HTML برای جدول‌های خوشگل
+    await _send_html_safe(
+        bot=context.bot,
+        chat_id=update.effective_chat.id,
+        text=reply,
+        reply_to=update.message.message_id,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -587,6 +620,7 @@ def build_application() -> Application:
         .build()
     )
 
+    # Base
     application.add_handler(CommandHandler("start", cmd_start))
     application.add_handler(CommandHandler("help", cmd_help))
     application.add_handler(CommandHandler("menu", cmd_menu))
@@ -597,6 +631,7 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("setup", cmd_setup))
     application.add_handler(CommandHandler("cancel", cmd_cancel))
 
+    # Calculations
     application.add_handler(CommandHandler("bmi", cmd_bmi))
     application.add_handler(CommandHandler("calories", cmd_calories))
     application.add_handler(CommandHandler("weight", cmd_weight))
@@ -607,16 +642,19 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("bodyfat", cmd_bodyfat))
     application.add_handler(CommandHandler("bmr", cmd_bmr))
 
+    # Content
     application.add_handler(CommandHandler("tip", cmd_tip))
     application.add_handler(CommandHandler("fact", cmd_fact))
     application.add_handler(CommandHandler("myth", cmd_myth))
     application.add_handler(CommandHandler("water", cmd_water))
 
+    # Meal
     application.add_handler(CommandHandler("plan", cmd_plan))
     application.add_handler(CommandHandler("today", cmd_today))
     application.add_handler(CommandHandler("shopping", cmd_shopping))
     application.add_handler(CommandHandler("food", cmd_food))
 
+    # Quiz
     application.add_handler(CommandHandler("quiz", gquiz.cmd_quiz))
     application.add_handler(CommandHandler("leaderboard", gquiz.cmd_leaderboard))
     application.add_handler(CommandHandler("mystats", gquiz.cmd_mystats))
@@ -626,6 +664,7 @@ def build_application() -> Application:
         pattern=r"^gq_\d+$",
     ))
 
+    # ثبت خودکار گروه‌ها
     application.add_handler(ChatMemberHandler(
         gmanager.on_bot_added,
         ChatMemberHandler.MY_CHAT_MEMBER,
@@ -642,6 +681,7 @@ def build_application() -> Application:
         group=1,
     )
 
+    # Callbacks + text
     application.add_handler(CallbackQueryHandler(handle_callback))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     application.add_error_handler(on_error)

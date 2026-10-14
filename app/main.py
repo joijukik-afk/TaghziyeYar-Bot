@@ -74,7 +74,6 @@ def _start_health_server() -> None:
 
 async def _auto_post_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     """Job خودکار: ارسال محتوا به گروه(ها)."""
-    # اگه AUTO_POST_CHAT_ID تنظیم شده، فقط به همون بفرست
     specific_chat = os.environ.get("AUTO_POST_CHAT_ID", "").strip()
     if specific_chat:
         try:
@@ -92,7 +91,6 @@ async def _auto_post_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                 logger.warning("خطا در ارسال به %s: %s", chat_id, e)
             return
 
-    # در غیر این صورت، به همه گروه‌های ثبت‌شده
     try:
         sent = await broadcast_auto_content(context.bot)
         logger.info("پست خودکار به %d گروه ارسال شد.", sent)
@@ -540,28 +538,26 @@ async def post_init(application: Application) -> None:
     me = await application.bot.get_me()
     logger.info("Bot started as @%s (id=%s)", me.username, me.id)
 
-    # Register commands
     try:
         from app.bot.commands_setup import setup_commands
         await setup_commands(application.bot)
     except Exception as e:
         logger.warning("Setup commands error: %s", e)
 
-    # زمان‌بندی پست خودکار
     if application.job_queue is not None:
         try:
             interval_seconds = int(
-                os.environ.get("AUTO_POST_INTERVAL_HOURS", "4")
+                os.environ.get("AUTO_POST_INTERVAL_HOURS", "8")
             ) * 3600
         except ValueError:
-            interval_seconds = 4 * 3600
+            interval_seconds = 8 * 3600
 
         try:
             first_delay = int(
-                os.environ.get("AUTO_POST_FIRST_DELAY", "3600")
+                os.environ.get("AUTO_POST_FIRST_DELAY", "28800")
             )
         except ValueError:
-            first_delay = 3600
+            first_delay = 28800
 
         application.job_queue.run_repeating(
             _auto_post_job,
@@ -591,7 +587,6 @@ def build_application() -> Application:
         .build()
     )
 
-    # Base
     application.add_handler(CommandHandler("start", cmd_start))
     application.add_handler(CommandHandler("help", cmd_help))
     application.add_handler(CommandHandler("menu", cmd_menu))
@@ -602,7 +597,6 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("setup", cmd_setup))
     application.add_handler(CommandHandler("cancel", cmd_cancel))
 
-    # Calculations
     application.add_handler(CommandHandler("bmi", cmd_bmi))
     application.add_handler(CommandHandler("calories", cmd_calories))
     application.add_handler(CommandHandler("weight", cmd_weight))
@@ -613,19 +607,16 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("bodyfat", cmd_bodyfat))
     application.add_handler(CommandHandler("bmr", cmd_bmr))
 
-    # Content
     application.add_handler(CommandHandler("tip", cmd_tip))
     application.add_handler(CommandHandler("fact", cmd_fact))
     application.add_handler(CommandHandler("myth", cmd_myth))
     application.add_handler(CommandHandler("water", cmd_water))
 
-    # Meal
     application.add_handler(CommandHandler("plan", cmd_plan))
     application.add_handler(CommandHandler("today", cmd_today))
     application.add_handler(CommandHandler("shopping", cmd_shopping))
     application.add_handler(CommandHandler("food", cmd_food))
 
-    # Quiz
     application.add_handler(CommandHandler("quiz", gquiz.cmd_quiz))
     application.add_handler(CommandHandler("leaderboard", gquiz.cmd_leaderboard))
     application.add_handler(CommandHandler("mystats", gquiz.cmd_mystats))
@@ -635,7 +626,6 @@ def build_application() -> Application:
         pattern=r"^gq_\d+$",
     ))
 
-    # ثبت خودکار گروه‌ها
     application.add_handler(ChatMemberHandler(
         gmanager.on_bot_added,
         ChatMemberHandler.MY_CHAT_MEMBER,
@@ -644,7 +634,6 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("groups", gmanager.cmd_groups))
     application.add_handler(CommandHandler("unsetgroup", gmanager.cmd_unsetgroup))
 
-    # ثبت گروه از هر پیام
     application.add_handler(
         MessageHandler(
             filters.ChatType.GROUPS & filters.ALL,
@@ -653,7 +642,6 @@ def build_application() -> Application:
         group=1,
     )
 
-    # Callbacks + text
     application.add_handler(CallbackQueryHandler(handle_callback))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     application.add_error_handler(on_error)

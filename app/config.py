@@ -16,10 +16,13 @@ class Settings(BaseSettings):
     telegram_bot_token: str
     admin_ids: str = ""
 
-    # DeepSeek (used in later phases)
+    # AI (Groq / DeepSeek)
     deepseek_api_key: str = ""
-    deepseek_base_url: str = "https://api.deepseek.com"
-    deepseek_model: str = "deepseek-chat"
+    deepseek_base_url: str = "https://api.groq.com/openai/v1"
+    deepseek_model: str = ""
+
+    # Unsplash
+    unsplash_access_key: str = ""
 
     # Database
     database_url: str = "sqlite+aiosqlite:///./taghziye_yar.db"
@@ -34,7 +37,6 @@ class Settings(BaseSettings):
 
     @property
     def admin_id_list(self) -> list[int]:
-        """Parse comma-separated admin IDs into a list of ints."""
         if not self.admin_ids:
             return []
         result: list[int] = []

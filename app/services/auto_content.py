@@ -14,6 +14,10 @@ from app.utils.message_formatter import with_signature
 logger = logging.getLogger(__name__)
 
 
+# ============================================================
+#  موضوعات
+# ============================================================
+
 SEARCH_TOPICS = [
     "آخرین یافته‌های علمی 2025 درباره تغذیه و سلامت",
     "مطالعات جدید درباره ویتامین‌ها و مواد معدنی",
@@ -46,14 +50,12 @@ SEARCH_TOPICS = [
 SYSTEM_PROMPT = """تو یک متخصص تغذیه و سلامت هستی که برای یک گروه تلگرام فارسی محتوا تولید می‌کنی.
 
 وظیفه تو:
-1. با ابزار جستجوی وب، جدیدترین اطلاعات علمی (سال 2024 و 2025) را پیدا کن.
-2. فقط از منابع معتبر استفاده کن (WHO، NIH، Mayo Clinic، Harvard Health، NHS، PubMed).
-3. یک متن کوتاه، جذاب و کاربردی به فارسی بنویس.
-4. متن شامل یک عنوان جذاب و توضیح ۳ تا ۴ خطی باشد.
-5. هر ادعا باید پشتوانه علمی داشته باشد.
-6. از اغراق، وعده‌های قطعی، و ادعاهای درمانی خودداری کن.
-7. در انتها منبع دقیق (نام + لینک) ذکر کن.
-8. هرگز از عبارات انگلیسی در متن اصلی استفاده نکن.
+1. یک متن کوتاه، جذاب و کاربردی به فارسی بنویس.
+2. متن شامل یک عنوان جذاب و توضیح ۳ تا ۴ خطی باشد.
+3. هر ادعا باید پشتوانه علمی داشته باشد (WHO، NIH، Mayo Clinic، Harvard Health، NHS).
+4. از اغراق، وعده‌های قطعی، و ادعاهای درمانی خودداری کن.
+5. در انتها منبع معتبر ذکر کن.
+6. هرگز از عبارات انگلیسی در متن اصلی استفاده نکن.
 
 خروجی باید دقیقاً به این فرمت باشد (هیچ چیز اضافه ننویس):
 
@@ -63,9 +65,64 @@ TITLE: [عنوان جذاب فارسی]
 
 BODY: [متن ۳ تا ۴ خطی فارسی]
 
-SOURCE: [نام منبع + لینک]
+SOURCE: [نام منبع]
 """
 
+
+# ============================================================
+#  مدل‌های ترجیحی (به ترتیب اولویت)
+# ============================================================
+
+PREFERRED_MODELS = [
+    "openai/gpt-oss-120b",
+    "llama-3.3-70b-versatile",
+    "llama-3.1-70b-versatile",
+    "llama-3.1-8b-instant",
+    "llama3-70b-8192",
+    "llama3-8b-8192",
+    "gemma2-9b-it",
+    "mixtral-8x7b-32768",
+]
+
+
+async def _get_available_models(api_key: str) -> list[str]:
+    """دریافت لیست مدل‌های موجود Groq."""
+    try:
+        client = AsyncGroq(api_key=api_key)
+        response = await client.models.list()
+        return [m.id for m in response.data]
+    except Exception as e:
+        logger.warning("خطا در دریافت لیست مدل‌ها: %s", e)
+        return []
+
+
+async def _pick_model(api_key: str, requested: str = "") -> str | None:
+    """انتخاب بهترین مدل موجود."""
+    available = await _get_available_models(api_key)
+
+    if available:
+        logger.info("مدل‌های موجود Groq: %s", ", ".join(available[:10]))
+
+    # اول اگه مدل درخواستی موجوده
+    if requested and requested in available:
+        return requested
+
+    # بعد مدل‌های ترجیحی
+    for m in PREFERRED_MODELS:
+        if m in available:
+            return m
+
+    # اگه هیچکدوم نبود، اولین مدل موجود
+    if available:
+        return available[0]
+
+    # اگه لیست خالی بود، از پیش‌فرض استفاده کن
+    return requested or "llama-3.3-70b-versatile"
+
+
+# ============================================================
+#  تولید محتوا
+# ============================================================
 
 async def generate_nutrition_post() -> tuple[str, str] | None:
     """تولید پست جدید. Returns (text, image_keyword) یا None."""
@@ -75,14 +132,24 @@ async def generate_nutrition_post() -> tuple[str, str] | None:
         logger.warning("کلید API تنظیم نشده.")
         return None
 
+    # انتخاب مدل
+    try:
+        model_name = await _pick_model(
+            settings.deepseek_api_key,
+            settings.deepseek_model or "",
+        )
+        if not model_name:
+            logger.error("هیچ مدلی پیدا نشد.")
+            return None
+        logger.info("✅ مدل انتخاب‌شده: %s", model_name)
+    except Exception as e:
+        logger.warning("خطا در انتخاب مدل: %s", e)
+        return None
+
     topic = random.choice(SEARCH_TOPICS)
 
     try:
         client = AsyncGroq(api_key=settings.deepseek_api_key)
-
-        # ⚡ اینجا از متغیر محیطی استفاده می‌کنه، نه هارد‌کد!
-        model_name = settings.deepseek_model or "llama-3.1-8b-instant"
-        logger.info("استفاده از مدل: %s", model_name)
 
         response = await client.chat.completions.create(
             model=model_name,
@@ -90,8 +157,6 @@ async def generate_nutrition_post() -> tuple[str, str] | None:
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": f"موضوع: {topic}"},
             ],
-            tools=[{"type": "browser_search"}],
-            tool_choice="auto",
             temperature=0.6,
             max_tokens=1000,
         )
@@ -116,6 +181,7 @@ async def generate_nutrition_post() -> tuple[str, str] | None:
 
 
 def _parse_ai_output(raw: str) -> tuple[str, str, str, str] | None:
+    """پارس خروجی AI برای استخراج title, body, source, keyword."""
     try:
         text = raw.replace("**", "").strip()
 
@@ -156,7 +222,12 @@ def _parse_ai_output(raw: str) -> tuple[str, str, str, str] | None:
         return None
 
 
+# ============================================================
+#  جستجوی عکس
+# ============================================================
+
 async def _get_duckduckgo_image(keyword: str) -> str | None:
+    """جستجوی عکس با DuckDuckGo."""
     try:
         from ddgs import DDGS
         with DDGS() as ddgs:
@@ -173,6 +244,7 @@ async def _get_duckduckgo_image(keyword: str) -> str | None:
 
 
 async def _get_themealdb_image(keyword: str) -> str | None:
+    """جستجوی عکس با TheMealDB."""
     kw_lower = keyword.lower()
     cat = None
     if any(w in kw_lower for w in ["chicken", "protein", "meat"]):
@@ -211,6 +283,7 @@ async def _get_themealdb_image(keyword: str) -> str | None:
 
 
 async def _get_foodish_image() -> str | None:
+    """جستجوی عکس با Foodish."""
     cat = random.choice([
         "biryani", "burger", "butter-chicken", "dessert",
         "dosa", "pasta", "pizza", "rice", "samosa",
@@ -234,6 +307,7 @@ async def _get_foodish_image() -> str | None:
 
 
 async def search_food_image(keyword: str) -> str | None:
+    """جستجوی عکس — به ترتیب اولویت."""
     img = await _get_duckduckgo_image(keyword)
     if img:
         logger.info("✅ عکس از DuckDuckGo برای: %s", keyword)
@@ -253,7 +327,12 @@ async def search_food_image(keyword: str) -> str | None:
     return None
 
 
+# ============================================================
+#  ارسال با عکس + کپشن
+# ============================================================
+
 async def _send_with_photo(bot, chat_id: int, content: str, keyword: str) -> bool:
+    """ارسال محتوا با عکس. اگه عکس نشد، فقط متن."""
     image_url = await search_food_image(keyword)
 
     if image_url:
@@ -293,7 +372,12 @@ async def _send_with_photo(bot, chat_id: int, content: str, keyword: str) -> boo
         return False
 
 
+# ============================================================
+#  ارسال به همه گروه‌ها
+# ============================================================
+
 async def broadcast_auto_content(bot) -> int:
+    """تولید محتوا و ارسال به همه گروه‌های ثبت‌شده."""
     try:
         groups = await repo.list_all_groups()
     except Exception as e:
@@ -327,6 +411,7 @@ async def broadcast_auto_content(bot) -> int:
 
 
 async def post_auto_content(bot, chat_id: int) -> bool:
+    """ارسال به یه گروه خاص (برای تست)."""
     result = await generate_nutrition_post()
     if result is None:
         return False

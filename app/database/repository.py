@@ -8,6 +8,7 @@ from app.database.models import (
     AuditLog,
     Group,
     Profile,
+    SentImage,
     User,
     WeightLog,
 )
@@ -82,7 +83,6 @@ async def list_all_groups() -> list[Group]:
 
 
 async def deactivate_group(chat_id: int) -> None:
-    """غیرفعال کردن یه گروه از لیست پست خودکار."""
     async with session_scope() as session:
         result = await session.execute(
             select(Group).where(Group.chat_id == chat_id)
@@ -94,7 +94,6 @@ async def deactivate_group(chat_id: int) -> None:
 
 
 async def count_groups() -> int:
-    """تعداد گروه‌های فعال."""
     async with session_scope() as session:
         result = await session.execute(
             select(func.count(Group.id)).where(Group.is_active == True)
@@ -157,11 +156,41 @@ async def audit(telegram_id: int | None, event: str, details: str | None = None)
 
 
 # ================================================================
+#  SENT IMAGES (جلوگیری از تکرار عکس)
+# ================================================================
+
+async def image_already_sent(image_url: str) -> bool:
+    """بررسی اینکه این URL قبلاً ارسال شده یا نه."""
+    async with session_scope() as session:
+        result = await session.execute(
+            select(SentImage).where(SentImage.image_url == image_url)
+        )
+        return result.scalar_one_or_none() is not None
+
+
+async def mark_image_sent(image_url: str, keyword: str = "") -> None:
+    """ثبت URL عکس به‌عنوان ارسال شده."""
+    async with session_scope() as session:
+        existing = await session.execute(
+            select(SentImage).where(SentImage.image_url == image_url)
+        )
+        if existing.scalar_one_or_none() is None:
+            session.add(SentImage(image_url=image_url, keyword=keyword[:300]))
+            await session.flush()
+
+
+async def count_sent_images() -> int:
+    """تعداد عکس‌های ارسال‌شده."""
+    async with session_scope() as session:
+        result = await session.execute(select(func.count(SentImage.id)))
+        return result.scalar_one() or 0
+
+
+# ================================================================
 #  QUIZ
 # ================================================================
 
 def _current_week_start() -> str:
-    """شنبه‌ی هفته‌ی جاری (YYYY-MM-DD)."""
     today = date.today()
     days_since_saturday = (today.weekday() - 5) % 7
     saturday = today - timedelta(days=days_since_saturday)
@@ -178,7 +207,6 @@ async def record_quiz_answer(
     question_text: str,
     position: int,
 ) -> None:
-    """ثبت یه پاسخ درست."""
     week = _current_week_start()
 
     async with session_scope() as session:
@@ -243,7 +271,6 @@ async def record_quiz_answer(
 
 
 async def record_quiz_wrong(telegram_id: int, chat_id: int) -> None:
-    """ثبت یه پاسخ اشتباه (ریست استریک)."""
     week = _current_week_start()
     async with session_scope() as session:
         result = await session.execute(
@@ -283,7 +310,6 @@ async def get_user_rank(
     telegram_id: int,
     chat_id: int,
 ) -> tuple[int, int, int]:
-    """(rank, points, streak). rank 1-based; 0 = پیدا نشد."""
     week = _current_week_start()
     async with session_scope() as session:
         result = await session.execute(

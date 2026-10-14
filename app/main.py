@@ -551,10 +551,10 @@ async def post_init(application: Application) -> None:
     if application.job_queue is not None:
         try:
             interval_seconds = int(
-                os.environ.get("AUTO_POST_INTERVAL_HOURS", "8")
+                os.environ.get("AUTO_POST_INTERVAL_HOURS", "4")
             ) * 3600
         except ValueError:
-            interval_seconds = 8 * 3600
+            interval_seconds = 4 * 3600
 
         try:
             first_delay = int(

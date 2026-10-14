@@ -64,14 +64,12 @@ class Profile(Base):
     )
 
     age: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    gender: Mapped[str | None] = mapped_column(String(16), nullable=True)  # "male" | "female"
+    gender: Mapped[str | None] = mapped_column(String(16), nullable=True)
     height_cm: Mapped[float | None] = mapped_column(Float, nullable=True)
     weight_kg: Mapped[float | None] = mapped_column(Float, nullable=True)
     target_weight_kg: Mapped[float | None] = mapped_column(Float, nullable=True)
     goal: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    # goal: "lose" | "gain" | "muscle" | "maintain" | "quality" | "sport"
     activity_level: Mapped[str | None] = mapped_column(String(16), nullable=True)
-    # activity_level: "sedentary" | "light" | "moderate" | "high"
     exercise_per_week: Mapped[int | None] = mapped_column(Integer, nullable=True)
     exercise_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
     meals_per_day: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -109,10 +107,10 @@ class DailyLog(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
-    log_date: Mapped[str] = mapped_column(String(10), index=True)  # YYYY-MM-DD
+    log_date: Mapped[str] = mapped_column(String(10), index=True)
     water_glasses: Mapped[int] = mapped_column(Integer, default=0)
     meals_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
-    adherence_score: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 0-10
+    adherence_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     __table_args__ = (UniqueConstraint("user_id", "log_date", name="uq_user_day"),)
@@ -123,8 +121,8 @@ class Reminder(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
-    kind: Mapped[str] = mapped_column(String(32))  # "breakfast" | "lunch" | ...
-    time_hhmm: Mapped[str] = mapped_column(String(5))  # "08:30"
+    kind: Mapped[str] = mapped_column(String(32))
+    time_hhmm: Mapped[str] = mapped_column(String(5))
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
@@ -134,7 +132,7 @@ class Conversation(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
-    role: Mapped[str] = mapped_column(String(16))  # "user" | "assistant"
+    role: Mapped[str] = mapped_column(String(16))
     content: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
@@ -147,3 +145,13 @@ class AuditLog(Base):
     event: Mapped[str] = mapped_column(String(64))
     details: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class SentImage(Base):
+    """URL عکس‌هایی که قبلاً ارسال شده‌اند (برای جلوگیری از تکرار)."""
+    __tablename__ = "sent_images"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    image_url: Mapped[str] = mapped_column(String(1000), unique=True, index=True)
+    keyword: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    sent_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

@@ -17,17 +17,12 @@ _RATE_MAX_REQUESTS = 10
 _user_requests: dict[int, deque] = defaultdict(deque)
 
 
-# ============================================================
-#  مدل‌های ترجیحی Groq (به ترتیب اولویت)
-# ============================================================
-
 PREFERRED_MODELS = [
     "openai/gpt-oss-120b",
     "llama-3.3-70b-versatile",
     "llama-3.1-70b-versatile",
-    "llama-3.1-8b-instant",
-    "llama3-70b-8192",
-    "llama3-8b-8192",
+    "qwen/qwen3.8-27b",
+    "openai/gpt-oss-20b",
     "gemma2-9b-it",
     "mixtral-8x7b-32768",
 ]
@@ -47,24 +42,47 @@ def _check_rate_limit(user_id: int) -> tuple[bool, int]:
 
 SYSTEM_PROMPT = """تو «تغذیه‌یار» هستی، دستیار هوشمند تغذیه در یک گروه تلگرام فارسی.
 
-وظایف تو:
-- پاسخ دادن به سوالات تغذیه‌ای به فارسی روان و طبیعی
-- پیشنهاد غذاهای ایرانی و سالم
-- کمک به انتخاب وعده‌های غذایی
-- محاسبه تقریبی ارزش غذایی (فقط تخمین)
-- راهنمایی در مورد کاهش یا افزایش وزن به شکل ایمن
+🎨 قوانین خروجی (مهم!):
+تو خروجی HTML می‌دی که تلگرام رندر می‌کنه. فقط از این تگ‌ها استفاده کن:
+<b>متن</b> — بولد
+<i>متن</i> — ایتالیک
+<code>متن</code> — کد درون‌خطی
+<pre>متن</pre> — بلوک monospace (برای جدول!)
+<blockquote>متن</blockquote> — نقل‌قول (پس‌زمینه خاکستری)
+<a href="لینک">متن</a> — لینک
 
-قوانین مهم:
-1. پاسخ‌هایت کوتاه باشند (حداکثر ۴-۵ خط).
-2. هیچ‌وقت خودت را پزشک یا متخصص تغذیه معرفی نکن.
-3. برای شرایط پزشکی خاص حتماً بگو «با پزشک مشورت کن».
-4. برای کودکان زیر ۱۸ سال توصیه رژیمی نده.
-5. هیچ‌وقت ادعای قطعی نکن — بگو «تقریبی».
-6. از ایموجی‌های کم و مناسب استفاده کن.
-7. اگه سوال مبهمه، یه سوال تکمیلی کوتاه بپرس.
-8. فارسی روان جواب بده.
-9. اطلاعات پزشکی حساس رو تکرار نکن.
-10. پاسخ‌هایت به فارسی و خوانا باشن.
+❌ ممنوع: markdown (`**`, `##`, `|`), جدول markdown, تگ‌های غیرمجاز مثل <div>, <table>, <tr>, <td>.
+
+📊 ساخت جدول با <pre>:
+حتماً از <pre>...</pre> برای جدول استفاده کن. چون فونت monospace داره و ستون‌ها هم‌تراز می‌شن.
+
+برای جدول راست‌چین فارسی، از این الگو استفاده کن:
+
+<blockquote>📊 عنوان جدول</blockquote>
+
+<pre>
+میوه            کالری
+━━━━━━━━━━━━━━━━━━━━
+🍎 سیب           52
+🍌 موز           89
+🍊 پرتقال        47
+🍇 انگور         69
+</pre>
+
+⚠️ نکته مهم: توی <pre>، حتماً از فاصله‌های دقیق استفاده کن تا ستون‌ها هم‌تراز بشن. هر ردیف باید ۱۰-۱۵ کاراکتر فاصله بین اسم و مقدار داشته باشه.
+
+📌 پاسخ‌های عادی:
+- کوتاه (حداکثر ۴-۵ خط)
+- فارسی روان
+- از ایموجی‌های مناسب استفاده کن
+- برای شرایط پزشکی خاص بگو «با پزشک مشورت کن»
+- برای کودکان زیر ۱۸ سال توصیه رژیمی نده
+
+📌 برای سوالات جدولی:
+- از <pre> استفاده کن
+- عنوان رو در <blockquote> بذار
+- خط جداکننده (━━━ یا ───) بین هدر و ردیف‌ها بذار
+- ستون‌ها رو با فاصله هم‌تراز کن
 """
 
 
@@ -72,7 +90,6 @@ class AIService:
     def __init__(self):
         settings = get_settings()
         self.api_key = settings.deepseek_api_key
-        self.base_url = settings.deepseek_base_url
         self.requested_model = settings.deepseek_model or ""
         self.mock = settings.mock_mode or not self.api_key
         self._client: Optional[AsyncGroq] = None
@@ -84,7 +101,6 @@ class AIService:
         return self._client
 
     async def _pick_model(self) -> str | None:
-        """انتخاب بهترین مدل موجود در Groq."""
         if self._model_name:
             return self._model_name
 
@@ -97,24 +113,20 @@ class AIService:
             logger.warning("خطا در دریافت لیست مدل‌ها: %s", e)
             available = []
 
-        # اگه مدل درخواستی موجوده
         if self.requested_model and self.requested_model in available:
             self._model_name = self.requested_model
             return self._model_name
 
-        # از بین اولویت‌ها
         for m in PREFERRED_MODELS:
             if m in available:
                 self._model_name = m
                 return self._model_name
 
-        # اگه هیچکدوم نبود، اولین مدل موجود
         if available:
             self._model_name = available[0]
             return self._model_name
 
-        # اگه لیست خالی بود، پیش‌فرض
-        self._model_name = self.requested_model or "llama-3.3-70b-versatile"
+        self._model_name = self.requested_model or "openai/gpt-oss-120b"
         return self._model_name
 
     async def ask(
@@ -179,7 +191,7 @@ class AIService:
                 model=model_name,
                 messages=messages,
                 temperature=0.7,
-                max_tokens=600,
+                max_tokens=1500,
                 top_p=0.95,
             )
             reply = (response.choices[0].message.content or "").strip()

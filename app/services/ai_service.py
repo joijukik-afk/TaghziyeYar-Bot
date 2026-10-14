@@ -5,7 +5,7 @@ import time
 from collections import defaultdict, deque
 from typing import Optional
 
-from openai import AsyncOpenAI
+from groq import AsyncGroq
 
 from app.config import get_settings
 
@@ -15,6 +15,22 @@ _RATE_WINDOW_SECONDS = 60
 _RATE_MAX_REQUESTS = 10
 
 _user_requests: dict[int, deque] = defaultdict(deque)
+
+
+# ============================================================
+#  مدل‌های ترجیحی Groq (به ترتیب اولویت)
+# ============================================================
+
+PREFERRED_MODELS = [
+    "openai/gpt-oss-120b",
+    "llama-3.3-70b-versatile",
+    "llama-3.1-70b-versatile",
+    "llama-3.1-8b-instant",
+    "llama3-70b-8192",
+    "llama3-8b-8192",
+    "gemma2-9b-it",
+    "mixtral-8x7b-32768",
+]
 
 
 def _check_rate_limit(user_id: int) -> tuple[bool, int]:
@@ -57,19 +73,49 @@ class AIService:
         settings = get_settings()
         self.api_key = settings.deepseek_api_key
         self.base_url = settings.deepseek_base_url
-        self.model = settings.deepseek_model
+        self.requested_model = settings.deepseek_model or ""
         self.mock = settings.mock_mode or not self.api_key
-        self._client: Optional[AsyncOpenAI] = None
+        self._client: Optional[AsyncGroq] = None
+        self._model_name: Optional[str] = None
 
-    def _get_client(self) -> AsyncOpenAI:
+    def _get_client(self) -> AsyncGroq:
         if self._client is None:
-            self._client = AsyncOpenAI(
-                api_key=self.api_key,
-                base_url=self.base_url,
-                timeout=30.0,
-                max_retries=1,
-            )
+            self._client = AsyncGroq(api_key=self.api_key)
         return self._client
+
+    async def _pick_model(self) -> str | None:
+        """انتخاب بهترین مدل موجود در Groq."""
+        if self._model_name:
+            return self._model_name
+
+        try:
+            client = self._get_client()
+            response = await client.models.list()
+            available = [m.id for m in response.data]
+            logger.info("مدل‌های موجود Groq: %s", ", ".join(available[:10]))
+        except Exception as e:
+            logger.warning("خطا در دریافت لیست مدل‌ها: %s", e)
+            available = []
+
+        # اگه مدل درخواستی موجوده
+        if self.requested_model and self.requested_model in available:
+            self._model_name = self.requested_model
+            return self._model_name
+
+        # از بین اولویت‌ها
+        for m in PREFERRED_MODELS:
+            if m in available:
+                self._model_name = m
+                return self._model_name
+
+        # اگه هیچکدوم نبود، اولین مدل موجود
+        if available:
+            self._model_name = available[0]
+            return self._model_name
+
+        # اگه لیست خالی بود، پیش‌فرض
+        self._model_name = self.requested_model or "llama-3.3-70b-versatile"
+        return self._model_name
 
     async def ask(
         self,
@@ -122,9 +168,15 @@ class AIService:
         messages.append({"role": "user", "content": user_message})
 
         try:
+            model_name = await self._pick_model()
+            if not model_name:
+                return ("😔 مدل AI در دسترس نیست.", "error")
+
+            logger.info("استفاده از مدل: %s", model_name)
+
             client = self._get_client()
             response = await client.chat.completions.create(
-                model=self.model,
+                model=model_name,
                 messages=messages,
                 temperature=0.7,
                 max_tokens=600,

@@ -14,10 +14,6 @@ from app.utils.message_formatter import with_signature
 logger = logging.getLogger(__name__)
 
 
-# ============================================================
-#  موضوعات
-# ============================================================
-
 SEARCH_TOPICS = [
     "آخرین یافته‌های علمی 2025 درباره تغذیه و سلامت",
     "مطالعات جدید درباره ویتامین‌ها و مواد معدنی",
@@ -47,10 +43,6 @@ SEARCH_TOPICS = [
 ]
 
 
-# ============================================================
-#  پرامپت جدید — کیفیت بالا + کلمه کلیدی عکس
-# ============================================================
-
 SYSTEM_PROMPT = """تو یک متخصص تغذیه و سلامت هستی که برای یک گروه تلگرام فارسی محتوا تولید می‌کنی.
 
 وظیفه تو:
@@ -72,19 +64,8 @@ TITLE: [عنوان جذاب فارسی]
 BODY: [متن ۳ تا ۴ خطی فارسی]
 
 SOURCE: [نام منبع + لینک]
-
-مثال خروجی:
-
-IMAGE_KEYWORD: fresh salmon fish omega 3
-TITLE: چرا امگا-۳ برای قلب شما حیاتی است؟
-BODY: اسیدهای چرب امگا-۳ که در ماهی‌های چرب مثل سالمون و ساردین یافت می‌شوند، نقش کلیدی در کاهش التهاب و سلامت قلب دارند. طبق مطالعات جدید، مصرف هفته‌ای دو بار ماهی می‌تواند خطر بیماری‌های قلبی را تا ۳۶٪ کاهش دهد. این چربی‌های سالم برای مغز و چشم هم ضروری هستند.
-SOURCE: Harvard Health - https://www.health.harvard.edu/...
 """
 
-
-# ============================================================
-#  تولید محتوا
-# ============================================================
 
 async def generate_nutrition_post() -> tuple[str, str] | None:
     """تولید پست جدید. Returns (text, image_keyword) یا None."""
@@ -99,8 +80,12 @@ async def generate_nutrition_post() -> tuple[str, str] | None:
     try:
         client = AsyncGroq(api_key=settings.deepseek_api_key)
 
+        # ⚡ اینجا از متغیر محیطی استفاده می‌کنه، نه هارد‌کد!
+        model_name = settings.deepseek_model or "llama-3.1-8b-instant"
+        logger.info("استفاده از مدل: %s", model_name)
+
         response = await client.chat.completions.create(
-            model="openai/gpt-oss-120b",
+            model=model_name,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": f"موضوع: {topic}"},
@@ -116,11 +101,9 @@ async def generate_nutrition_post() -> tuple[str, str] | None:
             logger.warning("پاسخ خالی از AI.")
             return None
 
-        # پارس کردن خروجی
         parsed = _parse_ai_output(raw)
         if parsed is None:
-            logger.warning("فرمت خروجی AI قابل پارس نبود. متن خام: %s", raw[:200])
-            # Fallback: کل متن رو بفرست با کلمه کلیدی ثابت
+            logger.warning("فرمت خروجی AI قابل پارس نبود.")
             return raw.strip(), "healthy nutrition food"
 
         title, body, source, keyword = parsed
@@ -133,12 +116,9 @@ async def generate_nutrition_post() -> tuple[str, str] | None:
 
 
 def _parse_ai_output(raw: str) -> tuple[str, str, str, str] | None:
-    """پارس خروجی AI برای استخراج title, body, source, keyword."""
     try:
-        # نرمال‌سازی
         text = raw.replace("**", "").strip()
 
-        # استخراج IMAGE_KEYWORD
         kw_match = re.search(
             r"IMAGE_KEYWORD\s*:\s*(.+?)(?=\n\s*TITLE|\n\s*BODY|\n\s*SOURCE|\Z)",
             text, re.DOTALL | re.IGNORECASE
@@ -146,7 +126,6 @@ def _parse_ai_output(raw: str) -> tuple[str, str, str, str] | None:
         keyword = kw_match.group(1).strip() if kw_match else "healthy nutrition food"
         keyword = keyword.split("\n")[0].strip()
 
-        # استخراج TITLE
         title_match = re.search(
             r"TITLE\s*:\s*(.+?)(?=\n\s*BODY|\n\s*SOURCE|\Z)",
             text, re.DOTALL | re.IGNORECASE
@@ -154,14 +133,12 @@ def _parse_ai_output(raw: str) -> tuple[str, str, str, str] | None:
         title = title_match.group(1).strip() if title_match else ""
         title = title.split("\n")[0].strip()
 
-        # استخراج BODY
         body_match = re.search(
             r"BODY\s*:\s*(.+?)(?=\n\s*SOURCE|\Z)",
             text, re.DOTALL | re.IGNORECASE
         )
         body = body_match.group(1).strip() if body_match else ""
 
-        # استخراج SOURCE
         source_match = re.search(
             r"SOURCE\s*:\s*(.+?)\Z",
             text, re.DOTALL | re.IGNORECASE
@@ -179,18 +156,12 @@ def _parse_ai_output(raw: str) -> tuple[str, str, str, str] | None:
         return None
 
 
-# ============================================================
-#  جستجوی عکس — اولویت با تطابق
-# ============================================================
-
 async def _get_duckduckgo_image(keyword: str) -> str | None:
-    """جستجوی عکس با DuckDuckGo — بهترین تطابق."""
     try:
         from ddgs import DDGS
         with DDGS() as ddgs:
             results = list(ddgs.images(keyword, max_results=8))
             if results:
-                # انتخاب از بین ۳ تای اول (مطمئن‌تر)
                 top = results[:3]
                 chosen = random.choice(top)
                 url = chosen.get("image")
@@ -202,8 +173,6 @@ async def _get_duckduckgo_image(keyword: str) -> str | None:
 
 
 async def _get_themealdb_image(keyword: str) -> str | None:
-    """TheMealDB — تطابق با دسته‌بندی."""
-    # حدس دسته از keyword
     kw_lower = keyword.lower()
     cat = None
     if any(w in kw_lower for w in ["chicken", "protein", "meat"]):
@@ -242,7 +211,6 @@ async def _get_themealdb_image(keyword: str) -> str | None:
 
 
 async def _get_foodish_image() -> str | None:
-    """Foodish — آخرین راه‌حل."""
     cat = random.choice([
         "biryani", "burger", "butter-chicken", "dessert",
         "dosa", "pasta", "pizza", "rice", "samosa",
@@ -266,20 +234,16 @@ async def _get_foodish_image() -> str | None:
 
 
 async def search_food_image(keyword: str) -> str | None:
-    """جستجوی عکس — اولویت با تطابق موضوع."""
-    # ۱) DuckDuckGo (بهترین تطابق با keyword)
     img = await _get_duckduckgo_image(keyword)
     if img:
         logger.info("✅ عکس از DuckDuckGo برای: %s", keyword)
         return img
 
-    # ۲) TheMealDB (تطابق با دسته)
     img = await _get_themealdb_image(keyword)
     if img:
         logger.info("✅ عکس از TheMealDB برای: %s", keyword)
         return img
 
-    # ۳) Foodish (رندوم)
     img = await _get_foodish_image()
     if img:
         logger.info("✅ عکس از Foodish (رندوم)")
@@ -289,12 +253,7 @@ async def search_food_image(keyword: str) -> str | None:
     return None
 
 
-# ============================================================
-#  ارسال با عکس + کپشن
-# ============================================================
-
 async def _send_with_photo(bot, chat_id: int, content: str, keyword: str) -> bool:
-    """ارسال محتوا با عکس. اگه عکس نشد، فقط متن."""
     image_url = await search_food_image(keyword)
 
     if image_url:
@@ -309,7 +268,6 @@ async def _send_with_photo(bot, chat_id: int, content: str, keyword: str) -> boo
         except Exception as e:
             logger.warning("ارسال عکس خطا داد: %s", e)
 
-            # تلاش دوم با عکس دیگه
             try:
                 backup = await _get_themealdb_image(keyword) or await _get_foodish_image()
                 if backup:
@@ -323,7 +281,6 @@ async def _send_with_photo(bot, chat_id: int, content: str, keyword: str) -> boo
             except Exception as e2:
                 logger.warning("تلاش دوم هم خطا: %s", e2)
 
-    # Fallback: فقط متن
     try:
         await bot.send_message(
             chat_id=chat_id,
@@ -336,12 +293,7 @@ async def _send_with_photo(bot, chat_id: int, content: str, keyword: str) -> boo
         return False
 
 
-# ============================================================
-#  ارسال به همه گروه‌ها
-# ============================================================
-
 async def broadcast_auto_content(bot) -> int:
-    """تولید محتوا و ارسال به همه گروه‌های ثبت‌شده."""
     try:
         groups = await repo.list_all_groups()
     except Exception as e:
@@ -375,7 +327,6 @@ async def broadcast_auto_content(bot) -> int:
 
 
 async def post_auto_content(bot, chat_id: int) -> bool:
-    """ارسال به یه گروه خاص (برای تست)."""
     result = await generate_nutrition_post()
     if result is None:
         return False

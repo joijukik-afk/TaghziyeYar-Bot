@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-#  Health server (برای سرور رندر)
+#  Health server (فقط برای اجرای لوکال)
 # ---------------------------------------------------------------------------
 
 class _HealthHandler(BaseHTTPRequestHandler):
@@ -75,7 +75,6 @@ def _start_health_server() -> None:
 #  🛡️ Security & Privacy Helpers (سیستم امنیتی)
 # ---------------------------------------------------------------------------
 
-# دیکشنری برای جلوگیری از اسپم (Anti-Flood)
 _user_last_message_time = {}
 
 def private_only(func):
@@ -98,7 +97,7 @@ def private_only(func):
                 )
             elif update.callback_query:
                 await update.callback_query.answer("لطفاً برای اطلاعات شخصی به چت خصوصی ربات بروید.", show_alert=True)
-            return # متوقف کردن اجرای دستور اصلی
+            return 
             
         return await func(update, context, *args, **kwargs)
     return wrapper
@@ -115,10 +114,9 @@ def rate_limited(func):
         user_id = update.effective_user.id
         current_time = time.time()
         
-        # محدودیت ۲ ثانیه‌ای بین هر پیام
         if user_id in _user_last_message_time:
             if current_time - _user_last_message_time[user_id] < 2.0:
-                return # نادیده گرفتن پیام برای جلوگیری از بن شدن
+                return 
                 
         _user_last_message_time[user_id] = current_time
         return await func(update, context, *args, **kwargs)
@@ -487,7 +485,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if not text:
         return
 
-    # 🛡️ لایه امنیتی ۱: جلوگیری از ثبت نام و ثبت وزن در گروه
     if is_group(update):
         if context.user_data.get("awaiting_weight") or context.user_data.get("setup_step", "IDLE") != "IDLE":
             await update.message.reply_text(
@@ -506,7 +503,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     user = update.effective_user
     profile_summary = ""
     
-    # 🛡️ لایه امنیتی ۲: در گروه، پروفایل کاربر به هوش مصنوعی ارسال نمی‌شود
     if user and not is_group(update):
         db_user = await repo.get_user_by_telegram_id(user.id)
         if db_user:
@@ -762,19 +758,19 @@ def build_application() -> Application:
 
 
 def main() -> None:
-    _start_health_server()
     application = build_application()
     logger.info("Starting bot...")
     
-    # 🚀 تشخیص خودکار محیط Render (بدون نیاز به تنظیمات اضافی)
+    # 🚀 تشخیص خودکار محیط Render
     render_url = os.environ.get("RENDER_EXTERNAL_URL", "").strip()
     
     if render_url:
-        # حالت Webhook مخصوص رندر (بدون خطای 409 و بدون خوابیدن)
+        # حالت Webhook مخصوص Render (ضد خطای 409 و ضد خوابیدن)
         port = int(os.environ.get("PORT", "8080"))
         url_path = application.bot.token
         logger.info(f"Starting bot in WEBHOOK mode on {render_url}")
         
+        # ❌ سرور Health Check دستی را اینجا صدا نمی‌زنیم تا با پورت تداخل نداشته باشد
         application.run_webhook(
             listen="0.0.0.0",
             port=port,
@@ -784,7 +780,8 @@ def main() -> None:
             drop_pending_updates=True,
         )
     else:
-        # حالت لوکال (برای کامپیوتر شخصی)
+        # حالت لوکال (برای اجرا روی کامپیوتر شخصی)
+        _start_health_server() 
         logger.info("Starting bot in POLLING mode (Local)")
         application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 

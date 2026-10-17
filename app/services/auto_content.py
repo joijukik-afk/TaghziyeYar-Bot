@@ -46,8 +46,8 @@ SEARCH_TOPICS = [
 PREFERRED_MODELS = [
     "llama-3.3-70b-versatile",
     "llama-3.1-70b-versatile",
-    "openai/gpt-oss-120b",
     "qwen/qwen3.8-27b",
+    "openai/gpt-oss-120b",
     "openai/gpt-oss-20b",
     "gemma2-9b-it",
     "mixtral-8x7b-32768",
@@ -118,49 +118,54 @@ async def generate_nutrition_post() -> tuple[str, str] | None:
         logger.warning("کلید API تنظیم نشده.")
         return None
 
-    try:
-        model_name = await _pick_model(api_key, req_model)
-        if not model_name:
-            logger.error("هیچ مدلی پیدا نشد.")
-            return None
-        logger.info("✅ مدل انتخاب‌شده برای پست: %s", model_name)
-    except Exception as e:
-        logger.warning("خطا در انتخاب مدل: %s", e)
-        return None
-
+    # لیست مدل‌هایی که در صورت خطا یا پاسخ خالی امتحان می‌شوند
+    # مدل qwen در لیست لاگ شما بود و بسیار قوی است
+    models_to_try = [req_model, "qwen/qwen3.8-27b", "openai/gpt-oss-120b"] if req_model else ["qwen/qwen3.8-27b", "openai/gpt-oss-120b"]
+    
     topic = random.choice(SEARCH_TOPICS)
+    client = AsyncGroq(api_key=api_key)
 
-    try:
-        client = AsyncGroq(api_key=api_key)
+    for model_name in models_to_try:
+        if not model_name: 
+            continue
+        
+        try:
+            logger.info("تلاش برای تولید محتوا با مدل: %s", model_name)
 
-        response = await client.chat.completions.create(
-            model=model_name,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": f"موضوع: {topic}"},
-            ],
-            temperature=0.3,  # 🔥 کاهش دما برای جلوگیری از تولید منابع جعلی و اعداد اشتباه
-            max_tokens=1000,
-        )
+            response = await client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": f"موضوع: {topic}"},
+                ],
+                temperature=0.3,
+                max_tokens=2500,  # 🔥 افزایش یافت تا مدل‌های استدلالی فرصت جواب دادن داشته باشند
+            )
 
-        raw = response.choices[0].message.content
-        if not raw:
-            logger.warning("پاسخ خالی از AI.")
-            return None
+            raw = response.choices[0].message.content
+            
+            # اگر پاسخ خالی بود، سراغ مدل بعدی برو
+            if not raw or not raw.strip():
+                logger.warning("پاسخ خالی از مدل %s دریافت شد. تلاش با مدل بعدی...", model_name)
+                continue
 
-        parsed = _parse_ai_output(raw)
-        if parsed is None:
-            logger.warning("فرمت خروجی AI قابل پارس نبود.")
-            return raw.strip(), "healthy nutrition food"
+            parsed = _parse_ai_output(raw)
+            if parsed is None:
+                logger.warning("فرمت خروجی AI برای مدل %s قابل پارس نبود.", model_name)
+                # اگر پارس نشد، خود متن خام را بفرست
+                return raw.strip(), "healthy nutrition food"
 
-        title, body, source, keyword = parsed
-        final_text = f"📌 {title}\n\n{body}\n\n🔗 منبع: {source}"
-        logger.info("📝 کلمه کلیدی عکس: %s", keyword)
-        return final_text, keyword
+            title, body, source, keyword = parsed
+            final_text = f"📌 {title}\n\n{body}\n\n🔗 منبع: {source}"
+            logger.info("✅ محتوا با موفقیت با مدل %s تولید شد. کلمه کلیدی عکس: %s", model_name, keyword)
+            return final_text, keyword
 
-    except Exception as e:
-        logger.warning("خطا در تولید: %s", e)
-        return None
+        except Exception as e:
+            logger.warning("خطا در تولید با مدل %s: %s", model_name, e)
+            continue # سراغ مدل بعدی برو
+
+    logger.error("همه مدل‌ها خطا دادند یا پاسخ خالی برگرداندند.")
+    return None
 
 
 def _parse_ai_output(raw: str) -> tuple[str, str, str, str] | None:

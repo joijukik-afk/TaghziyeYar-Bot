@@ -18,9 +18,9 @@ _user_requests: dict[int, deque] = defaultdict(deque)
 
 
 PREFERRED_MODELS = [
-    "openai/gpt-oss-120b",
     "llama-3.3-70b-versatile",
     "llama-3.1-70b-versatile",
+    "openai/gpt-oss-120b",
     "qwen/qwen3.8-27b",
     "openai/gpt-oss-20b",
     "gemma2-9b-it",
@@ -40,7 +40,13 @@ def _check_rate_limit(user_id: int) -> tuple[bool, int]:
     return True, 0
 
 
-SYSTEM_PROMPT = """تو «تغذیه‌یار» هستی، دستیار هوشمند تغذیه در یک گروه تلگرام فارسی.
+# 🧠 پرامپت تقویت‌شده: دقت علمی بالا + جلوگیری از توهم‌زنی + حفظ فرمت HTML
+SYSTEM_PROMPT = """تو «تغذیه‌یار» هستی، یک متخصص تغذیه دقیق، علمی و قابل اعتماد در تلگرام.
+
+🚨 قوانین حیاتی اطلاعاتی (بسیار مهم):
+1. هرگز اطلاعات غلط نده. اگر کالری یا عدد دقیقی را نمی‌دانی، از کلمه «تقریبی» استفاده کن.
+2. هیچ‌گاه توصیه پزشکی (مثل تجویز دارو یا دوز ویتامین برای بیماری خاص) نکن. همیشه برای بیماری‌های خاص (دیابت، کلیه، بارداری) به پزشک ارجاع بده.
+3. اگر سوالی کاملاً بی‌ربط به تغذیه، سلامت و ورزش بود، مودبانه بگو که تخصص تو فقط در حوزه تغذیه است.
 
 🎨 قوانین خروجی (مهم!):
 تو خروجی HTML می‌دی که تلگرام رندر می‌کنه. فقط از این تگ‌ها استفاده کن:
@@ -55,7 +61,6 @@ SYSTEM_PROMPT = """تو «تغذیه‌یار» هستی، دستیار هوشم
 
 📊 ساخت جدول با <pre>:
 حتماً از <pre>...</pre> برای جدول استفاده کن. چون فونت monospace داره و ستون‌ها هم‌تراز می‌شن.
-
 برای جدول راست‌چین فارسی، از این الگو استفاده کن:
 
 <blockquote>📊 عنوان جدول</blockquote>
@@ -69,28 +74,22 @@ SYSTEM_PROMPT = """تو «تغذیه‌یار» هستی، دستیار هوشم
 🍇 انگور         69
 </pre>
 
-⚠️ نکته مهم: توی <pre>، حتماً از فاصله‌های دقیق استفاده کن تا ستون‌ها هم‌تراز بشن. هر ردیف باید ۱۰-۱۵ کاراکتر فاصله بین اسم و مقدار داشته باشه.
+⚠️ نکته: توی <pre> حتماً از فاصله‌های دقیق استفاده کن تا ستون‌ها هم‌تراز بشن.
 
 📌 پاسخ‌های عادی:
-- کوتاه (حداکثر ۴-۵ خط)
+- کوتاه و مفید (حداکثر ۵-۶ خط)
 - فارسی روان
 - از ایموجی‌های مناسب استفاده کن
-- برای شرایط پزشکی خاص بگو «با پزشک مشورت کن»
-- برای کودکان زیر ۱۸ سال توصیه رژیمی نده
-
-📌 برای سوالات جدولی:
-- از <pre> استفاده کن
-- عنوان رو در <blockquote> بذار
-- خط جداکننده (━━━ یا ───) بین هدر و ردیف‌ها بذار
-- ستون‌ها رو با فاصله هم‌تراز کن
+- لحن تو باید دوستانه، انگیزه‌بخش و علمی باشد.
 """
 
 
 class AIService:
     def __init__(self):
         settings = get_settings()
-        self.api_key = settings.deepseek_api_key
-        self.requested_model = settings.deepseek_model or ""
+        # استفاده از هر دو نام برای سازگاری کامل
+        self.api_key = getattr(settings, 'groq_api_key', '') or getattr(settings, 'deepseek_api_key', '')
+        self.requested_model = getattr(settings, 'groq_model', '') or getattr(settings, 'deepseek_model', '')
         self.mock = settings.mock_mode or not self.api_key
         self._client: Optional[AsyncGroq] = None
         self._model_name: Optional[str] = None
@@ -126,7 +125,7 @@ class AIService:
             self._model_name = available[0]
             return self._model_name
 
-        self._model_name = self.requested_model or "openai/gpt-oss-120b"
+        self._model_name = self.requested_model or "llama-3.3-70b-versatile"
         return self._model_name
 
     async def ask(
@@ -190,9 +189,9 @@ class AIService:
             response = await client.chat.completions.create(
                 model=model_name,
                 messages=messages,
-                temperature=0.7,
-                max_tokens=1500,
-                top_p=0.95,
+                temperature=0.2,  # 🔥 تغییر حیاتی: کاهش دما برای دقت علمی بالا
+                max_tokens=800,   # جلوگیری از پاسخ‌های بی‌نهایت طولانی
+                top_p=0.9,        # متمرکزتر شدن روی کلمات با احتمال بالا
             )
             reply = (response.choices[0].message.content or "").strip()
             if not reply:

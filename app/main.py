@@ -3,7 +3,9 @@
 import logging
 import os
 import re
+import time
 import threading
+from functools import wraps
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -44,7 +46,7 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-#  Health server
+#  Health server (برای Render)
 # ---------------------------------------------------------------------------
 
 class _HealthHandler(BaseHTTPRequestHandler):
@@ -68,6 +70,60 @@ def _start_health_server() -> None:
     threading.Thread(target=server.serve_forever, daemon=True).start()
     logger.info("Health server listening on port %s", port)
 
+
+# ---------------------------------------------------------------------------
+#  🛡️ Security & Privacy Helpers (سیستم امنیتی)
+# ---------------------------------------------------------------------------
+
+# دیکشنری برای جلوگیری از اسپم (Anti-Flood)
+_user_last_message_time = {}
+
+def private_only(func):
+    """
+    دکوراتور امنیتی: دستورات حساس را فقط در چت خصوصی اجرا می‌کند.
+    اگر در گروه زده شود، دکمه هدایت به پی وی می‌فرستد.
+    """
+    @wraps(func)
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
+        if is_group(update):
+            bot_username = context.bot.username
+            deep_link = f"https://t.me/{bot_username}?start=private_setup"
+            keyboard = [[InlineKeyboardButton("🔒 ورود به چت خصوصی", url=deep_link)]]
+            
+            # بررسی اینکه آیا پیام وجود دارد (برای جلوگیری از خطا در کالبک‌ها)
+            if update.message:
+                await update.message.reply_text(
+                    "🛡️ برای حفظ ۱۰۰٪ حریم خصوصی، اطلاعات شخصی (وزن، قد، پروفایل) فقط در چت خصوصی ثبت و نمایش داده می‌شود.\n"
+                    "لطفاً روی دکمه زیر کلیک کنید:",
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+            elif update.callback_query:
+                await update.callback_query.answer("لطفاً برای اطلاعات شخصی به چت خصوصی ربات بروید.", show_alert=True)
+            return # اجرای دستور اصلی متوقف می‌شود
+            
+        return await func(update, context, *args, **kwargs)
+    return wrapper
+
+def rate_limited(func):
+    """
+    دکوراتور امنیتی: جلوگیری از اسپم شدن ربات در گروه‌ها
+    """
+    @wraps(func)
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
+        if not update.effective_user:
+            return await func(update, context, *args, **kwargs)
+
+        user_id = update.effective_user.id
+        current_time = time.time()
+        
+        # محدودیت ۲ ثانیه‌ای بین هر پیام
+        if user_id in _user_last_message_time:
+            if current_time - _user_last_message_time[user_id] < 2.0:
+                return # نادیده گرفتن پیام برای جلوگیری از بن شدن
+                
+        _user_last_message_time[user_id] = current_time
+        return await func(update, context, *args, **kwargs)
+    return wrapper
 
 # ---------------------------------------------------------------------------
 #  Auto-post job
@@ -212,6 +268,7 @@ async def _send_html_safe(bot, chat_id: int, text: str, reply_to: int | None = N
 #  Base commands
 # ---------------------------------------------------------------------------
 
+@rate_limited
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     if update.message is None:
@@ -221,14 +278,14 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         reply_markup=main_menu_keyboard(),
     )
 
-
+@rate_limited
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     if update.message is None:
         return
     await update.message.reply_text(with_signature(msg.HELP))
 
-
+@rate_limited
 async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     if update.message is None:
@@ -238,25 +295,23 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         reply_markup=main_menu_keyboard(),
     )
 
-
 async def cmd_about(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message is None:
         return
     await update.message.reply_text(with_signature(msg.ABOUT))
-
 
 async def cmd_privacy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message is None:
         return
     await update.message.reply_text(with_signature(msg.PRIVACY))
 
-
 async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message is None:
         return
     await update.message.reply_text(with_signature(msg.SETTINGS_TEXT))
 
-
+@private_only
+@rate_limited
 async def cmd_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     user = update.effective_user
@@ -296,11 +351,11 @@ async def cmd_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     lines.append("\n✏️ برای ویرایش، /setup رو بزن.")
     await update.message.reply_text(with_signature("\n".join(lines)))
 
-
+@private_only
+@rate_limited
 async def cmd_setup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     await wizard.start_setup(update, context)
-
 
 async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message is None:
@@ -310,106 +365,119 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 # ---------------------------------------------------------------------------
-#  Calculation commands
+#  Calculation commands (🔒 همگی خصوصی شدند)
 # ---------------------------------------------------------------------------
 
+@private_only
+@rate_limited
 async def cmd_bmi(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     await pcmd.cmd_bmi(update, context)
 
-
+@private_only
+@rate_limited
 async def cmd_calories(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     await pcmd.cmd_calories(update, context)
 
-
+@private_only
+@rate_limited
 async def cmd_weight(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     await pcmd.cmd_weight(update, context)
 
-
+@private_only
+@rate_limited
 async def cmd_progress(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     await pcmd.cmd_progress(update, context)
 
 
 # ---------------------------------------------------------------------------
-#  Extra commands
+#  Extra commands (عمومی در گروه، اما با ضد اسپم)
 # ---------------------------------------------------------------------------
 
+@rate_limited
 async def cmd_tip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     await ecmd.cmd_tip(update, context)
 
-
+@rate_limited
 async def cmd_fact(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     await ecmd.cmd_fact(update, context)
 
-
+@rate_limited
 async def cmd_myth(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     await ecmd.cmd_myth(update, context)
 
-
+@rate_limited
 async def cmd_water(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     await ecmd.cmd_water(update, context)
 
-
+@private_only
+@rate_limited
 async def cmd_macros(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     await ecmd.cmd_macros(update, context)
 
-
+@private_only
+@rate_limited
 async def cmd_protein(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     await ecmd.cmd_protein(update, context)
 
-
+@private_only
+@rate_limited
 async def cmd_ideal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     await ecmd.cmd_ideal(update, context)
 
-
+@private_only
+@rate_limited
 async def cmd_bodyfat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     await ecmd.cmd_bodyfat(update, context)
 
-
+@private_only
+@rate_limited
 async def cmd_bmr(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     await ecmd.cmd_bmr(update, context)
 
 
 # ---------------------------------------------------------------------------
-#  Meal commands
+#  Meal commands (عمومی، در گروه قابل استفاده)
 # ---------------------------------------------------------------------------
 
+@rate_limited
 async def cmd_plan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     await mcmd.cmd_plan(update, context)
 
-
+@rate_limited
 async def cmd_today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     await mcmd.cmd_today(update, context)
 
-
+@rate_limited
 async def cmd_shopping(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     await mcmd.cmd_shopping(update, context)
 
-
+@rate_limited
 async def cmd_food(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     await mcmd.cmd_food(update, context)
 
 
 # ---------------------------------------------------------------------------
-#  Text -> AI (با HTML برای جدول)
+#  Text -> AI (با امنیت کامل در گروه)
 # ---------------------------------------------------------------------------
 
+@rate_limited
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message is None or update.message.text is None:
         return
@@ -420,14 +488,30 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     text = clean_mention(update.message.text, bot_username)
     if not text:
         return
-    if await wizard.handle_setup_input(update, context):
-        return
-    if await pcmd.handle_weight_input(update, context):
-        return
+
+    # 🛡️ لایه امنیتی ۱: جلوگیری از ثبت نام و ثبت وزن در گروه
+    if is_group(update):
+        # اگر ربات منتظر دریافت وزن یا اطلاعات ثبت‌نام در گروه بود، آن را کنسل می‌کند
+        if context.user_data.get("awaiting_weight") or context.user_data.get("setup_step", "IDLE") != "IDLE":
+            await update.message.reply_text(
+                "🛡️ به دلایل امنیتی، ثبت اطلاعات شخصی در گروه امکان‌پذیر نیست. لطفاً به چت خصوصی ربات بروید.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔒 ورود به چت خصوصی", url=f"https://t.me/{bot_username}?start=private_setup")
+                ]])
+            )
+            return
+    else:
+        # این بخش فقط در چت خصوصی اجرا می‌شود
+        if await wizard.handle_setup_input(update, context):
+            return
+        if await pcmd.handle_weight_input(update, context):
+            return
 
     user = update.effective_user
     profile_summary = ""
-    if user:
+    
+    # 🛡️ لایه امنیتی ۲: در گروه، پروفایل کاربر به هوش مصنوعی ارسال نمی‌شود
+    if user and not is_group(update):
         db_user = await repo.get_user_by_telegram_id(user.id)
         if db_user:
             profile = await repo.get_profile(db_user.id)
@@ -536,16 +620,27 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         "menu_today": "📅 برای برنامه امروز: /today",
         "menu_shopping": "🛒 برای فهرست خرید: /shopping",
         "menu_food": "🥗 مثال: /food تخم مرغ",
-        "menu_ideal": "🎯 برای تحلیل کامل: /ideal",
-        "menu_weight": "⚖️ برای ثبت وزن: /weight",
-        "menu_calories": "🔥 برای کالری: /calories",
-        "menu_protein": "🥩 برای پروتئین: /protein",
-        "menu_macros": "🧮 برای درشت‌مغذی: /macros",
-        "menu_progress": "📊 برای گزارش: /progress",
-        "menu_profile": "👤 برای پروفایل: /profile",
+        "menu_ideal": "🎯 برای تحلیل کامل: /ideal (فقط در چت خصوصی)",
+        "menu_weight": "⚖️ برای ثبت وزن: /weight (فقط در چت خصوصی)",
+        "menu_calories": "🔥 برای کالری: /calories (فقط در چت خصوصی)",
+        "menu_protein": "🥩 برای پروتئین: /protein (فقط در چت خصوصی)",
+        "menu_macros": "🧮 برای درشت‌مغذی: /macros (فقط در چت خصوصی)",
+        "menu_progress": "📊 برای گزارش: /progress (فقط در چت خصوصی)",
+        "menu_profile": "👤 برای پروفایل: /profile (فقط در چت خصوصی)",
         "menu_ai": "💬 هر پیام آزاد بفرست → AI جواب می‌ده.",
     }
     text = hints.get(data, msg.UNKNOWN_COMMAND)
+    
+    # 🛡️ اگر کاربر روی دکمه‌های شخصی در گروه کلیک کرد، به او هشدار بده
+    if is_group(update) and data in ["menu_weight", "menu_calories", "menu_protein", "menu_macros", "menu_progress", "menu_profile", "menu_ideal"]:
+        bot_username = context.bot.username
+        keyboard = [[InlineKeyboardButton("🔒 ورود به چت خصوصی", url=f"https://t.me/{bot_username}?start=private_setup")]]
+        await query.edit_message_text(
+            with_signature("🛡️ این بخش شامل اطلاعات شخصی است.\nلطفاً برای استفاده، به چت خصوصی ربات بروید:"),
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
     await query.edit_message_text(with_signature(text))
 
 
@@ -627,11 +722,13 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("about", cmd_about))
     application.add_handler(CommandHandler("privacy", cmd_privacy))
     application.add_handler(CommandHandler("settings", cmd_settings))
+    
+    # (ایمن شده با private_only)
     application.add_handler(CommandHandler("profile", cmd_profile))
     application.add_handler(CommandHandler("setup", cmd_setup))
     application.add_handler(CommandHandler("cancel", cmd_cancel))
 
-    # Calculations
+    # Calculations (ایمن شده با private_only)
     application.add_handler(CommandHandler("bmi", cmd_bmi))
     application.add_handler(CommandHandler("calories", cmd_calories))
     application.add_handler(CommandHandler("weight", cmd_weight))
@@ -642,13 +739,13 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("bodyfat", cmd_bodyfat))
     application.add_handler(CommandHandler("bmr", cmd_bmr))
 
-    # Content
+    # Content (عمومی)
     application.add_handler(CommandHandler("tip", cmd_tip))
     application.add_handler(CommandHandler("fact", cmd_fact))
     application.add_handler(CommandHandler("myth", cmd_myth))
     application.add_handler(CommandHandler("water", cmd_water))
 
-    # Meal
+    # Meal (عمومی)
     application.add_handler(CommandHandler("plan", cmd_plan))
     application.add_handler(CommandHandler("today", cmd_today))
     application.add_handler(CommandHandler("shopping", cmd_shopping))
@@ -693,7 +790,28 @@ def main() -> None:
     _start_health_server()
     application = build_application()
     logger.info("Starting bot...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+    
+    # 🚀 تنظیمات هوشمند برای Render (استفاده از Webhook در صورت وجود متغیر محیطی)
+    webhook_url = os.environ.get("WEBHOOK_URL", "").strip()
+    
+    if webhook_url:
+        # حالت Webhook (مخصوص سرور Render - ضد خوابیدن سرور)
+        port = int(os.environ.get("PORT", "8080"))
+        url_path = application.bot.token # استفاده از توکن برای امنیت مسیر
+        
+        logger.info(f"Starting bot in WEBHOOK mode on {webhook_url}")
+        application.run_webhook(
+            listen="0.0.0.0",
+            port=port,
+            url_path=url_path,
+            webhook_url=f"{webhook_url}/{url_path}",
+            allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=True,
+        )
+    else:
+        # حالت Polling (مخصوص اجرا روی کامپیوتر شخصی)
+        logger.info("Starting bot in POLLING mode (Local)")
+        application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 
 if __name__ == "__main__":

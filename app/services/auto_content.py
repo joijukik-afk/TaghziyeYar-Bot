@@ -44,9 +44,9 @@ SEARCH_TOPICS = [
 
 
 PREFERRED_MODELS = [
-    "openai/gpt-oss-120b",
     "llama-3.3-70b-versatile",
     "llama-3.1-70b-versatile",
+    "openai/gpt-oss-120b",
     "qwen/qwen3.8-27b",
     "openai/gpt-oss-20b",
     "gemma2-9b-it",
@@ -54,15 +54,17 @@ PREFERRED_MODELS = [
 ]
 
 
+# 🧠 پرامپت ارتقایافته: جلوگیری از منابع جعلی و تضمین دقت علمی
 SYSTEM_PROMPT = """تو یک متخصص تغذیه و سلامت هستی که برای یک گروه تلگرام فارسی محتوا تولید می‌کنی.
 
 وظیفه تو:
-1. یک متن کوتاه، جذاب و کاربردی به فارسی بنویس.
+1. یک متن کوتاه، جذاب و کاملاً علمی به فارسی بنویس.
 2. متن شامل یک عنوان جذاب و توضیح ۳ تا ۴ خطی باشد.
-3. هر ادعا باید پشتوانه علمی داشته باشد (WHO، NIH، Mayo Clinic، Harvard Health، NHS).
-4. از اغراق، وعده‌های قطعی، و ادعاهای درمانی خودداری کن.
-5. در انتها منبع معتبر ذکر کن.
-6. هرگز از عبارات انگلیسی در متن اصلی استفاده نکن.
+3. 🚨 هر ادعا باید پشتوانه علمی واقعی داشته باشد (WHO، NIH، Mayo Clinic، Harvard Health، NHS).
+4. 🚨 هرگز منبع جعلی یا نام مقاله‌ای که وجود ندارد نساز. فقط از منابع معتبر و شناخته‌شده بالا استفاده کن.
+5. از اغراق، وعده‌های قطعی، و ادعاهای درمانی خودداری کن. اگر عددی را دقیق نمی‌دانی، از کلمه «تقریبی» استفاده کن.
+6. در انتها فقط نام منبع معتبر را ذکر کن.
+7. هرگز از عبارات انگلیسی در متن اصلی استفاده نکن.
 
 خروجی باید دقیقاً به این فرمت باشد (هیچ چیز اضافه ننویس):
 
@@ -72,7 +74,7 @@ TITLE: [عنوان جذاب فارسی]
 
 BODY: [متن ۳ تا ۴ خطی فارسی]
 
-SOURCE: [نام منبع]
+SOURCE: [نام منبع معتبر مثل WHO یا Harvard Health]
 """
 
 
@@ -102,25 +104,26 @@ async def _pick_model(api_key: str, requested: str = "") -> str | None:
     if available:
         return available[0]
 
-    return requested or "openai/gpt-oss-120b"
+    return requested or "llama-3.3-70b-versatile"
 
 
 async def generate_nutrition_post() -> tuple[str, str] | None:
     settings = get_settings()
+    
+    # پشتیبانی همزمان از کلیدهای Groq و DeepSeek
+    api_key = getattr(settings, 'groq_api_key', '') or getattr(settings, 'deepseek_api_key', '')
+    req_model = getattr(settings, 'groq_model', '') or getattr(settings, 'deepseek_model', '')
 
-    if not settings.deepseek_api_key:
+    if not api_key:
         logger.warning("کلید API تنظیم نشده.")
         return None
 
     try:
-        model_name = await _pick_model(
-            settings.deepseek_api_key,
-            settings.deepseek_model or "",
-        )
+        model_name = await _pick_model(api_key, req_model)
         if not model_name:
             logger.error("هیچ مدلی پیدا نشد.")
             return None
-        logger.info("✅ مدل انتخاب‌شده: %s", model_name)
+        logger.info("✅ مدل انتخاب‌شده برای پست: %s", model_name)
     except Exception as e:
         logger.warning("خطا در انتخاب مدل: %s", e)
         return None
@@ -128,7 +131,7 @@ async def generate_nutrition_post() -> tuple[str, str] | None:
     topic = random.choice(SEARCH_TOPICS)
 
     try:
-        client = AsyncGroq(api_key=settings.deepseek_api_key)
+        client = AsyncGroq(api_key=api_key)
 
         response = await client.chat.completions.create(
             model=model_name,
@@ -136,7 +139,7 @@ async def generate_nutrition_post() -> tuple[str, str] | None:
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": f"موضوع: {topic}"},
             ],
-            temperature=0.6,
+            temperature=0.3,  # 🔥 کاهش دما برای جلوگیری از تولید منابع جعلی و اعداد اشتباه
             max_tokens=1000,
         )
 
@@ -302,13 +305,7 @@ async def _get_foodish_image() -> str | None:
 
 
 async def search_food_image(keyword: str) -> str | None:
-    """جستجوی عکس — اولویت با تطابق و عدم تکرار.
-
-    ۱. Unsplash (کیفیت بالا)
-    ۲. DuckDuckGo (تنوع زیاد)
-    ۳. TheMealDB (غذاهای خاص)
-    ۴. Foodish (رندوم)
-    """
+    """جستجوی عکس — اولویت با تطابق و عدم تکرار."""
     settings = get_settings()
 
     # ۱. Unsplash

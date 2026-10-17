@@ -1,6 +1,7 @@
 """Quiz with fallback: try poll, else use inline keyboard."""
 
 import logging
+import time
 from datetime import datetime, timezone
 
 from telegram import (
@@ -20,6 +21,10 @@ logger = logging.getLogger(__name__)
 _active_polls: dict[str, dict] = {}
 _chat_active_poll: dict[int, str] = {}
 _active_games: dict[int, dict] = {}
+
+# 🛡️ جلوگیری از اسپم کردن دستور کوییز
+_last_quiz_time: dict[int, float] = {}
+QUIZ_COOLDOWN = 10  # ثانیه
 
 TIMEOUT_SECONDS = 30
 MAX_PLAYERS = 20
@@ -329,6 +334,15 @@ async def cmd_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
     chat_title = update.effective_chat.title or ""
 
+    # 🛡️ محدودیت ضد اسپم
+    now = time.time()
+    if chat_id in _last_quiz_time and now - _last_quiz_time[chat_id] < QUIZ_COOLDOWN:
+        await update.message.reply_text(
+            with_signature("⏳ لطفاً کمی صبر کنید. هر ۱۰ ثانیه یک کوییز مجاز است.")
+        )
+        return
+    _last_quiz_time[chat_id] = now
+
     existing_poll_id = _chat_active_poll.get(chat_id)
     if existing_poll_id and existing_poll_id in _active_polls:
         if not _active_polls[existing_poll_id]["finalized"]:
@@ -592,11 +606,19 @@ async def send_quiz_from_callback(
     chat_id: int,
     chat_title: str,
 ) -> None:
-    for j in context.job_queue.get_jobs_by_name(f"gq_finalize_{chat_id}"):
-        j.schedule_removal()
+    # 🛡️ پاکسازی حافظه موقت برای جلوگیری از نشت حافظه
+    _active_games.pop(chat_id, None)
+    
+    active_poll_id = _chat_active_poll.pop(chat_id, None)
+    if active_poll_id:
+        _active_polls.pop(active_poll_id, None)
+        for j in context.job_queue.get_jobs_by_name(f"gq_finalize_{active_poll_id}"):
+            j.schedule_removal()
+
     for j in context.job_queue.get_jobs_by_name(f"gq_timeout_{chat_id}"):
         j.schedule_removal()
 
+    # ارسال کوییز جدید
     ok = await _try_send_poll(context, chat_id, chat_title)
     if ok:
         return

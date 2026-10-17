@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-#  Health server (برای Render)
+#  Health server (برای سرور رندر)
 # ---------------------------------------------------------------------------
 
 class _HealthHandler(BaseHTTPRequestHandler):
@@ -90,7 +90,6 @@ def private_only(func):
             deep_link = f"https://t.me/{bot_username}?start=private_setup"
             keyboard = [[InlineKeyboardButton("🔒 ورود به چت خصوصی", url=deep_link)]]
             
-            # بررسی اینکه آیا پیام وجود دارد (برای جلوگیری از خطا در کالبک‌ها)
             if update.message:
                 await update.message.reply_text(
                     "🛡️ برای حفظ ۱۰۰٪ حریم خصوصی، اطلاعات شخصی (وزن، قد، پروفایل) فقط در چت خصوصی ثبت و نمایش داده می‌شود.\n"
@@ -99,7 +98,7 @@ def private_only(func):
                 )
             elif update.callback_query:
                 await update.callback_query.answer("لطفاً برای اطلاعات شخصی به چت خصوصی ربات بروید.", show_alert=True)
-            return # اجرای دستور اصلی متوقف می‌شود
+            return # متوقف کردن اجرای دستور اصلی
             
         return await func(update, context, *args, **kwargs)
     return wrapper
@@ -251,7 +250,6 @@ async def _send_html_safe(bot, chat_id: int, text: str, reply_to: int | None = N
         )
     except Exception as e:
         logger.warning("HTML send failed: %s — trying plain text", e)
-        # حذف تگ‌ها و ارسال متن ساده
         plain = re.sub(r"<[^>]+>", "", text)
         plain = plain.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
         try:
@@ -491,7 +489,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     # 🛡️ لایه امنیتی ۱: جلوگیری از ثبت نام و ثبت وزن در گروه
     if is_group(update):
-        # اگر ربات منتظر دریافت وزن یا اطلاعات ثبت‌نام در گروه بود، آن را کنسل می‌کند
         if context.user_data.get("awaiting_weight") or context.user_data.get("setup_step", "IDLE") != "IDLE":
             await update.message.reply_text(
                 "🛡️ به دلایل امنیتی، ثبت اطلاعات شخصی در گروه امکان‌پذیر نیست. لطفاً به چت خصوصی ربات بروید.",
@@ -501,7 +498,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             )
             return
     else:
-        # این بخش فقط در چت خصوصی اجرا می‌شود
         if await wizard.handle_setup_input(update, context):
             return
         if await pcmd.handle_weight_input(update, context):
@@ -544,7 +540,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if not reply:
         reply = "متأسفانه پاسخی دریافت نشد."
 
-    # ارسال با HTML برای جدول‌های خوشگل
     await _send_html_safe(
         bot=context.bot,
         chat_id=update.effective_chat.id,
@@ -597,15 +592,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     if data == "menu_tip":
-        await query.edit_message_text(
-            with_signature(f"💡 نکته\n\n{get_tip()}"),
-        )
+        await query.edit_message_text(with_signature(f"💡 نکته\n\n{get_tip()}"))
         return
 
     if data == "menu_fact":
-        await query.edit_message_text(
-            with_signature(f"🍎 فکت\n\n{get_fact()}"),
-        )
+        await query.edit_message_text(with_signature(f"🍎 فکت\n\n{get_fact()}"))
         return
 
     if data == "menu_myth":
@@ -631,7 +622,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     }
     text = hints.get(data, msg.UNKNOWN_COMMAND)
     
-    # 🛡️ اگر کاربر روی دکمه‌های شخصی در گروه کلیک کرد، به او هشدار بده
     if is_group(update) and data in ["menu_weight", "menu_calories", "menu_protein", "menu_macros", "menu_progress", "menu_profile", "menu_ideal"]:
         bot_username = context.bot.username
         keyboard = [[InlineKeyboardButton("🔒 ورود به چت خصوصی", url=f"https://t.me/{bot_username}?start=private_setup")]]
@@ -648,9 +638,7 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.exception("Exception", exc_info=context.error)
     if isinstance(update, Update) and update.effective_message is not None:
         try:
-            await update.effective_message.reply_text(
-                with_signature(msg.ERROR_GENERIC)
-            )
+            await update.effective_message.reply_text(with_signature(msg.ERROR_GENERIC))
         except Exception:
             pass
 
@@ -674,16 +662,12 @@ async def post_init(application: Application) -> None:
 
     if application.job_queue is not None:
         try:
-            interval_seconds = int(
-                os.environ.get("AUTO_POST_INTERVAL_HOURS", "8")
-            ) * 3600
+            interval_seconds = int(os.environ.get("AUTO_POST_INTERVAL_HOURS", "8")) * 3600
         except ValueError:
             interval_seconds = 8 * 3600
 
         try:
-            first_delay = int(
-                os.environ.get("AUTO_POST_FIRST_DELAY", "28800")
-            )
+            first_delay = int(os.environ.get("AUTO_POST_FIRST_DELAY", "28800"))
         except ValueError:
             first_delay = 28800
 
@@ -756,25 +740,16 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("leaderboard", gquiz.cmd_leaderboard))
     application.add_handler(CommandHandler("mystats", gquiz.cmd_mystats))
     application.add_handler(PollAnswerHandler(gquiz.on_poll_answer))
-    application.add_handler(CallbackQueryHandler(
-        gquiz.on_inline_answer,
-        pattern=r"^gq_\d+$",
-    ))
+    application.add_handler(CallbackQueryHandler(gquiz.on_inline_answer, pattern=r"^gq_\d+$"))
 
     # ثبت خودکار گروه‌ها
-    application.add_handler(ChatMemberHandler(
-        gmanager.on_bot_added,
-        ChatMemberHandler.MY_CHAT_MEMBER,
-    ))
+    application.add_handler(ChatMemberHandler(gmanager.on_bot_added, ChatMemberHandler.MY_CHAT_MEMBER))
     application.add_handler(CommandHandler("setgroup", gmanager.cmd_setgroup))
     application.add_handler(CommandHandler("groups", gmanager.cmd_groups))
     application.add_handler(CommandHandler("unsetgroup", gmanager.cmd_unsetgroup))
 
     application.add_handler(
-        MessageHandler(
-            filters.ChatType.GROUPS & filters.ALL,
-            gmanager.on_group_message,
-        ),
+        MessageHandler(filters.ChatType.GROUPS & filters.ALL, gmanager.on_group_message),
         group=1,
     )
 
@@ -791,25 +766,25 @@ def main() -> None:
     application = build_application()
     logger.info("Starting bot...")
     
-    # 🚀 تنظیمات هوشمند برای Render (استفاده از Webhook در صورت وجود متغیر محیطی)
-    webhook_url = os.environ.get("WEBHOOK_URL", "").strip()
+    # 🚀 تشخیص خودکار محیط Render (بدون نیاز به تنظیمات اضافی)
+    render_url = os.environ.get("RENDER_EXTERNAL_URL", "").strip()
     
-    if webhook_url:
-        # حالت Webhook (مخصوص سرور Render - ضد خوابیدن سرور)
+    if render_url:
+        # حالت Webhook مخصوص رندر (بدون خطای 409 و بدون خوابیدن)
         port = int(os.environ.get("PORT", "8080"))
-        url_path = application.bot.token # استفاده از توکن برای امنیت مسیر
+        url_path = application.bot.token
+        logger.info(f"Starting bot in WEBHOOK mode on {render_url}")
         
-        logger.info(f"Starting bot in WEBHOOK mode on {webhook_url}")
         application.run_webhook(
             listen="0.0.0.0",
             port=port,
             url_path=url_path,
-            webhook_url=f"{webhook_url}/{url_path}",
+            webhook_url=f"{render_url}/{url_path}",
             allowed_updates=Update.ALL_TYPES,
             drop_pending_updates=True,
         )
     else:
-        # حالت Polling (مخصوص اجرا روی کامپیوتر شخصی)
+        # حالت لوکال (برای کامپیوتر شخصی)
         logger.info("Starting bot in POLLING mode (Local)")
         application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 

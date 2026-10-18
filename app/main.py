@@ -44,6 +44,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# 🛡️ جلوگیری از لو رفتن توکن ربات در لاگ‌های Render
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
 
 # ---------------------------------------------------------------------------
 #  Health server (فقط برای اجرای لوکال)
@@ -758,6 +761,7 @@ def build_application() -> Application:
 
 
 def main() -> None:
+    settings = get_settings()
     application = build_application()
     logger.info("Starting bot...")
     
@@ -765,12 +769,19 @@ def main() -> None:
     render_url = os.environ.get("RENDER_EXTERNAL_URL", "").strip()
     
     if render_url:
-        # حالت Webhook مخصوص Render (ضد خطای 409 و ضد خوابیدن)
+        # حالت Webhook مخصوص Render
         port = int(os.environ.get("PORT", "8080"))
         url_path = application.bot.token
+        
+        # 🛡️ بررسی تنظیم بودن کلید امنیتی وبهوک
+        secret_token = settings.webhook_secret_token
+        if secret_token:
+            logger.info("✅ Secret Token is set. Webhook is secure.")
+        else:
+            logger.warning("⚠️ Secret Token is NOT set. Webhook is vulnerable to fake requests.")
+
         logger.info(f"Starting bot in WEBHOOK mode on {render_url}")
         
-        # ❌ سرور Health Check دستی را اینجا صدا نمی‌زنیم تا با پورت تداخل نداشته باشد
         application.run_webhook(
             listen="0.0.0.0",
             port=port,
@@ -778,6 +789,7 @@ def main() -> None:
             webhook_url=f"{render_url}/{url_path}",
             allowed_updates=Update.ALL_TYPES,
             drop_pending_updates=True,
+            secret_token=secret_token if secret_token else None, # 🛡️ اعمال توکن امنیتی
         )
     else:
         # حالت لوکال (برای اجرا روی کامپیوتر شخصی)

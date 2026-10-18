@@ -59,7 +59,7 @@ async def cmd_plan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     profile_summary = await _get_profile_summary(user.id)
     if not profile_summary:
         await update.message.reply_text(
-            with_signature(msg.NOT_SETUP_YET), parse_mode="Markdown"
+            with_signature(msg.NOT_SETUP_YET), parse_mode="HTML"
         )
         return
     try:
@@ -87,8 +87,10 @@ async def cmd_plan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not reply:
         reply = "متأسفانه نتونستم برنامه بسازم. دوباره تلاش کن."
     _daily_plans[user.id] = {"date": date.today().isoformat(), "plan": reply}
-    text = f"🍽 **برنامه غذایی امروز**\n\n{reply}\n\n_برای دیدن مجدد: /today_"
-    await update.message.reply_text(with_signature(text), parse_mode="Markdown")
+    
+    # استفاده از HTML برای هماهنگی با هوش مصنوعی
+    text = f"🍽 <b>برنامه غذایی امروز</b>\n\n{reply}\n\n<i>برای دیدن مجدد: /today</i>"
+    await update.message.reply_text(with_signature(text), parse_mode="HTML")
 
 
 async def cmd_today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -99,13 +101,13 @@ async def cmd_today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not cached or cached.get("date") != date.today().isoformat():
         await update.message.reply_text(
             with_signature(
-                "📅 **برنامه امروز**\n\nهنوز برنامه‌ای نساختی.\nبرای ساخت: /plan"
+                "📅 <b>برنامه امروز</b>\n\nهنوز برنامه‌ای نساختی.\nبرای ساخت: /plan"
             ),
-            parse_mode="Markdown",
+            parse_mode="HTML",
         )
         return
-    text = f"🍽 **برنامه امروز**\n\n{cached['plan']}"
-    await update.message.reply_text(with_signature(text), parse_mode="Markdown")
+    text = f"🍽 <b>برنامه امروز</b>\n\n{cached['plan']}"
+    await update.message.reply_text(with_signature(text), parse_mode="HTML")
 
 
 async def cmd_shopping(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -115,7 +117,7 @@ async def cmd_shopping(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     profile_summary = await _get_profile_summary(user.id)
     if not profile_summary:
         await update.message.reply_text(
-            with_signature(msg.NOT_SETUP_YET), parse_mode="Markdown"
+            with_signature(msg.NOT_SETUP_YET), parse_mode="HTML"
         )
         return
     try:
@@ -144,8 +146,8 @@ async def cmd_shopping(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
     if not reply:
         reply = "متأسفانه نتونستم فهرست بسازم. دوباره تلاش کن."
-    text = f"🛒 **فهرست خرید هفتگی**\n\n{reply}"
-    await update.message.reply_text(with_signature(text), parse_mode="Markdown")
+    text = f"🛒 <b>فهرست خرید هفتگی</b>\n\n{reply}"
+    await update.message.reply_text(with_signature(text), parse_mode="HTML")
 
 
 async def cmd_food(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -154,11 +156,11 @@ async def cmd_food(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not context.args:
         await update.message.reply_text(
             with_signature(
-                "🍎 **ارزش غذایی غذا**\n\n"
+                "🍎 <b>ارزش غذایی غذا</b>\n\n"
                 "اسم غذا رو بعد از دستور بنویس.\n"
-                "مثال:\n`/food تخم مرغ`\n`/food عدس`"
+                "مثال:\n<code>/food تخم مرغ</code>\n<code>/food عدس</code>"
             ),
-            parse_mode="Markdown",
+            parse_mode="HTML",
         )
         return
     food_name = " ".join(context.args).strip()[:100]
@@ -183,5 +185,5 @@ async def cmd_food(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
     if not reply:
         reply = "متأسفانه نتونستم اطلاعات بگیرم."
-    text = f"🥗 **ارزش غذایی: {food_name}**\n\n{reply}"
-    await update.message.reply_text(with_signature(text), parse_mode="Markdown")
+    text = f"🥗 <b>ارزش غذایی: {food_name}</b>\n\n{reply}"
+    await update.message.reply_text(with_signature(text), parse_mode="HTML")

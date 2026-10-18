@@ -18,13 +18,12 @@ _user_requests: dict[int, deque] = defaultdict(deque)
 
 
 PREFERRED_MODELS = [
+    "qwen/qwen3.8-27b",
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b",
     "llama-3.3-70b-versatile",
     "llama-3.1-70b-versatile",
-    "openai/gpt-oss-120b",
-    "qwen/qwen3.8-27b",
-    "openai/gpt-oss-20b",
     "gemma2-9b-it",
-    "mixtral-8x7b-32768",
 ]
 
 
@@ -40,7 +39,6 @@ def _check_rate_limit(user_id: int) -> tuple[bool, int]:
     return True, 0
 
 
-# 🧠 پرامپت تقویت‌شده: دقت علمی بالا + جلوگیری از توهم‌زنی + حفظ فرمت HTML
 SYSTEM_PROMPT = """تو «تغذیه‌یار» هستی، یک متخصص تغذیه دقیق، علمی و قابل اعتماد در تلگرام.
 
 🚨 قوانین حیاتی اطلاعاتی (بسیار مهم):
@@ -125,7 +123,7 @@ class AIService:
             self._model_name = available[0]
             return self._model_name
 
-        self._model_name = self.requested_model or "llama-3.3-70b-versatile"
+        self._model_name = self.requested_model or "qwen/qwen3.8-27b"
         return self._model_name
 
     async def ask(
@@ -189,9 +187,9 @@ class AIService:
             response = await client.chat.completions.create(
                 model=model_name,
                 messages=messages,
-                temperature=0.2,  # 🔥 تغییر حیاتی: کاهش دما برای دقت علمی بالا
-                max_tokens=800,   # جلوگیری از پاسخ‌های بی‌نهایت طولانی
-                top_p=0.9,        # متمرکزتر شدن روی کلمات با احتمال بالا
+                temperature=0.2,  # 🔥 دقت بالا برای اطلاعات علمی
+                max_tokens=2500,  # 🔥 افزایش یافت تا مدل‌های استدلالی فرصت تولید برنامه داشته باشند
+                top_p=0.9,
             )
             reply = (response.choices[0].message.content or "").strip()
             if not reply:

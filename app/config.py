@@ -45,6 +45,12 @@ class Settings(BaseSettings):
     webhook_url: str = ""  
     port: int = 8080       
     rate_limit_seconds: float = 2.0  
+    
+    # 🛡️ کلید مخفی برای امنیت وبهوک (جلوگیری از درخواست‌های جعلی)
+    webhook_secret_token: str = Field(
+        default="", 
+        validation_alias=AliasChoices("WEBHOOK_SECRET_TOKEN", "webhook_secret_token")
+    )
 
     @property
     def admin_id_list(self) -> list[int]:

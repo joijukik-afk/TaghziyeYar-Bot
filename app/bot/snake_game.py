@@ -1,4 +1,4 @@
-"""بازی مار و پله حرفه‌ای، سریع و با دکمه‌های اختصاصی"""
+"""بازی مار و پله فوق حرفه‌ای (بدون دکمه کپی، با آیدی و نوار پیشرفت)"""
 
 import random
 import logging
@@ -9,7 +9,7 @@ from telegram.error import BadRequest
 
 logger = logging.getLogger(__name__)
 
-# تنظیمات نقشه ۸×۸
+# تنظیمات نقشه ۸×۸ (۶۴ خانه)
 LADDERS = {4: 14, 8: 26, 20: 38, 30: 44, 42: 56, 50: 58}
 SNAKES = {15: 3, 25: 12, 36: 18, 48: 30, 55: 40, 62: 52}
 DRAGONS = {10: 2, 32: 16, 45: 28}
@@ -19,72 +19,74 @@ ACTIVE_GAMES = {}
 PLAYER_ICONS = ["🦊", "🐼", "🦁", "🐸"]
 TURN_TIMEOUT = 30 
 
-def _draw_simple_map(players: list) -> str:
-    """نقشه جمع‌وجور و تمیز"""
-    cells = {}
-    for start in LADDERS: cells[start] = "🪜"
-    for start in SNAKES: cells[start] = "🐍"
-    for start in DRAGONS: cells[start] = "🐉"
-    for p in players:
-        if p["pos"] > 0: cells[p["pos"]] = p["icon"]
+def _get_identifier(user) -> str:
+    """گرفتن آیدی کاربر (اگر نداشت، اسمش)"""
+    if user.username:
+        return f"@{user.username}"
+    return user.first_name
 
-    lines = ["<pre>"] # استفاده از pre برای هم‌ترازی، اگر دکمه کپی اذیت میکنه میشه حذفش کرد
-    for row in range(8, 0, -1):
-        line = ""
-        cols = range(1, 9) if row % 2 != 0 else range(8, 0, -1)
-        for col in cols:
-            pos = (row - 1) * 8 + col
-            val = cells.get(pos)
-            if val: line += f" {val} "
-            else: line += f" {pos:02d} "
-        lines.append(line.strip())
-    lines.append("</pre>")
-    return "\n".join(lines)
+def _draw_progress_bar(pos: int) -> str:
+    """نوار پیشرفت تمیز و حرفه‌ای (۸ خانه)"""
+    filled = int((pos / MAX_POS) * 8)
+    return "🟩" * filled + "⬜" * (8 - filled)
 
 def _get_game_ui(game: dict) -> str:
-    """رابط کاربری سریع و تمیز"""
+    """رابط کاربری فوق‌العاده تمیز و بدون دکمه کپی"""
     if game["status"] == "lobby":
         text = "🐍 <b>لابی بازی مار و پله</b> 🪜🐉\n\n"
         text += f"👥 بازیکنان ({len(game['players'])}/4):\n"
-        for p in game["players"]: text += f"👤 {p['icon']} {p['name']}\n"
-        text += "\n👇 برای ورود کلیک کنید. (منتظر ۶ باشید)"
+        for p in game["players"]: 
+            text += f"👤 {p['icon']} {p['name']}\n"
+        text += "\n👇 برای ورود کلیک کنید. (برای شروع باید ۶ بیاورید!)"
         return text
     
     current = game["players"][game["turn_index"]]
-    header = "🤖 <b>ربات در حال فکر کردن...</b>" if current["id"] == -1 else f"🎲 <b>نوبت:</b> {current['icon']} {current['name']}"
-    if current["id"] != -1 and game.get('last_dice'): header += f" (🎲 {game['last_dice']})"
-
-    map_text = _draw_simple_map(game["players"])
     
-    stats = "\n📊 <b>آمار:</b>\n"
+    # هدر وضعیت
+    if current["id"] == -1:
+        header = "🤖 <b>نوبت ربات است...</b>"
+    else:
+        dice_text = f" | 🎲 {game['last_dice']}" if game.get('last_dice') else ""
+        header = f"🎲 <b>نوبت:</b> {current['icon']} {current['name']}{dice_text}"
+
+    # لیست بازیکنان با نوار پیشرفت
+    stats = "\n📊 <b>وضعیت بازیکنان:</b>\n"
     for idx, p in enumerate(game["players"]):
         circle = "🟢" if idx == game["turn_index"] else "⚪"
-        dice_text = f"🎲{game['last_dice']}" if idx == game["turn_index"] and game.get('last_dice') else "  "
-        if p["pos"] == 0: pos = "⏳ منتظر ۶"
-        elif p["pos"] == MAX_POS: pos = "🏆 برنده!"
-        else: pos = f"خانه {p['pos']}"
-        stats += f"{circle} {p['icon']} {p['name']} | {dice_text} | {pos}\n"
         
-    events = f"\n📢 <i>{game.get('last_action', '')}</i>"
-    return f"{header}\n\n{map_text}{stats}{events}"
+        if p["pos"] == 0: pos_text = "⏳ منتظر ۶"
+        elif p["pos"] == MAX_POS: pos_text = "🏆 برنده"
+        else: pos_text = f"خانه {p['pos']:02d}"
+        
+        bar = _draw_progress_bar(p["pos"])
+        stats += f"{circle} {p['icon']} {p['name']}\n   {bar} | {pos_text}\n"
+        
+    # رویدادها
+    events = f"\n📢 <b>آخرین رویداد:</b>\n<i>{game.get('last_action', '')}</i>"
+    
+    # راهنمای مپ (فقط برای اطلاع)
+    guide = "\n\n🗺 <i>راهنما: 🪜 پله | 🐍 مار | 🐉 اژدها | 🏁 پایان (۶۴)</i>"
+    
+    return f"{header}\n{stats}{events}{guide}"
 
 def _get_lobby_keyboard(game: dict) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
+    kb = [
         [InlineKeyboardButton(f"🎮 ورود به بازی ({len(game['players'])}/4)", callback_data="snake_join")],
-        [InlineKeyboardButton("🤖 بازی با ربات", callback_data="snake_play_bot")],
-        [InlineKeyboardButton("🚀 شروع بازی", callback_data="snake_start")] if len(game["players"]) >= 2 else []
-    ])
+        [InlineKeyboardButton("🤖 بازی با ربات", callback_data="snake_play_bot")]
+    ]
+    if len(game["players"]) >= 2: 
+        kb.append([InlineKeyboardButton("🚀 شروع بازی", callback_data="snake_start")])
+    return InlineKeyboardMarkup(kb)
 
 def _get_game_keyboard(game: dict) -> InlineKeyboardMarkup:
-    """دکمه‌های حین بازی (ورود، آپدیت، تاس، انصراف)"""
+    """دکمه‌های مرتب و عمودی در حین بازی"""
     kb = []
-    # دکمه ورود جدید (اگر ظرفیت داشته باشه)
     if len(game["players"]) < 4:
         kb.append([InlineKeyboardButton(f"🎮 ورود به بازی ({len(game['players'])}/4)", callback_data="snake_join")])
         
     kb.append([InlineKeyboardButton("🎲 پرتاب تاس", callback_data="snake_roll")])
     kb.append([InlineKeyboardButton("🔄 آوردن به پایین", callback_data="snake_bump")])
-    kb.append([InlineKeyboardButton("❌ انصراف", callback_data="snake_surrender")])
+    kb.append([InlineKeyboardButton("❌ انصراف از بازی", callback_data="snake_surrender")])
     return InlineKeyboardMarkup(kb)
 
 async def _auto_roll_timeout(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -120,45 +122,52 @@ async def _process_roll(context: ContextTypes.DEFAULT_TYPE, chat_id: int, msg_id
         target_pos = old_pos + dice
         if target_pos > MAX_POS:
             target_pos = MAX_POS - (target_pos - MAX_POS)
-            game["last_action"] = f"🔄 {current['name']} تاس {dice} آورد، برگشت به {target_pos}."
+            game["last_action"] = f"🔄 {current['name']} تاس {dice} آورد، از ۶۴ رد شد و برگشت به {target_pos}."
         else:
-            game["last_action"] = f"➡️ {current['name']} تاس {dice} آورد، به خانه {target_pos} رفت."
+            game["last_action"] = f"➡️ {current['name']} تاس {dice} آورد و به خانه {target_pos} رفت."
         
         current["pos"] = target_pos
         
-        # برخورد
+        # برخورد با بازیکنان دیگر
         for p in game["players"]:
             if p["id"] != current["id"] and p["pos"] == target_pos:
                 p["pos"] = 0
                 game["last_action"] = f"💥 {current['name']} زد به {p['name']} و فرستادش خانه ۱!"
 
-        # مار، پله، اژدها
+        # بررسی مار، پله و اژدها
         if target_pos in LADDERS:
             current["pos"] = LADDERS[target_pos]
-            game["last_action"] = f"🪜 {current['name']} پله رفت به {current['pos']}."
+            game["last_action"] = f"🪜 {current['name']} پله رفت! به خانه {current['pos']}."
         elif target_pos in SNAKES:
             current["pos"] = SNAKES[target_pos]
-            game["last_action"] = f"🐍 {current['name']} مار خورد، افتاد به {current['pos']}."
+            game["last_action"] = f"🐍 {current['name']} مار خورد! به خانه {current['pos']}."
         elif target_pos in DRAGONS:
             current["pos"] = DRAGONS[target_pos]
-            game["last_action"] = f"🐉 {current['name']} اژدها خورد، افتاد به {current['pos']}."
+            game["last_action"] = f"🐉 {current['name']} اژدها خورد! به خانه {current['pos']}."
 
     try: await context.bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=_get_game_ui(game), parse_mode="HTML", reply_markup=_get_game_keyboard(game))
     except BadRequest: pass
 
-    await asyncio.sleep(0.5)
+    await asyncio.sleep(1.0)
 
-    # بُرد
+    # 🏆 تبریک برد
     if current["pos"] == MAX_POS:
         game["status"] = "finished"
-        game["last_action"] = f"🏆🎉 <b>تبریک! {current['name']} برنده شد!</b> 🎉🏆\n👑 با رسیدن به خانه ۶۴ قهرمان شد."
+        game["last_action"] = (
+            f"🏆🎉 <b>تبریک بزرگ به {current['name']}!</b> 🎉🏆\n"
+            f"👑 با درایت و شانس، به خانه ۶۴ رسید و قهرمان شد!\n"
+            f"🔥 بهش تبریک بگید!"
+        )
         try: await context.bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=_get_game_ui(game), parse_mode="HTML", reply_markup=None)
         except BadRequest: pass
         del ACTIVE_GAMES[chat_id]
         return
 
-    if dice != 6: game["turn_index"] = (game["turn_index"] + 1) % len(game["players"])
-    else: game["last_action"] += " (دوباره تاس می‌ندازه!)"
+    # تغییر نوبت
+    if dice != 6: 
+        game["turn_index"] = (game["turn_index"] + 1) % len(game["players"])
+    else: 
+        game["last_action"] += " (چون ۶ آورد، دوباره می‌ندازه!)"
 
     next_player = game["players"][game["turn_index"]]
     game["is_rolling"] = False
@@ -174,7 +183,15 @@ async def _process_roll(context: ContextTypes.DEFAULT_TYPE, chat_id: int, msg_id
 async def cmd_snake(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
     if chat_id in ACTIVE_GAMES: return await update.message.reply_text("⚠️ یک بازی در جریان است!")
-    ACTIVE_GAMES[chat_id] = {"status": "lobby", "host_id": update.effective_user.id, "players": [{"id": update.effective_user.id, "name": update.effective_user.first_name, "pos": 0, "icon": PLAYER_ICONS[0]}], "turn_index": 0, "last_action": "بازی ساخته شد.", "is_rolling": False, "last_dice": None, "message_id": None}
+    
+    # ثبت آیدی کاربر (یا اسم اگر آیدی نداشت)
+    user_name = _get_identifier(update.effective_user)
+    
+    ACTIVE_GAMES[chat_id] = {
+        "status": "lobby", "host_id": update.effective_user.id, 
+        "players": [{"id": update.effective_user.id, "name": user_name, "pos": 0, "icon": PLAYER_ICONS[0]}],
+        "turn_index": 0, "last_action": "بازی ساخته شد.", "is_rolling": False, "last_dice": None, "message_id": None
+    }
     msg = await update.message.reply_text(_get_game_ui(ACTIVE_GAMES[chat_id]), parse_mode="HTML", reply_markup=_get_lobby_keyboard(ACTIVE_GAMES[chat_id]))
     ACTIVE_GAMES[chat_id]["message_id"] = msg.message_id
 
@@ -192,19 +209,19 @@ async def handle_snake(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         try: await query.message.delete() 
         except: pass
         
-        # ارسال پیام جدید به پایین‌ترین نقطه چت
         kb = _get_lobby_keyboard(game) if game["status"] == "lobby" else _get_game_keyboard(game)
         new_msg = await context.bot.send_message(chat_id=chat_id, text=_get_game_ui(game), parse_mode="HTML", reply_markup=kb)
         game["message_id"] = new_msg.message_id
         return
 
-    # 🎮 ورود به بازی (هم در لابی هم وسط بازی)
+    # 🎮 ورود به بازی
     if query.data == "snake_join":
         if game.get("is_rolling"): return await query.answer("در حال حرکت است!", show_alert=True)
         if any(p["id"] == user.id for p in game["players"]): return await query.answer("شما قبلاً وارد شده‌اید.", show_alert=True)
         if len(game["players"]) >= 4: return await query.answer("ظرفیت پر است.", show_alert=True)
         
-        game["players"].append({"id": user.id, "name": user.first_name, "pos": 0, "icon": PLAYER_ICONS[len(game["players"])]})
+        user_name = _get_identifier(user)
+        game["players"].append({"id": user.id, "name": user_name, "pos": 0, "icon": PLAYER_ICONS[len(game["players"])]})
         await query.answer("✅ وارد شدید!")
         
         kb = _get_lobby_keyboard(game) if game["status"] == "lobby" else _get_game_keyboard(game)
@@ -214,7 +231,7 @@ async def handle_snake(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     if query.data == "snake_play_bot":
         if game["status"] != "lobby": return await query.answer("شروع شده است!", show_alert=True)
-        game["players"].append({"id": -1, "name": "ربات", "pos": 0, "icon": "🤖"})
+        game["players"].append({"id": -1, "name": "🤖 ربات", "pos": 0, "icon": "🤖"})
         game["status"] = "playing"; game["turn_index"] = 0; game["last_action"] = "بازی شروع شد! (منتظر ۶ باشید)"
         await query.answer("شروع شد!")
         try: await query.edit_message_text(_get_game_ui(game), parse_mode="HTML", reply_markup=_get_game_keyboard(game))

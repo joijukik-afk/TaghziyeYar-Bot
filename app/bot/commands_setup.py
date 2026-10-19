@@ -15,6 +15,7 @@ BOT_COMMANDS = [
 
     # بازی
     BotCommand("quiz", "🎮 کوییز زنده"),
+    BotCommand("snake", "🐍 بازی مار و پله زنده"), # 👈 این خط اضافه شد
     BotCommand("leaderboard", "🏆 جدول قهرمانان"),
     BotCommand("mystats", "📊 آمار من"),
 

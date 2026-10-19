@@ -678,7 +678,7 @@ async def cmd_broadcast_covers(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 # ---------------------------------------------------------------------------
-#  🚪 Stealth Admin Command: خروج مخفیانه از گروه
+#  🚪 Admin Command: خروج مخفیانه از گروه
 # ---------------------------------------------------------------------------
 
 async def cmd_leave_group(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -690,7 +690,7 @@ async def cmd_leave_group(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if not user or not get_settings().is_admin(user.id):
         return
 
-    # حالت ۱: ادمین در چت خصوصی (مثلاً /leavegroup اسم گروه)
+    # حالت ۱: ادمین در چت خصوصی
     if chat.type == ChatType.PRIVATE:
         if not context.args:
             await update.message.reply_text(
@@ -720,7 +720,7 @@ async def cmd_leave_group(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         except Exception as e:
             await update.message.reply_text(f"❌ خطا در خروج از گروه: {e}")
 
-    # حالت ۲: ادمین در داخل خود گروه (فقط با زدن /leave)
+    # حالت ۲: ادمین در داخل خود گروه
     else:
         await update.message.reply_text("🚪 دستور محرمانه دریافت شد. در حال خروج از گروه... خداحافظ! 👋")
         
@@ -729,6 +729,59 @@ async def cmd_leave_group(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await repo.deactivate_group(chat_id=chat.id)
         except Exception as e:
             logger.warning("خطا در خروج از گروه: %s", e)
+
+
+# ---------------------------------------------------------------------------
+#  📤 Admin Command: ارسال پیام/عکس به گروه با ریپلای
+# ---------------------------------------------------------------------------
+
+async def cmd_send_to_group(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """ارسال هر پیامی (متن، عکس، استیکر) به گروه مشخص با ریپلای کردن (فقط ادمین)"""
+    user = update.effective_user
+    if not user or not get_settings().is_admin(user.id):
+        return # سکوت کامل برای کاربران عادی
+
+    # بررسی اینکه آیا روی یک پیام ریپلای شده است یا خیر
+    if not update.message.reply_to_message:
+        await update.message.reply_text(
+            "⚠️ لطفاً روی پیامی که می‌خواهید ارسال شود ریپلای کنید و دستور را بزنید.\n\n"
+            "مثال:\n`/sendto گروه تغذیه`",
+            parse_mode="Markdown"
+        )
+        return
+
+    if not context.args:
+        await update.message.reply_text(
+            "⚠️ لطفاً نام یا آیدی گروه مقصد را وارد کنید.\n\n"
+            "مثال:\n`/sendto گروه تغذیه`\nیا\n`/sendto -1001234567890`",
+            parse_mode="Markdown"
+        )
+        return
+
+    query = " ".join(context.args).strip()
+    groups = await repo.list_all_groups()
+    target_group = None
+
+    for g in groups:
+        if str(g.chat_id) == query or (g.title and query.lower() in g.title.lower()):
+            target_group = g
+            break
+
+    if not target_group:
+        await update.message.reply_text("❌ گروهی با این مشخصات پیدا نشد.\nبرای دیدن لیست گروه‌ها: /groups")
+        return
+
+    try:
+        # کپی کردن پیام ریپلای شده به گروه مقصد
+        await context.bot.copy_message(
+            chat_id=target_group.chat_id,
+            from_chat_id=update.message.chat_id,
+            message_id=update.message.reply_to_message.message_id
+        )
+        await update.message.reply_text(f"✅ پیام با موفقیت به گروه «{target_group.title}» ارسال شد.")
+    except Exception as e:
+        logger.warning("خطا در ارسال پیام به گروه: %s", e)
+        await update.message.reply_text(f"❌ خطا در ارسال: {e}\n\n(شاید ربات در آن گروه ادمین نیست یا دسترسی کافی ندارد).")
 
 
 # ---------------------------------------------------------------------------
@@ -839,9 +892,12 @@ def build_application() -> Application:
     # 🎨 دستور ادمین برای ارسال کاور به گروه‌های فعلی
     application.add_handler(CommandHandler("broadcast_covers", cmd_broadcast_covers))
 
-    # 🚪 دستورات محرمانه خروج از گروه (به لیست اسلش‌ها اضافه نشده‌اند)
+    # 🚪 دستورات محرمانه خروج از گروه
     application.add_handler(CommandHandler("leave", cmd_leave_group))
     application.add_handler(CommandHandler("leavegroup", cmd_leave_group))
+    
+    # 📤 دستور مخفی ارسال پیام/عکس به گروه با ریپلای
+    application.add_handler(CommandHandler("sendto", cmd_send_to_group))
 
     application.add_handler(
         MessageHandler(filters.ChatType.GROUPS & filters.ALL, gmanager.on_group_message),

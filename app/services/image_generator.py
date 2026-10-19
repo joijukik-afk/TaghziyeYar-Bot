@@ -33,24 +33,36 @@ def _reshape_persian_text(text: str) -> str:
 async def generate_group_cover(group_name: str) -> io.BytesIO:
     await _ensure_font_exists()
 
-    # 🎯 پرامپت کوتاه، ساده و تضمینی برای عکاسی از غذا
-    # ما از سرویس پایدار image.pollinations.ai استفاده می‌کنیم تا دیگه مسجد و ساختمون نکشه!
+    # 🎯 پرامپت کوتاه و ساده برای غذا
     base_prompt = "delicious_healthy_food_platter, colorful_salad, fresh_fruits, professional_food_photography, 4k"
-    
     encoded_prompt = urllib.parse.quote(base_prompt)
     random_seed = random.randint(1, 999999) 
 
-    # استفاده از سرویس پایدار و رایگان (بدون نیاز به توکن)
     image_url = (
         f"https://image.pollinations.ai/prompt/{encoded_prompt}"
         f"?width=1024&height=1024&nologo=true&seed={random_seed}"
     )
 
-    # دانلود عکس
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        resp = await client.get(image_url)
-        resp.raise_for_status()
-        img = Image.open(io.BytesIO(resp.content)).convert("RGBA")
+    img = None
+    try:
+        # افزایش زمان انتظار به ۱۲۰ ثانیه (چون تولید عکس با AI گاهی زمان‌بر است)
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            resp = await client.get(image_url)
+            resp.raise_for_status()
+            img = Image.open(io.BytesIO(resp.content)).convert("RGBA")
+    except Exception as e:
+        logger.error("خطا در دریافت عکس از هوش مصنوعی: %s", e)
+        # 🛠️ سیستم پشتیبان: اگر هوش مصنوعی عکس نداد، از این عکس ثابت استفاده کن
+        logger.info("استفاده از عکس پشتیبان برای کاور...")
+        fallback_url = "https://images.unsplash.com/photo-1490645935967-10de6ba17061?q=80&w=1024&auto=format&fit=crop"
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.get(fallback_url)
+                resp.raise_for_status()
+                img = Image.open(io.BytesIO(resp.content)).convert("RGBA")
+        except Exception as fallback_e:
+            logger.error("خطای پشتیبان هم رخ داد: %s", fallback_e)
+            raise Exception("عدم دسترسی به هیچ سرور عکسی")
 
     # آماده‌سازی متن (فقط اسم گروه)
     text_group = _reshape_persian_text(group_name)

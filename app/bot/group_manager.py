@@ -61,25 +61,17 @@ async def on_bot_added(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             await context.bot.send_chat_action(chat_id=chat.id, action="upload_photo")
             group_name = chat.title or "Nutrition Group"
             
-            # فراخوانی هوش مصنوعی برای ساخت لینک عکس
-            image_url = await generate_group_cover(group_name)
-            
-            # 🛠️ دانلود عکس توسط سرور خودمان (جلوگیری از خطای تایم‌اوت تلگرام)
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.get(image_url)
-                resp.raise_for_status()
-                photo_bytes = io.BytesIO(resp.content)
-                photo_bytes.name = 'cover.jpg'
+            # تولید عکس با هوش مصنوعی و نوشتن متن
+            photo_bytes = await generate_group_cover(group_name)
             
             await context.bot.send_photo(
                 chat_id=chat.id,
-                photo=photo_bytes, # 👈 ارسال فایل دانلود شده به جای لینک
+                photo=photo_bytes,
                 caption=f"🎨 این هم کاور اختصاصی گروه <b>{safe_title}</b> است که با هوش مصنوعی طراحی شده!",
                 parse_mode="HTML"
             )
             logger.info("✅ کاور اختصاصی برای گروه %s ارسال شد.", chat.id)
         except Exception as e:
-            # اگر ساخت عکس خطا داد، ربات کرش نمی‌کند و فقط لاگ ثبت می‌شود
             logger.warning("ارسال عکس خودکار به گروه خطا داد: %s", e)
 
 

@@ -1,6 +1,7 @@
 """Bot entry point. Wires together all handlers and starts polling."""
 
 import asyncio
+import io
 import logging
 import os
 import re
@@ -9,9 +10,10 @@ import threading
 from functools import wraps
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
+import httpx
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatType
-from telegram.error import Forbidden # 👈 اضافه شد برای مدیریت خطای اخراج
+from telegram.error import Forbidden
 from telegram.ext import (
     Application,
     ApplicationBuilder,
@@ -665,9 +667,16 @@ async def cmd_broadcast_covers(update: Update, context: ContextTypes.DEFAULT_TYP
             group_name = g.title or "Nutrition Group"
             image_url = await generate_group_cover(group_name)
             
+            # 🛠️ دانلود عکس توسط سرور خودمان (جلوگیری از خطای تلگرام)
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.get(image_url)
+                resp.raise_for_status()
+                photo_bytes = io.BytesIO(resp.content)
+                photo_bytes.name = 'cover.jpg'
+
             await context.bot.send_photo(
                 chat_id=g.chat_id,
-                photo=image_url,
+                photo=photo_bytes,
                 caption=f"🎨 کاور اختصاصی گروه <b>{group_name}</b> با هوش مصنوعی!",
                 parse_mode="HTML"
             )
@@ -696,11 +705,9 @@ async def cmd_leave_group(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     user = update.effective_user
     chat = update.effective_chat
 
-    # 🛡️ حالت مخفی: اگر کاربر ادمین ربات نباشد، ربات کاملاً سکوت می‌کند
     if not user or not get_settings().is_admin(user.id):
         return
 
-    # حالت ۱: ادمین در چت خصوصی
     if chat.type == ChatType.PRIVATE:
         if not context.args:
             await update.message.reply_text(
@@ -730,7 +737,6 @@ async def cmd_leave_group(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         except Exception as e:
             await update.message.reply_text(f"❌ خطا در خروج از گروه: {e}")
 
-    # حالت ۲: ادمین در داخل خود گروه
     else:
         await update.message.reply_text("🚪 دستور محرمانه دریافت شد. در حال خروج از گروه... خداحافظ! 👋")
         
@@ -748,10 +754,24 @@ async def cmd_leave_group(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def cmd_send_to_group(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """ارسال هر پیامی (متن، عکس، استیکر) به گروه مشخص با ریپلای کردن (فقط ادمین)"""
     user = update.effective_user
-    if not user or not get_settings().is_admin(user.id):
-        return # سکوت کامل برای کاربران عادی
+    if not user:
+        return
 
-    # بررسی اینکه آیا روی یک پیام ریپلای شده است یا خیر
+    settings = get_settings()
+    
+    # 🔍 لاگ کردن برای عیب‌یابی
+    logger.info(f"⚠️ تلاش برای استفاده از /sendto. آیدی کاربر: {user.id} | لیست ادمین‌ها: {settings.admin_id_list}")
+
+    if not settings.is_admin(user.id):
+        if update.effective_chat.type == ChatType.PRIVATE:
+            await update.message.reply_text(
+                f"⛔ شما در لیست ادمین‌های ربات نیستید.\n\n"
+                f"آیدی عددی شما: `{user.id}`\n"
+                f"لطفاً این عدد را در متغیر `ADMIN_IDS` در داشبورد Render وارد کنید.",
+                parse_mode="Markdown"
+            )
+        return 
+
     if not update.message.reply_to_message:
         await update.message.reply_text(
             "⚠️ لطفاً روی پیامی که می‌خواهید ارسال شود ریپلای کنید و دستور را بزنید.\n\n"
@@ -789,7 +809,6 @@ async def cmd_send_to_group(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         )
         await update.message.reply_text(f"✅ پیام با موفقیت به گروه «{target_group.title}» ارسال شد.")
     except Forbidden:
-        # 🧹 اگر ربات در گروه نبود، خودکار حذفش کن
         await repo.deactivate_group(chat_id=target_group.chat_id)
         await update.message.reply_text(
             f"❌ ربات در گروه «{target_group.title}» عضو نیست (یا اخراج شده است).\n"
@@ -933,15 +952,12 @@ def main() -> None:
     application = build_application()
     logger.info("Starting bot...")
     
-    # 🚀 تشخیص خودکار محیط Render
     render_url = os.environ.get("RENDER_EXTERNAL_URL", "").strip()
     
     if render_url:
-        # حالت Webhook مخصوص Render
         port = int(os.environ.get("PORT", "8080"))
         url_path = application.bot.token
         
-        # 🛡️ بررسی تنظیم بودن کلید امنیتی وبهوک
         secret_token = settings.webhook_secret_token
         if secret_token:
             logger.info("✅ Secret Token is set. Webhook is secure.")
@@ -957,10 +973,9 @@ def main() -> None:
             webhook_url=f"{render_url}/{url_path}",
             allowed_updates=Update.ALL_TYPES,
             drop_pending_updates=True,
-            secret_token=secret_token if secret_token else None, # 🛡️ اعمال توکن امنیتی
+            secret_token=secret_token if secret_token else None,
         )
     else:
-        # حالت لوکال (برای اجرا روی کامپیوتر شخصی)
         _start_health_server() 
         logger.info("Starting bot in POLLING mode (Local)")
         application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)

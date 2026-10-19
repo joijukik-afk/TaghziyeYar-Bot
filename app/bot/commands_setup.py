@@ -1,21 +1,18 @@
 """Register bot commands with Telegram's menu."""
 
 import logging
-
 from telegram import Bot, BotCommand
 
 logger = logging.getLogger(__name__)
 
-
 BOT_COMMANDS = [
-    # عمومی
     BotCommand("start", "🚀 شروع کار با ربات"),
     BotCommand("help", "📖 راهنمای کامل"),
     BotCommand("menu", "🏠 منوی اصلی"),
-
+    
     # بازی
     BotCommand("quiz", "🎮 کوییز زنده"),
-    BotCommand("snake", "🐍 بازی مار و پله زنده"), # 👈 این خط اضافه شد
+    BotCommand("snake", "🐍 بازی مار و پله زنده"), # 👈 اضافه شد
     BotCommand("leaderboard", "🏆 جدول قهرمانان"),
     BotCommand("mystats", "📊 آمار من"),
 
@@ -57,7 +54,6 @@ BOT_COMMANDS = [
     BotCommand("privacy", "🔒 حریم خصوصی"),
     BotCommand("settings", "⚙️ تنظیمات"),
 ]
-
 
 async def setup_commands(bot: Bot) -> None:
     try:

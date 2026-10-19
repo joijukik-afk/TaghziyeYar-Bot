@@ -40,14 +40,14 @@ async def generate_group_cover(group_name: str) -> io.BytesIO:
     
     await _ensure_font_exists()
 
-    # ۱. هوش مصنوعی یک پرامپت هنری فوق‌العاده برای پس‌زمینه می‌سازد
+    # ۱. هوش مصنوعی یک پرامپت هنری فوق‌العاده برای پس‌زمینه می‌سازد (با تاکید شدید بر عدم نوشتن متن)
     prompt_request = (
         f"You are an expert AI art director. I need a background image for a Telegram group about Nutrition and Health. "
-        f"Generate a highly detailed, vivid English prompt for a 3D claymorphism or Pixar-style illustration. "
-        f"The image MUST feature delicious, fresh, healthy food (fruits, vegetables, nuts) in a beautiful composition. "
+        f"Generate a highly detailed, vivid English prompt for a photorealistic, high-quality 3D food photography. "
+        f"The image MUST feature delicious, fresh, healthy food (fruits, vegetables, nuts) in a beautiful, appealing composition. "
         f"Colors should be vibrant green, orange, and warm tones. "
-        f"IMPORTANT: Leave empty space in the center of the image for text. "
-        f"Do NOT include any text in the prompt. Just the visual description."
+        f"IMPORTANT: Leave empty space in the center of the image. "
+        f"CRITICAL: DO NOT INCLUDE ANY TEXT, LETTERS, WORDS, OR WATERMARKS IN THE IMAGE. No text at all."
     )
     
     ai = get_ai_service()
@@ -55,6 +55,9 @@ async def generate_group_cover(group_name: str) -> io.BytesIO:
     
     # پاکسازی پرامپت
     ai_prompt = ai_prompt.strip().replace('"', '').replace("'", "").replace("\n", " ")
+    # اضافه کردن تاکید مجدد به پرامپت برای عدم وجود متن
+    ai_prompt += " --no text, no letters, no words, no watermark, high resolution"
+    
     logger.info("پرامپت تولید شده برای پس‌زمینه گروه '%s': %s", group_name, ai_prompt)
 
     # ۲. ساخت عکس با سرویس Pollinations
@@ -65,65 +68,51 @@ async def generate_group_cover(group_name: str) -> io.BytesIO:
     api_key = getattr(settings, 'pollinations_api_key', '')
 
     if api_key:
+        # استفاده از مدل Flux برای کیفیت فوق‌العاده
         image_url = (
             f"https://gen.pollinations.ai/image/{encoded_prompt}"
             f"?width=1024&height=1024&nologo=true&seed={random_seed}&model=flux&key={api_key}"
         )
-        logger.info("استفاده از مدل Flux برای تولید عکس...")
     else:
         image_url = (
             f"https://image.pollinations.ai/prompt/{encoded_prompt}"
             f"?width=1024&height=1024&nologo=true&seed={random_seed}"
         )
-        logger.warning("توکن Pollinations تنظیم نشده. استفاده از مدل پیش‌فرض...")
 
     # ۳. دانلود عکس
-    async with httpx.AsyncClient(timeout=45.0) as client:
+    async with httpx.AsyncClient(timeout=60.0) as client:
         resp = await client.get(image_url)
         resp.raise_for_status()
         img = Image.open(io.BytesIO(resp.content)).convert("RGBA")
 
-    # ۴. آماده‌سازی متن‌ها برای نوشتن روی عکس
-    text_title = _reshape_persian_text("تغذیه گروه")
+    # ۴. آماده‌سازی متن (فقط اسم گروه)
     text_group = _reshape_persian_text(group_name)
 
-    # ۵. نوشتن متن روی عکس با استایل شیک
+    # ۵. نوشتن متن روی عکس با استایل شیک (بدون کادر مشکی)
     try:
-        font_title = ImageFont.truetype(FONT_PATH, 80)
-        font_group = ImageFont.truetype(FONT_PATH, 110)
+        font_group = ImageFont.truetype(FONT_PATH, 130)
     except Exception:
-        font_title = ImageFont.load_default()
         font_group = ImageFont.load_default()
 
+    draw = ImageDraw.Draw(img)
     width, height = img.size
     
-    # یک باکس نیمه‌شفاف مشکی در وسط عکس برای خوانایی بیشتر متن
-    overlay = Image.new('RGBA', img.size, (0,0,0,0))
-    draw_overlay = ImageDraw.Draw(overlay)
-    draw_overlay.rectangle([(0, height//2 - 200), (width, height//2 + 200)], fill=(0, 0, 0, 150))
-    img = Image.alpha_composite(img, overlay)
-    draw = ImageDraw.Draw(img)
-
-    # گرفتن اندازه متن برای وسط‌چین کردن
-    bbox_title = draw.textbbox((0, 0), text_title, font=font_title)
+    # محاسبه موقعیت برای وسط‌چین کردن
     bbox_group = draw.textbbox((0, 0), text_group, font=font_group)
-    
-    w_title, h_title = bbox_title[2] - bbox_title[0], bbox_title[3] - bbox_title[1]
     w_group, h_group = bbox_group[2] - bbox_group[0], bbox_group[3] - bbox_group[1]
     
-    # مختصات نوشتن
-    x_title = (width - w_title) / 2
-    y_title = (height / 2) - h_title - 50
-    
     x_group = (width - w_group) / 2
-    y_group = (height / 2) + 10
+    y_group = (height / 2) - (h_group / 2) # دقیقاً وسط عکس
 
-    # سایه و متن اصلی
-    draw.text((x_title+3, y_title+3), text_title, font=font_title, fill=(0, 0, 0, 200))
-    draw.text((x_title, y_title), text_title, font=font_title, fill=(255, 215, 0, 255)) # رنگ طلایی
-    
-    draw.text((x_group+3, y_group+3), text_group, font=font_group, fill=(0, 0, 0, 200))
-    draw.text((x_group, y_group), text_group, font=font_group, fill=(255, 255, 255, 255)) # رنگ سفید
+    # نوشتن متن با حاشیه (Stroke) و سایه برای خوانایی بالا
+    draw.text(
+        (x_group, y_group), 
+        text_group, 
+        font=font_group, 
+        fill=(255, 255, 255, 255), # متن سفید
+        stroke_width=8,            # ضخامت حاشیه
+        stroke_fill=(0, 0, 0, 255) # حاشیه مشکی
+    )
 
     # ۶. خروجی گرفتن به صورت BytesIO
     final_image_io = io.BytesIO()

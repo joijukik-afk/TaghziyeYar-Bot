@@ -11,6 +11,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatType
+from telegram.error import Forbidden # 👈 اضافه شد برای مدیریت خطای اخراج
 from telegram.ext import (
     Application,
     ApplicationBuilder,
@@ -658,6 +659,7 @@ async def cmd_broadcast_covers(update: Update, context: ContextTypes.DEFAULT_TYP
     status_msg = await update.message.reply_text(f"⏳ در حال ساخت کاور برای {len(groups)} گروه... لطفاً صبر کنید.")
 
     success = 0
+    dead_groups = 0
     for g in groups:
         try:
             group_name = g.title or "Nutrition Group"
@@ -670,11 +672,19 @@ async def cmd_broadcast_covers(update: Update, context: ContextTypes.DEFAULT_TYP
                 parse_mode="HTML"
             )
             success += 1
-            await asyncio.sleep(3) # تاخیر برای جلوگیری از محدودیت تلگرام
+            await asyncio.sleep(3) 
+        except Forbidden:
+            logger.warning("🛑 ربات دیگر عضو گروه %s نیست. حذف خودکار...", g.chat_id)
+            await repo.deactivate_group(chat_id=g.chat_id)
+            dead_groups += 1
         except Exception as e:
             logger.warning("خطا در ارسال کاور به گروه %s: %s", g.chat_id, e)
 
-    await status_msg.edit_text(f"✅ کاور برای {success} از {len(groups)} گروه با موفقیت ارسال شد.")
+    msg_text = f"✅ کاور برای {success} از {len(groups)} گروه ارسال شد."
+    if dead_groups > 0:
+        msg_text += f"\n🧹 {dead_groups} گروه که ربات در آن‌ها نبود، خودکار از دیتابیس حذف شدند."
+    
+    await status_msg.edit_text(msg_text)
 
 
 # ---------------------------------------------------------------------------
@@ -772,16 +782,22 @@ async def cmd_send_to_group(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return
 
     try:
-        # کپی کردن پیام ریپلای شده به گروه مقصد
         await context.bot.copy_message(
             chat_id=target_group.chat_id,
             from_chat_id=update.message.chat_id,
             message_id=update.message.reply_to_message.message_id
         )
         await update.message.reply_text(f"✅ پیام با موفقیت به گروه «{target_group.title}» ارسال شد.")
+    except Forbidden:
+        # 🧹 اگر ربات در گروه نبود، خودکار حذفش کن
+        await repo.deactivate_group(chat_id=target_group.chat_id)
+        await update.message.reply_text(
+            f"❌ ربات در گروه «{target_group.title}» عضو نیست (یا اخراج شده است).\n"
+            f"🧹 این گروه به طور خودکار از دیتابیس حذف شد تا دیگر خطایی رخ ندهد."
+        )
     except Exception as e:
         logger.warning("خطا در ارسال پیام به گروه: %s", e)
-        await update.message.reply_text(f"❌ خطا در ارسال: {e}\n\n(شاید ربات در آن گروه ادمین نیست یا دسترسی کافی ندارد).")
+        await update.message.reply_text(f"❌ خطا در ارسال: {e}")
 
 
 # ---------------------------------------------------------------------------

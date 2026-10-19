@@ -1,4 +1,4 @@
-"""بازی مار و پله فوق حرفه‌ای، متنی و زنده"""
+"""بازی مار و پله فوق حرفه‌ای، متنی و زنده (با قابلیت بازی با ربات)"""
 
 import random
 import logging
@@ -41,7 +41,7 @@ def _get_game_text(game: dict) -> str:
         text = "🐍 <b>لابی بازی مار و پله</b> 🪜\n\n"
         text += f"👥 بازیکنان ({len(game['players'])}/4):\n"
         for p in game["players"]: text += f"{p['icon']} {p['name']}\n"
-        text += "\n👇 برای ورود دکمه زیر را بزنید. میزبان می‌تواند بازی را شروع کند."
+        text += "\n👇 برای ورود دکمه زیر را بزنید یا با ربات بازی کنید."
         return text
     
     current = game["players"][game["turn_index"]]
@@ -58,7 +58,10 @@ def _get_game_text(game: dict) -> str:
     return text
 
 def _get_lobby_keyboard(game: dict) -> InlineKeyboardMarkup:
-    kb = [[InlineKeyboardButton("🎮 ورود به بازی", callback_data="snake_join")]]
+    kb = [
+        [InlineKeyboardButton("🎮 ورود به بازی", callback_data="snake_join")],
+        [InlineKeyboardButton("🤖 بازی با ربات", callback_data="snake_play_bot")] # 👈 دکمه بازی با ربات
+    ]
     if len(game["players"]) >= 2:
         kb.append([InlineKeyboardButton("🚀 شروع بازی (میزبان)", callback_data="snake_start")])
     return InlineKeyboardMarkup(kb)
@@ -70,21 +73,36 @@ def _get_game_keyboard() -> InlineKeyboardMarkup:
     ])
 
 async def auto_roll_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """اجرای خودکار تاس برای بازیکن انسانی در صورت تاخیر"""
     job = context.job
     game = ACTIVE_GAMES.get(job.chat_id)
     if not game or game["status"] != "playing": return
     current_player = game["players"][game["turn_index"]]
-    if job.data != current_player["id"]: return
+    if job.data != current_player["id"] or current_player["id"] == -1: return
+    
     await context.bot.send_message(chat_id=job.chat_id, text=f"⏰ زمان {current_player['name']} تموم شد! ربات براش تاس می‌ندازه...")
     await _process_roll(context, job.chat_id, current_player["id"], is_auto=True)
+
+async def bot_roll_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """اجرای تاس توسط ربات (بازیکن هوش مصنوعی)"""
+    job = context.job
+    game = ACTIVE_GAMES.get(job.chat_id)
+    if not game or game["status"] != "playing": return
+    current_player = game["players"][game["turn_index"]]
+    if current_player["id"] != -1: return # نوبت ربات نیست
+    
+    await _process_roll(context, job.chat_id, -1, is_auto=True)
 
 async def _process_roll(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int, is_auto=False) -> None:
     game = ACTIVE_GAMES.get(chat_id)
     if not game or game["status"] != "playing": return
+    
     current_player = game["players"][game["turn_index"]]
     if current_player["id"] != user_id and not is_auto: return
 
+    # حذف تایمرهای قبلی (چه انسانی چه ربات)
     for job in context.job_queue.get_jobs_by_name(f"snake_timer_{chat_id}"): job.schedule_removal()
+    for job in context.job_queue.get_jobs_by_name(f"snake_bot_timer_{chat_id}"): job.schedule_removal()
 
     dice = random.randint(1, 6)
     old_pos = current_player["pos"]
@@ -95,25 +113,54 @@ async def _process_roll(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_i
         action += "اما از ۱۰۰ رد شد و ماند."
     else:
         action += f"به {target_pos} رفت. "
+        
         for p in game["players"]:
             if p["id"] != current_player["id"] and p["pos"] == target_pos:
                 p["pos"] = 0
                 action += f"💥 {current_player['name']} زد به {p['name']} و فرستادش خانه ۱! "
+        
         current_player["pos"] = target_pos
-        if target_pos in LADDERS: action += f"🪜 پله! رفت به {LADDERS[target_pos]}."; current_player["pos"] = LADDERS[target_pos]
-        elif target_pos in SNAKES: action += f"🐍 مار! افتاد به {SNAKES[target_pos]}."; current_player["pos"] = SNAKES[target_pos]
+        
+        if target_pos in LADDERS:
+            action += f"🪜 پله! رفت به {LADDERS[target_pos]}."
+            current_player["pos"] = LADDERS[target_pos]
+        elif target_pos in SNAKES:
+            action += f"🐍 مار! افتاد به {SNAKES[target_pos]}."
+            current_player["pos"] = SNAKES[target_pos]
 
     game["last_action"] = action
+    
+    # بررسی برد
     if current_player["pos"] == 100:
-        game["status"] = "finished"; game["last_action"] = f"🏆 {current_player['icon']} <b>{current_player['name']} برنده شد!</b> 🎉"
-        await context.bot.send_message(chat_id=chat_id, text=_get_game_text(game), parse_mode="HTML"); del ACTIVE_GAMES[chat_id]; return
+        game["status"] = "finished"
+        game["last_action"] = f"🏆 {current_player['icon']} <b>{current_player['name']} برنده شد!</b> 🎉"
+        await context.bot.send_message(chat_id=chat_id, text=_get_game_text(game), parse_mode="HTML")
+        del ACTIVE_GAMES[chat_id]
+        return
 
-    if dice != 6: game["turn_index"] = (game["turn_index"] + 1) % len(game["players"])
-    else: game["last_action"] += " (چون ۶ آورد، دوباره می‌ندازه!)"
+    # تغییر نوبت
+    if dice != 6:
+        game["turn_index"] = (game["turn_index"] + 1) % len(game["players"])
+    else:
+        game["last_action"] += " (چون ۶ آورد، دوباره می‌ندازه!)"
 
-    msg = await context.bot.send_message(chat_id=chat_id, text=_get_game_text(game), parse_mode="HTML", reply_markup=_get_game_keyboard())
+    next_player = game["players"][game["turn_index"]]
+    
+    msg = await context.bot.send_message(
+        chat_id=chat_id,
+        text=_get_game_text(game),
+        parse_mode="HTML",
+        reply_markup=_get_game_keyboard()
+    )
     game["message_id"] = msg.message_id
-    context.job_queue.run_once(auto_roll_job, when=TURN_TIMEOUT, chat_id=chat_id, data=game["players"][game["turn_index"]]["id"], name=f"snake_timer_{chat_id}")
+
+    # زمان‌بندی برای نوبت بعدی
+    if next_player["id"] == -1:
+        # اگر نوبت ربات است، ۲ ثانیه بعد خودش تاس می‌ندازه
+        context.job_queue.run_once(bot_roll_job, when=2.0, chat_id=chat_id, name=f"snake_bot_timer_{chat_id}")
+    else:
+        # اگر نوبت انسان است، ۳۰ ثانیه صبر می‌کنیم
+        context.job_queue.run_once(auto_roll_job, when=TURN_TIMEOUT, chat_id=chat_id, data=next_player["id"], name=f"snake_timer_{chat_id}")
 
 async def cmd_snake(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
@@ -143,13 +190,33 @@ async def handle_snake(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         else: await context.bot.send_message(chat_id=chat_id, text=f"{PLAYER_ICONS[len(game['players'])-1]} {user.first_name} وسط بازی وارد شد! روی آپدیت بزنید.", reply_markup=_get_game_keyboard())
         return
 
+    # 🤖 بازی با ربات
+    if query.data == "snake_play_bot":
+        if game["status"] != "lobby": await query.answer("بازی شروع شده است!", show_alert=True); return
+        if any(p["id"] == -1 for p in game["players"]): await query.answer("ربات از قبل در بازی است.", show_alert=True); return
+        
+        # اضافه کردن ربات به بازی
+        game["players"].append({"id": -1, "name": "ربات", "pos": 0, "icon": "🤖"})
+        game["status"] = "playing"
+        game["turn_index"] = 0
+        game["last_action"] = "بازی با ربات شروع شد! نوبت شماست."
+        
+        await query.message.delete()
+        msg = await context.bot.send_message(chat_id=chat_id, text=_get_game_text(game), parse_mode="HTML", reply_markup=_get_game_keyboard())
+        game["message_id"] = msg.message_id
+        context.job_queue.run_once(auto_roll_job, when=TURN_TIMEOUT, chat_id=chat_id, data=game["players"][0]["id"], name=f"snake_timer_{chat_id}")
+        return
+
     if query.data == "snake_start":
         if user.id != game["host_id"] or len(game["players"]) < 2: await query.answer("شرایط شروع فراهم نیست.", show_alert=True); return
         game["status"] = "playing"; game["turn_index"] = 0; game["last_action"] = "بازی شروع شد!"
         await query.message.delete()
         msg = await context.bot.send_message(chat_id=chat_id, text=_get_game_text(game), parse_mode="HTML", reply_markup=_get_game_keyboard())
         game["message_id"] = msg.message_id
-        context.job_queue.run_once(auto_roll_job, when=TURN_TIMEOUT, chat_id=chat_id, data=game["players"][0]["id"], name=f"snake_timer_{chat_id}")
+        
+        next_p = game["players"][0]
+        if next_p["id"] == -1: context.job_queue.run_once(bot_roll_job, when=2.0, chat_id=chat_id, name=f"snake_bot_timer_{chat_id}")
+        else: context.job_queue.run_once(auto_roll_job, when=TURN_TIMEOUT, chat_id=chat_id, data=next_p["id"], name=f"snake_timer_{chat_id}")
         return
 
     if query.data == "snake_surrender":
@@ -158,7 +225,13 @@ async def handle_snake(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             s_p = game["players"].pop(p_idx); await query.answer("شما خارج شدید.")
             if len(game["players"]) < 2: del ACTIVE_GAMES[chat_id]; await query.edit_message_text(f"🏳️ {s_p['name']} انصراف داد. بازی لغو شد."); return
             if game["turn_index"] >= len(game["players"]): game["turn_index"] = 0
+            
             await context.bot.send_message(chat_id=chat_id, text=f"🏳️ {s_p['name']} انصراف داد!", reply_markup=_get_game_keyboard())
+            
+            # بررسی اینکه نوبت بعدی با کی هست
+            next_p = game["players"][game["turn_index"]]
+            if next_p["id"] == -1: context.job_queue.run_once(bot_roll_job, when=2.0, chat_id=chat_id, name=f"snake_bot_timer_{chat_id}")
+            else: context.job_queue.run_once(auto_roll_job, when=TURN_TIMEOUT, chat_id=chat_id, data=next_p["id"], name=f"snake_timer_{chat_id}")
         return
 
     if query.data == "snake_roll":

@@ -1,5 +1,6 @@
 """Bot entry point. Wires together all handlers and starts polling."""
 
+import asyncio
 import logging
 import os
 import re
@@ -35,6 +36,7 @@ from app.database import repository as repo
 from app.database.session import create_all, dispose_engine, init_engine
 from app.services.ai_service import get_ai_service
 from app.services.auto_content import broadcast_auto_content, post_auto_content
+from app.services.image_generator import generate_group_cover # 👈 اضافه شد
 from app.utils.message_formatter import with_signature
 
 
@@ -81,10 +83,7 @@ def _start_health_server() -> None:
 _user_last_message_time = {}
 
 def private_only(func):
-    """
-    دکوراتور امنیتی: دستورات حساس را فقط در چت خصوصی اجرا می‌کند.
-    اگر در گروه زده شود، دکمه هدایت به پی وی می‌فرستد.
-    """
+    """دستورات حساس را فقط در چت خصوصی اجرا می‌کند."""
     @wraps(func)
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
         if is_group(update):
@@ -106,9 +105,7 @@ def private_only(func):
     return wrapper
 
 def rate_limited(func):
-    """
-    دکوراتور امنیتی: جلوگیری از اسپم شدن ربات در گروه‌ها
-    """
+    """جلوگیری از اسپم شدن ربات در گروه‌ها"""
     @wraps(func)
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
         if not update.effective_user:
@@ -643,6 +640,44 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 # ---------------------------------------------------------------------------
+#  🎨 Admin Commands (ارسال کاور به گروه‌های فعلی)
+# ---------------------------------------------------------------------------
+
+async def cmd_broadcast_covers(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """ارسال یکباره کاور به همه گروه‌های ثبت‌شده (فقط ادمین)"""
+    user = update.effective_user
+    if not user or not get_settings().is_admin(user.id):
+        await update.message.reply_text("⛔ این دستور فقط برای ادمین است.")
+        return
+
+    groups = await repo.list_all_groups()
+    if not groups:
+        await update.message.reply_text("هیچ گروهی ثبت نشده است.")
+        return
+
+    status_msg = await update.message.reply_text(f"⏳ در حال ساخت کاور برای {len(groups)} گروه... لطفاً صبر کنید.")
+
+    success = 0
+    for g in groups:
+        try:
+            group_name = g.title or "Nutrition Group"
+            image_url = await generate_group_cover(group_name)
+            
+            await context.bot.send_photo(
+                chat_id=g.chat_id,
+                photo=image_url,
+                caption=f"🎨 کاور اختصاصی گروه <b>{group_name}</b> با هوش مصنوعی!",
+                parse_mode="HTML"
+            )
+            success += 1
+            await asyncio.sleep(3) # تاخیر برای جلوگیری از محدودیت تلگرام
+        except Exception as e:
+            logger.warning("خطا در ارسال کاور به گروه %s: %s", g.chat_id, e)
+
+    await status_msg.edit_text(f"✅ کاور برای {success} از {len(groups)} گروه با موفقیت ارسال شد.")
+
+
+# ---------------------------------------------------------------------------
 #  Lifecycle
 # ---------------------------------------------------------------------------
 
@@ -746,6 +781,9 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("setgroup", gmanager.cmd_setgroup))
     application.add_handler(CommandHandler("groups", gmanager.cmd_groups))
     application.add_handler(CommandHandler("unsetgroup", gmanager.cmd_unsetgroup))
+    
+    # 🎨 دستور ادمین برای ارسال کاور به گروه‌های فعلی
+    application.add_handler(CommandHandler("broadcast_covers", cmd_broadcast_covers))
 
     application.add_handler(
         MessageHandler(filters.ChatType.GROUPS & filters.ALL, gmanager.on_group_message),

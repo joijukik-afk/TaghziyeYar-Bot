@@ -35,6 +35,7 @@ from app.bot import meal_commands as mcmd
 from app.bot import messages as msg
 from app.bot import profile_commands as pcmd
 from app.bot import setup_wizard as wizard
+from app.bot import snake_game  # 👈 اضافه شد
 from app.bot.content import get_fact, get_myth, get_tip
 from app.config import get_settings
 from app.database import repository as repo
@@ -45,7 +46,6 @@ from app.services.image_generator import generate_group_cover
 from app.services.news_service import get_global_magazine_news
 from app.utils.message_formatter import with_signature
 
-
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=get_settings().log_level,
@@ -54,49 +54,35 @@ logger = logging.getLogger(__name__)
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
-# 🚫 لیست کلمات ممنوعه
 BAD_WORDS = [
     "فحش1", "فحش2", "کلمه_بد", "احمق", "خرف", "کص", "کیر", "کس", "گوه", "شر", 
     "fuck", "shit", "bitch", "asshole", "dick"
 ]
 
-# ---------------------------------------------------------------------------
-#  🚫 Global Ban & Bad Words System
-# ---------------------------------------------------------------------------
 async def check_user_ban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """بررسی مسدود بودن کاربر قبل از هر دستوری (سکوت مطلق)"""
     user = update.effective_user
     if user and await repo.is_user_banned(user.id):
         raise ApplicationHandlerStop
 
 async def handle_bad_words(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """فیلتر کلمات رکیک"""
     if not update.message or not update.message.text:
         return
-
     text_lower = update.message.text.lower()
     if any(word in text_lower for word in BAD_WORDS):
         user = update.effective_user
         user_name = user.first_name if user else "کاربر"
-        
         try: await update.message.delete()
         except Exception: pass
-
         warning_msg = await context.bot.send_message(
             chat_id=update.effective_chat.id,
-            text=f"⚠️ <b>{user_name} عزیز،</b>\nاستفاده از کلمات نامناسب در این گروه مجاز نیست (حتی برای ادمین‌ها).\n\n<i>این پیام پس از ۵ ثانیه حذف می‌شود.</i>",
+            text=f"⚠️ <b>{user_name} عزیز،</b>\nاستفاده از کلمات نامناسب در این گروه مجاز نیست.\n\n<i>این پیام پس از ۵ ثانیه حذف می‌شود.</i>",
             parse_mode="HTML"
         )
         await asyncio.sleep(5)
         try: await warning_msg.delete()
         except Exception: pass
-
         raise ApplicationHandlerStop
 
-
-# ---------------------------------------------------------------------------
-#  Health server
-# ---------------------------------------------------------------------------
 class _HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -112,9 +98,6 @@ def _start_health_server() -> None:
     threading.Thread(target=server.serve_forever, daemon=True).start()
     logger.info("Health server listening on port %s", port)
 
-# ---------------------------------------------------------------------------
-#  🛡️ Security & Privacy Helpers
-# ---------------------------------------------------------------------------
 _user_last_message_time = {}
 
 def private_only(func):
@@ -144,9 +127,6 @@ def rate_limited(func):
         return await func(update, context, *args, **kwargs)
     return wrapper
 
-# ---------------------------------------------------------------------------
-#  Auto-post job & Helpers
-# ---------------------------------------------------------------------------
 async def _auto_post_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     specific_chat = os.environ.get("AUTO_POST_CHAT_ID", "").strip()
     if specific_chat:
@@ -208,9 +188,6 @@ async def _send_html_safe(bot, chat_id: int, text: str, reply_to: int | None = N
         plain = re.sub(r"<[^>]+>", "", text)
         await bot.send_message(chat_id=chat_id, text=with_signature(plain), reply_to_message_id=reply_to)
 
-# ---------------------------------------------------------------------------
-#  Commands
-# ---------------------------------------------------------------------------
 @rate_limited
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
@@ -393,9 +370,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.exception("Exception", exc_info=context.error)
 
-# ---------------------------------------------------------------------------
-#  Admin Commands
-# ---------------------------------------------------------------------------
 async def cmd_broadcast_covers(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     if not user or not get_settings().is_admin(user.id): return
@@ -472,7 +446,6 @@ async def cmd_global_news(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         try: await context.bot.send_message(chat_id=target.chat_id, text=text, parse_mode="HTML"); await status_msg.edit_text("✅ خبر ارسال شد (بدون عکس).")
         except Exception as e2: await status_msg.edit_text(f"❌ خطا: {e2}")
 
-# 🚫 دستور /ban (با قابلیت اعلام در گروه و دلیل مسدودی)
 async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     if not user or not get_settings().is_admin(user.id): return
@@ -481,11 +454,9 @@ async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     target_name = "کاربر"
     group_to_notify = None
 
-    # ۱. بررسی ریپلای (در گروه یا روی پیام فوروارد شده)
     if update.message.reply_to_message:
         replied = update.message.reply_to_message
-        if replied.forward_from_chat: 
-            group_to_notify = replied.forward_from_chat.id
+        if replied.forward_from_chat: group_to_notify = replied.forward_from_chat.id
         if replied.forward_from:
             target_id = replied.forward_from.id
             target_name = replied.forward_from.first_name or "کاربر"
@@ -493,7 +464,6 @@ async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             target_id = replied.from_user.id
             target_name = replied.from_user.first_name or "کاربر"
 
-    # ۲. بررسی متن دستور (آیدی عددی یا یوزرنیم)
     if not target_id and context.args:
         arg = context.args[0]
         if arg.startswith("@"):
@@ -502,99 +472,52 @@ async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 target_id = db_user.telegram_id
                 target_name = db_user.first_name or db_user.username or "کاربر"
         else:
-            try: 
-                target_id = int(arg)
-                target_name = str(target_id)
+            try: target_id = int(arg); target_name = str(target_id)
             except ValueError: pass
 
     if not target_id:
-        return await update.message.reply_text(
-            "⚠️ راهنما:\n"
-            "برای ارسال پیام به گروه، نام گروه را هم بنویسید:\n"
-            "`/ban @username Asli`\n"
-            "یا آیدی عددی: `/ban 123456789`", 
-            parse_mode="Markdown"
-        )
+        return await update.message.reply_text("⚠️ راهنما:\n`/ban @username Asli`\nیا آیدی عددی: `/ban 123456789`", parse_mode="Markdown")
 
-    # ۳. پیدا کردن گروه برای ارسال پیام اخطار
     if not group_to_notify and len(context.args) > 1:
         group_query = " ".join(context.args[1:]).strip()
         groups = await repo.list_all_groups()
         target_group = next((g for g in groups if str(g.chat_id) == group_query or (g.title and group_query.lower() in g.title.lower())), None)
-        if target_group:
-            group_to_notify = target_group.chat_id
+        if target_group: group_to_notify = target_group.chat_id
     elif not group_to_notify and update.effective_chat.type in (ChatType.GROUP, ChatType.SUPERGROUP):
         group_to_notify = update.effective_chat.id
 
     try:
         await repo.ban_user(target_id, "توهین به ربات یا نقض قوانین")
+        await update.message.reply_text(f"✅ کاربر <b>{target_name}</b> (آیدی: <code>{target_id}</code>) مسدود شد.", parse_mode="HTML")
         
-        await update.message.reply_text(
-            f"✅ کاربر <b>{target_name}</b> (آیدی: <code>{target_id}</code>) مسدود شد.", 
-            parse_mode="HTML"
-        )
-        
-        # 🌟 ارسال پیام زیبا به کاربر متخلف در پیوی
         try: 
-            await context.bot.send_message(
-                chat_id=target_id, 
-                text=(
-                    "🚫 <b>دسترسی شما مسدود شد</b>\n\n"
-                    f"کاربر گرامی <b>{target_name}</b>،\n"
-                    "به دلیل توهین به ربات یا استفاده از کلمات نامناسب، دسترسی شما به «تغذیه‌یار» در تمام گروه‌ها مسدود شده است.\n\n"
-                    "در صورت داشتن اعتراض، می‌توانید به پشتیبانی پیام دهید:\n"
-                    "@AliAkbaro0"
-                ),
-                parse_mode="HTML"
-            )
+            await context.bot.send_message(chat_id=target_id, text="🚫 <b>دسترسی شما مسدود شد</b>\n\nبه دلیل توهین به ربات یا نقض قوانین، دسترسی شما مسدود شده است.\n\n@AliAkbaro0", parse_mode="HTML")
         except Exception: pass
 
-        # 🌟 ارسال پیام اعلام مسدودی به گروه
         if group_to_notify:
             try:
-                await context.bot.send_message(
-                    chat_id=group_to_notify,
-                    text=(
-                        f"🚫 <b>اخطار مدیریتی</b>\n\n"
-                        f"کاربر <b>{target_name}</b> به دلیل توهین به ربات یا نقض قوانین، از استفاده از ربات محروم شد.\n"
-                        f"<i>(دسترسی این کاربر در تمام گروه‌ها مسدود شده است)</i>"
-                    ),
-                    parse_mode="HTML"
-                )
-            except Exception as e:
-                logger.warning("ارسال پیام مسدودی به گروه خطا داد: %s", e)
-                await update.message.reply_text("⚠️ کاربر مسدود شد، اما ارسال پیام به گروه با خطا مواجه شد.")
-        else:
-            await update.message.reply_text("ℹ️ (پیام اعلام مسدودی به گروه ارسال نشد، چون نام گروه ذکر نشده بود).")
-
+                await context.bot.send_message(chat_id=group_to_notify, text=f"🚫 <b>اخطار مدیریتی</b>\n\nکاربر <b>{target_name}</b> به دلیل نقض قوانین مسدود شد.", parse_mode="HTML")
+            except Exception: pass
+            
     except Exception as e:
-        logger.error("خطا در بن: %s", e)
         await update.message.reply_text(f"❌ خطای دیتابیسی: `{e}`", parse_mode="Markdown")
 
 async def cmd_unban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     if not user or not get_settings().is_admin(user.id): return
-    if not context.args: return await update.message.reply_text("⚠️ آیدی یا یوزرنیم را وارد کنید: `/unban 123456789` یا `/unban @username`", parse_mode="Markdown")
-    
+    if not context.args: return await update.message.reply_text("⚠️ آیدی یا یوزرنیم را وارد کنید: `/unban 123456789`", parse_mode="Markdown")
     arg = context.args[0]
     target_id = None
-    
     if arg.startswith("@"):
         db_user = await repo.get_user_by_username(arg)
         if db_user: target_id = db_user.telegram_id
     else:
         try: target_id = int(arg)
         except ValueError: pass
-        
     if not target_id: return await update.message.reply_text("❌ کاربر پیدا نشد.")
-    
     await repo.unban_user(target_id)
     await update.message.reply_text(f"✅ مسدودی کاربر `{target_id}` برداشته شد.", parse_mode="Markdown")
 
-
-# ---------------------------------------------------------------------------
-#  Lifecycle
-# ---------------------------------------------------------------------------
 async def post_init(application: Application) -> None:
     init_engine()
     import app.database.models
@@ -603,30 +526,22 @@ async def post_init(application: Application) -> None:
     me = await application.bot.get_me()
     logger.info("Bot started as @%s (id=%s)", me.username, me.id)
 
-    # 🏷️ تنظیم خودکار بیو و توضیحات ربات
     try:
-        await application.bot.set_my_description(
-            description="🌱 دستیار هوشمند تغذیه\n\n👨‍⚕️ زیر نظر کارشناس و متخصص تغذیه: علی اکبر ابراهیم پور\n📞 پشتیبانی: @AliAkbaro0"
-        )
-        await application.bot.set_my_short_description(
-            short_description="زیر نظر متخصص تغذیه علی اکبر ابراهیم پور | پشتیبانی: @AliAkbaro0"
-        )
-        logger.info("✅ Bio and description updated successfully.")
-    except Exception as e:
-        logger.warning("خطا در تنظیم بیو: %s", e)
+        await application.bot.set_my_description(description="🌱 دستیار هوشمند تغذیه\n\n👨‍⚕️ زیر نظر کارشناس و متخصص تغذیه: علی اکبر ابراهیم پور\n📞 پشتیبانی: @AliAkbaro0")
+        await application.bot.set_my_short_description(short_description="زیر نظر متخصص تغذیه علی اکبر ابراهیم پور | پشتیبانی: @AliAkbaro0")
+        logger.info("✅ Bio updated.")
+    except Exception: pass
 
     try:
         from app.bot.commands_setup import setup_commands
         await setup_commands(application.bot)
     except Exception as e: logger.warning("Setup commands error: %s", e)
 
-    # ⏱️ زمان‌بندی پست خودکار (اولین پست ۱۰ دقیقه بعد)
     if application.job_queue is not None:
         try: interval = int(os.environ.get("AUTO_POST_INTERVAL_HOURS", "8")) * 3600
         except ValueError: interval = 8 * 3600
         try: first = int(os.environ.get("AUTO_POST_FIRST_DELAY", "600")) 
         except ValueError: first = 600
-        
         application.job_queue.run_repeating(_auto_post_job, interval=interval, first=first, name="auto_nutrition_post")
         logger.info("✅ اولین پست ۱۰ دقیقه بعد، پست‌های بعدی هر %s ساعت.", interval // 3600)
 
@@ -635,13 +550,7 @@ async def post_shutdown(application: Application) -> None:
 
 def build_application() -> Application:
     settings = get_settings()
-    application = (
-        ApplicationBuilder()
-        .token(settings.telegram_bot_token)
-        .post_init(post_init)
-        .post_shutdown(post_shutdown)
-        .build()
-    )
+    application = (ApplicationBuilder().token(settings.telegram_bot_token).post_init(post_init).post_shutdown(post_shutdown).build())
 
     application.add_handler(TypeHandler(Update, check_user_ban), group=-1)
 
@@ -680,6 +589,10 @@ def build_application() -> Application:
     application.add_handler(PollAnswerHandler(gquiz.on_poll_answer))
     application.add_handler(CallbackQueryHandler(gquiz.on_inline_answer, pattern=r"^gq_\d+$"))
 
+    # 🐍 بازی مار و پله
+    application.add_handler(CommandHandler("snake", snake_game.cmd_snake))
+    application.add_handler(CallbackQueryHandler(snake_game.handle_snake, pattern=r"^snake_"))
+
     application.add_handler(ChatMemberHandler(gmanager.on_bot_added, ChatMemberHandler.MY_CHAT_MEMBER))
     application.add_handler(CommandHandler("setgroup", gmanager.cmd_setgroup))
     application.add_handler(CommandHandler("groups", gmanager.cmd_groups))
@@ -693,12 +606,9 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("ban", cmd_ban))
     application.add_handler(CommandHandler("unban", cmd_unban))
 
-    application.add_handler(
-        MessageHandler(filters.ChatType.GROUPS & filters.TEXT & ~filters.COMMAND, handle_bad_words),
-        group=2,
-    )
-
+    application.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.TEXT & ~filters.COMMAND, handle_bad_words), group=2)
     application.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.ALL, gmanager.on_group_message), group=1)
+    
     application.add_handler(CallbackQueryHandler(handle_callback))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     application.add_error_handler(on_error)
@@ -708,24 +618,18 @@ def main() -> None:
     settings = get_settings()
     application = build_application()
     logger.info("Starting bot...")
-    
     render_url = os.environ.get("RENDER_EXTERNAL_URL", "").strip()
-    
     if render_url:
         port = int(os.environ.get("PORT", "8080"))
         url_path = application.bot.token
         secret_token = settings.webhook_secret_token
-        if secret_token: logger.info("✅ Secret Token is set. Webhook is secure.")
-        else: logger.warning("⚠️ Secret Token is NOT set.")
+        if secret_token: logger.info("✅ Secret Token is set.")
+        else: logger.warning("⚠️ Secret Token NOT set.")
         logger.info(f"Starting bot in WEBHOOK mode on {render_url}")
-        application.run_webhook(
-            listen="0.0.0.0", port=port, url_path=url_path,
-            webhook_url=f"{render_url}/{url_path}", allowed_updates=Update.ALL_TYPES,
-            drop_pending_updates=True, secret_token=secret_token if secret_token else None,
-        )
+        application.run_webhook(listen="0.0.0.0", port=port, url_path=url_path, webhook_url=f"{render_url}/{url_path}", allowed_updates=Update.ALL_TYPES, drop_pending_updates=True, secret_token=secret_token if secret_token else None)
     else:
         _start_health_server() 
-        logger.info("Starting bot in POLLING mode (Local)")
+        logger.info("Starting bot in POLLING mode")
         application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 if __name__ == "__main__":

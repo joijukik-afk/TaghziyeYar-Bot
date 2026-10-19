@@ -665,14 +665,8 @@ async def cmd_broadcast_covers(update: Update, context: ContextTypes.DEFAULT_TYP
     for g in groups:
         try:
             group_name = g.title or "Nutrition Group"
-            image_url = await generate_group_cover(group_name)
-            
-            # 🛠️ دانلود عکس توسط سرور خودمان (جلوگیری از خطای تلگرام)
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.get(image_url)
-                resp.raise_for_status()
-                photo_bytes = io.BytesIO(resp.content)
-                photo_bytes.name = 'cover.jpg'
+            # 🎨 تولید عکس (حالا مستقیماً فایل عکس برمی‌گردونه)
+            photo_bytes = await generate_group_cover(group_name)
 
             await context.bot.send_photo(
                 chat_id=g.chat_id,
@@ -759,7 +753,6 @@ async def cmd_send_to_group(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     settings = get_settings()
     
-    # 🔍 لاگ کردن برای عیب‌یابی
     logger.info(f"⚠️ تلاش برای استفاده از /sendto. آیدی کاربر: {user.id} | لیست ادمین‌ها: {settings.admin_id_list}")
 
     if not settings.is_admin(user.id):

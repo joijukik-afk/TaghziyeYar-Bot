@@ -23,8 +23,8 @@ from telegram.ext import (
     ContextTypes,
     MessageHandler,
     PollAnswerHandler,
-    TypeHandler,             # 👈 اضافه شد برای سیستم مسدودسازی
-    ApplicationHandlerStop,  # 👈 اضافه شد برای سیستم مسدودسازی
+    TypeHandler,             # 👈 برای سیستم مسدودسازی
+    ApplicationHandlerStop,  # 👈 برای سیستم مسدودسازی
     filters,
 )
 
@@ -42,7 +42,7 @@ from app.database.session import create_all, dispose_engine, init_engine
 from app.services.ai_service import get_ai_service
 from app.services.auto_content import broadcast_auto_content, post_auto_content
 from app.services.image_generator import generate_group_cover
-from app.services.news_service import get_global_magazine_news 
+from app.services.news_service import get_global_magazine_news
 from app.utils.message_formatter import with_signature
 
 
@@ -817,25 +817,53 @@ async def cmd_global_news(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await status_msg.edit_text(f"❌ خطا در ارسال: {e2}")
 
 
-# 🚫 دستور /ban برای مسدودسازی
+# 🚫 دستور /ban برای مسدودسازی (با پشتیبانی از فوروارد)
 async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     if not user or not get_settings().is_admin(user.id): return
 
     target_id = None
+    target_name = "کاربر"
+
     if update.message.reply_to_message:
-        target_id = update.message.reply_to_message.from_user.id
+        replied = update.message.reply_to_message
+        
+        if replied.forward_from:
+            target_id = replied.forward_from.id
+            target_name = replied.forward_from.first_name or "کاربر"
+        elif replied.from_user:
+            target_id = replied.from_user.id
+            target_name = replied.from_user.first_name or "کاربر"
+
     elif context.args:
-        try: target_id = int(context.args[0])
-        except ValueError: pass
+        try: 
+            target_id = int(context.args[0])
+            target_name = str(target_id)
+        except ValueError: 
+            pass
 
     if not target_id:
-        return await update.message.reply_text("⚠️ روی پیام کاربر ریپلای کنید یا آیدی بدهید:\n`/ban 123456789`", parse_mode="Markdown")
+        return await update.message.reply_text(
+            "⚠️ راهنما:\n"
+            "۱. روی پیام کاربر (در گروه یا فوروارد شده در پیوی) ریپلای کنید.\n"
+            "۲. یا آیدی عددی بدهید: `/ban 123456789`", 
+            parse_mode="Markdown"
+        )
 
     await repo.ban_user(target_id, "توسط ادمین")
-    await update.message.reply_text(f"✅ کاربر `{target_id}` در کل ربات مسدود شد.", parse_mode="Markdown")
-    try: await context.bot.send_message(chat_id=target_id, text="⛔ شما از استفاده از ربات محروم شده‌اید.")
-    except: pass
+    
+    await update.message.reply_text(
+        f"✅ کاربر <b>{target_name}</b> (آیدی: <code>{target_id}</code>) در کل ربات مسدود شد.", 
+        parse_mode="HTML"
+    )
+    
+    try: 
+        await context.bot.send_message(
+            chat_id=target_id, 
+            text="⛔ شما به دلیل نقض قوانین، از استفاده از ربات محروم شده‌اید."
+        )
+    except: 
+        pass
 
 # ✅ دستور /unban برای رفع مسدودی
 async def cmd_unban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

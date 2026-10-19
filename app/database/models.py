@@ -155,3 +155,15 @@ class SentImage(Base):
     image_url: Mapped[str] = mapped_column(String(1000), unique=True, index=True)
     keyword: Mapped[str | None] = mapped_column(String(300), nullable=True)
     sent_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+# ================================================================
+#  🚫 BAN SYSTEM (مدل کاربران مسدود شده)
+# ================================================================
+class BannedUser(Base):
+    __tablename__ = "banned_users"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    telegram_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True)
+    reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    banned_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

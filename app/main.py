@@ -27,7 +27,7 @@ from app.bot import meal_commands as mcmd
 from app.bot import messages as msg
 from app.bot import profile_commands as pcmd
 from app.bot import setup_wizard as wizard
-from app.bot import snake_game # 👈 ایمپورت بازی
+from app.bot import snake_game
 from app.bot.content import get_fact, get_myth, get_tip
 from app.config import get_settings
 from app.database import repository as repo
@@ -42,22 +42,11 @@ logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
-BAD_WORDS = ["فحش1", "فحش2", "کلمه_بد", "احمق", "خرف", "کص", "کیر", "کس", "گوه", "شر", "fuck", "shit", "bitch", "asshole", "dick"]
-
+# 🚫 فقط سیستم مسدودسازی سراسری (بدون فیلتر کلمات)
 async def check_user_ban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """بررسی مسدود بودن کاربر قبل از هر دستوری"""
     user = update.effective_user
-    if user and await repo.is_user_banned(user.id): raise ApplicationHandlerStop
-
-async def handle_bad_words(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not update.message or not update.message.text: return
-    if any(word in update.message.text.lower() for word in BAD_WORDS):
-        user = update.effective_user; user_name = user.first_name if user else "کاربر"
-        try: await update.message.delete()
-        except: pass
-        w_msg = await context.bot.send_message(chat_id=update.effective_chat.id, text=f"⚠️ <b>{user_name} عزیز،</b>\nاستفاده از کلمات نامناسب مجاز نیست.\n\n<i>حذف خودکار در ۵ ثانیه.</i>", parse_mode="HTML")
-        await asyncio.sleep(5)
-        try: await w_msg.delete()
-        except: pass
+    if user and await repo.is_user_banned(user.id): 
         raise ApplicationHandlerStop
 
 class _HealthHandler(BaseHTTPRequestHandler):
@@ -373,7 +362,7 @@ async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             db_user = await repo.get_user_by_username(arg)
             if db_user: target_id, target_name = db_user.telegram_id, db_user.first_name or db_user.username or "کاربر"
         else:
-            try: target_id, target_name = int(arg), str(target_id)
+            try: target_id, target_name = int(arg), str(arg)
             except: pass
     if not target_id: return await update.message.reply_text("⚠️ راهنما:\n`/ban @username Asli`", parse_mode="Markdown")
     if not group_to_notify and len(context.args) > 1:
@@ -382,7 +371,7 @@ async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if target_group: group_to_notify = target_group.chat_id
     elif not group_to_notify and update.effective_chat.type in (ChatType.GROUP, ChatType.SUPERGROUP): group_to_notify = update.effective_chat.id
     try:
-        await repo.ban_user(target_id, "توهین یا نقض قوانین")
+        await repo.ban_user(target_id, "نقض قوانین")
         await update.message.reply_text(f"✅ کاربر <b>{target_name}</b> مسدود شد.", parse_mode="HTML")
         try: await context.bot.send_message(chat_id=target_id, text="🚫 <b>دسترسی شما مسدود شد</b>\n\n@AliAkbaro0", parse_mode="HTML")
         except: pass
@@ -433,7 +422,10 @@ async def post_shutdown(application: Application) -> None: await dispose_engine(
 def build_application() -> Application:
     settings = get_settings()
     app = (ApplicationBuilder().token(settings.telegram_bot_token).post_init(post_init).post_shutdown(post_shutdown).build())
+    
+    # 🚫 فقط سیستم مسدودسازی سراسری
     app.add_handler(TypeHandler(Update, check_user_ban), group=-1)
+
     app.add_handler(CommandHandler("start", cmd_start)); app.add_handler(CommandHandler("help", cmd_help)); app.add_handler(CommandHandler("menu", cmd_menu))
     app.add_handler(CommandHandler("about", cmd_about)); app.add_handler(CommandHandler("privacy", cmd_privacy)); app.add_handler(CommandHandler("settings", cmd_settings))
     app.add_handler(CommandHandler("profile", cmd_profile)); app.add_handler(CommandHandler("setup", cmd_setup)); app.add_handler(CommandHandler("cancel", cmd_cancel))
@@ -445,7 +437,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("quiz", gquiz.cmd_quiz)); app.add_handler(CommandHandler("leaderboard", gquiz.cmd_leaderboard)); app.add_handler(CommandHandler("mystats", gquiz.cmd_mystats))
     app.add_handler(PollAnswerHandler(gquiz.on_poll_answer)); app.add_handler(CallbackQueryHandler(gquiz.on_inline_answer, pattern=r"^gq_\d+$"))
     
-    # 🐍 اتصال بازی مار و پله
+    # 🐍 بازی مار و پله
     app.add_handler(CommandHandler("snake", snake_game.cmd_snake))
     app.add_handler(CallbackQueryHandler(snake_game.handle_snake, pattern=r"^snake_"))
     
@@ -453,8 +445,10 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("setgroup", gmanager.cmd_setgroup)); app.add_handler(CommandHandler("groups", gmanager.cmd_groups)); app.add_handler(CommandHandler("unsetgroup", gmanager.cmd_unsetgroup))
     app.add_handler(CommandHandler("broadcast_covers", cmd_broadcast_covers)); app.add_handler(CommandHandler("leave", cmd_leave_group)); app.add_handler(CommandHandler("leavegroup", cmd_leave_group))
     app.add_handler(CommandHandler("sendto", cmd_send_to_group)); app.add_handler(CommandHandler("globalnews", cmd_global_news)); app.add_handler(CommandHandler("ban", cmd_ban)); app.add_handler(CommandHandler("unban", cmd_unban))
-    app.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.TEXT & ~filters.COMMAND, handle_bad_words), group=2)
+    
+    # ⛔️ هندلر مربوط به فیلتر کلمات کاملاً حذف شد
     app.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.ALL, gmanager.on_group_message), group=1)
+    
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_error_handler(on_error)

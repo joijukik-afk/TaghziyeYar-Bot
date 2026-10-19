@@ -1,9 +1,8 @@
-"""سرویس تولید عکس اختصاصی و شیک برای گروه"""
+"""سرویس تولید عکس اختصاصی و شیک برای گروه (با عکس‌های واقعی و باکیفیت)"""
 
 import io
 import logging
 import random
-import urllib.parse
 import os
 import httpx
 from PIL import Image, ImageDraw, ImageFont
@@ -14,6 +13,18 @@ logger = logging.getLogger(__name__)
 
 FONT_PATH = "Vazirmatn-Bold.ttf"
 FONT_URL = "https://github.com/rastikerdar/vazirmatn/raw/master/fonts/ttf/Vazirmatn-Bold.ttf"
+
+# 🖼️ گالری عکس‌های فوق‌العاده حرفه‌ای از غذاهای سالم (کیفیت 4K)
+FOOD_IMAGES = [
+    "https://images.unsplash.com/photo-1490645935967-10de6ba17061?q=80&w=1024&auto=format&fit=crop", # کاسه سالم
+    "https://images.unsplash.com/photo-1512621776951-a57141f2eefd?q=80&w=1024&auto=format&fit=crop", # سالاد رنگارنگ
+    "https://images.unsplash.com/photo-1540189549336-e6e99c3679fe?q=80&w=1024&auto=format&fit=crop", # بشقاب رژیمی
+    "https://images.unsplash.com/photo-1498837167922-ddd27525d352?q=80&w=1024&auto=format&fit=crop", # میز صبحانه سالم
+    "https://images.unsplash.com/photo-1473093295043-cdd812d0e601?q=80&w=1024&auto=format&fit=crop", # پاستا و سبزیجات
+    "https://images.unsplash.com/photo-1565299624946-b28f40a0ae38?q=80&w=1024&auto=format&fit=crop", # پیتزا (به عنوان غذای فست‌فود سالم)
+    "https://images.unsplash.com/photo-1505253716362-afaea1d3d1af?q=80&w=1024&auto=format&fit=crop", # اسموتی و میوه
+    "https://images.unsplash.com/photo-1482049016688-2d3e1b311543?q=80&w=1024&auto=format&fit=crop"  # بشقاب حرفه‌ای
+]
 
 async def _ensure_font_exists():
     if not os.path.exists(FONT_PATH):
@@ -33,36 +44,18 @@ def _reshape_persian_text(text: str) -> str:
 async def generate_group_cover(group_name: str) -> io.BytesIO:
     await _ensure_font_exists()
 
-    # 🎯 پرامپت کوتاه و ساده برای غذا
-    base_prompt = "delicious_healthy_food_platter, colorful_salad, fresh_fruits, professional_food_photography, 4k"
-    encoded_prompt = urllib.parse.quote(base_prompt)
-    random_seed = random.randint(1, 999999) 
+    # انتخاب یک عکس تصادفی از گالری
+    image_url = random.choice(FOOD_IMAGES)
 
-    image_url = (
-        f"https://image.pollinations.ai/prompt/{encoded_prompt}"
-        f"?width=1024&height=1024&nologo=true&seed={random_seed}"
-    )
-
-    img = None
+    # دانلود عکس
     try:
-        # افزایش زمان انتظار به ۱۲۰ ثانیه (چون تولید عکس با AI گاهی زمان‌بر است)
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.get(image_url)
             resp.raise_for_status()
             img = Image.open(io.BytesIO(resp.content)).convert("RGBA")
     except Exception as e:
-        logger.error("خطا در دریافت عکس از هوش مصنوعی: %s", e)
-        # 🛠️ سیستم پشتیبان: اگر هوش مصنوعی عکس نداد، از این عکس ثابت استفاده کن
-        logger.info("استفاده از عکس پشتیبان برای کاور...")
-        fallback_url = "https://images.unsplash.com/photo-1490645935967-10de6ba17061?q=80&w=1024&auto=format&fit=crop"
-        try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.get(fallback_url)
-                resp.raise_for_status()
-                img = Image.open(io.BytesIO(resp.content)).convert("RGBA")
-        except Exception as fallback_e:
-            logger.error("خطای پشتیبان هم رخ داد: %s", fallback_e)
-            raise Exception("عدم دسترسی به هیچ سرور عکسی")
+        logger.error("خطا در دریافت عکس: %s", e)
+        raise Exception("عدم دسترسی به سرور عکس")
 
     # آماده‌سازی متن (فقط اسم گروه)
     text_group = _reshape_persian_text(group_name)
@@ -82,14 +75,14 @@ async def generate_group_cover(group_name: str) -> io.BytesIO:
     x_group = (width - w_group) / 2
     y_group = (height / 2) - (h_group / 2) 
 
-    # نوشتن اسم گروه با حاشیه (Stroke) و سایه برای خوانایی بالا
+    # نوشتن اسم گروه با حاشیه (Stroke) و سایه
     draw.text(
         (x_group, y_group), 
         text_group, 
         font=font_group, 
-        fill=(255, 255, 255, 255), # متن سفید
-        stroke_width=10,           # حاشیه ضخیم
-        stroke_fill=(0, 0, 0, 255) # حاشیه مشکی
+        fill=(255, 255, 255, 255),
+        stroke_width=10,           
+        stroke_fill=(0, 0, 0, 255) 
     )
 
     # خروجی گرفتن

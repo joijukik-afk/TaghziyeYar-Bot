@@ -7,13 +7,11 @@ from telegram.ext import ContextTypes
 
 from app.config import get_settings
 from app.database import repository as repo
-# اگر فایل security.py را ساخته‌اید، دکوراتور ضد اسپم را از آن ایمپورت کنید:
-# from app.security import rate_limited 
+from app.services.image_generator import generate_group_cover # 👈 اضافه شد
 
 logger = logging.getLogger(__name__)
 
 # 🛡️ حافظه موقت (Cache) برای جلوگیری از حمله به دیتابیس
-# اگر گروهی در این لیست باشد، دیگر برای هر پیام به دیتابیس متصل نمی‌شویم.
 _KNOWN_GROUPS_CACHE = set()
 
 
@@ -22,7 +20,7 @@ _KNOWN_GROUPS_CACHE = set()
 # ============================================================
 
 async def on_bot_added(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """وقتی بات به گروه اضافه شد، chat_id رو ذخیره کن."""
+    """وقتی بات به گروه اضافه شد، chat_id رو ذخیره کن و کاور اختصاصی بفرست."""
     result = update.my_chat_member
     if result is None:
         return
@@ -36,11 +34,13 @@ async def on_bot_added(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     if old_status in ("left", "kicked") and new_status in ("member", "administrator"):
         await repo.get_or_create_group(chat_id=chat.id, title=chat.title)
-        _KNOWN_GROUPS_CACHE.add(chat.id) # افزودن به حافظه موقت
+        _KNOWN_GROUPS_CACHE.add(chat.id) 
         logger.info("✅ بات به گروه اضافه شد: %s (%s)", chat.title, chat.id)
 
+        safe_title = html.escape(chat.title or "دوستان")
+
+        # ۱. ارسال پیام خوش‌آمدگویی
         try:
-            safe_title = html.escape(chat.title or "دوستان")
             await context.bot.send_message(
                 chat_id=chat.id,
                 text=(
@@ -54,6 +54,25 @@ async def on_bot_added(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         except Exception as e:
             logger.warning("ارسال پیام خوشامد خطا داد: %s", e)
 
+        # ۲. 🎨 ساخت و ارسال خودکار عکس اختصاصی گروه
+        try:
+            await context.bot.send_chat_action(chat_id=chat.id, action="upload_photo")
+            group_name = chat.title or "Nutrition Group"
+            
+            # فراخوانی هوش مصنوعی برای ساخت لینک عکس
+            image_url = await generate_group_cover(group_name)
+            
+            await context.bot.send_photo(
+                chat_id=chat.id,
+                photo=image_url,
+                caption=f"🎨 این هم کاور اختصاصی گروه <b>{safe_title}</b> است که با هوش مصنوعی طراحی شده!",
+                parse_mode="HTML"
+            )
+            logger.info("✅ کاور اختصاصی برای گروه %s ارسال شد.", chat.id)
+        except Exception as e:
+            # اگر ساخت عکس خطا داد، ربات کرش نمی‌کند و فقط لاگ ثبت می‌شود
+            logger.warning("ارسال عکس خودکار به گروه خطا داد: %s", e)
+
 
 async def on_group_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """از هر پیام تو گروه، chat_id رو ذخیره کن (با بهینه‌سازی امنیتی)."""
@@ -63,7 +82,6 @@ async def on_group_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if chat.type not in ("group", "supergroup"):
         return
 
-    # 🛡️ بهینه‌سازی: اگر گروه قبلاً ثبت شده، دیتابیس را درگیر نکن
     if chat.id in _KNOWN_GROUPS_CACHE:
         return
 
@@ -83,7 +101,6 @@ async def is_group_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if not update.effective_user or not update.effective_chat:
         return False
         
-    # اگر خود ادمین کل ربات بود، اجازه بده
     if get_settings().is_admin(update.effective_user.id):
         return True
 
@@ -110,7 +127,6 @@ async def cmd_setgroup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.message.reply_text("⚠️ این دستور فقط تو گروه کار می‌کنه.")
         return
 
-    # 🛡️ فقط ادمین‌های گروه یا ادمین ربات اجازه دارند
     if not await is_group_admin(update, context):
         await update.message.reply_text("⛔ این دستور فقط برای ادمین‌های گروه مجاز است.")
         return
@@ -140,7 +156,6 @@ async def cmd_postnow(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if user is None or update.message is None or chat is None:
         return
 
-    # 🛡️ فقط ادمین ربات یا ادمین گروه
     if not await is_group_admin(update, context):
         await update.message.reply_text("⛔ این دستور فقط برای ادمین‌هاست.")
         return
@@ -201,14 +216,12 @@ async def cmd_groups(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     lines = [f"📋 <b>گروه‌های ثبت‌شده ({len(groups)}):</b>\n"]
     for i, g in enumerate(groups[:30], 1):
-        # 🛡️ استفاده از html.escape برای جلوگیری از کرش کردن ربات با نام‌های عجیب گروه
         title = html.escape(g.title or "بدون نام")
         lines.append(f"{i}. {title}\n   <code>{g.chat_id}</code>")
 
     if len(groups) > 30:
         lines.append(f"\n... و {len(groups) - 30} گروه دیگه")
 
-    # تغییر parse_mode از Markdown به HTML برای امنیت بیشتر
     await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
 
@@ -222,7 +235,6 @@ async def cmd_unsetgroup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if user is None or update.message is None or update.effective_chat is None:
         return
 
-    # 🛡️ فقط ادمین ربات یا ادمین گروه
     if not await is_group_admin(update, context):
         await update.message.reply_text("⛔ فقط ادمین‌ها مجاز هستند.")
         return

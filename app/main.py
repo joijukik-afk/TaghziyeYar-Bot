@@ -65,13 +65,10 @@ BAD_WORDS = [
 #  🚫 Global Ban & Bad Words System (سیستم امنیتی سراسری)
 # ---------------------------------------------------------------------------
 async def check_user_ban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """بررسی مسدود بودن کاربر قبل از هر دستوری"""
+    """بررسی مسدود بودن کاربر قبل از هر دستوری (سکوت مطلق)"""
     user = update.effective_user
     if user and await repo.is_user_banned(user.id):
-        if update.effective_chat and update.effective_chat.type == ChatType.PRIVATE and update.message:
-            try: await update.message.reply_text("⛔ شما از استفاده از این ربات محروم شده‌اید.")
-            except Exception: pass
-        # متوقف کردن کامل پردازش پیام
+        # 🛑 ربات کاملاً سکوت می‌کند و هیچ پیامی (نه در گروه و نه در پیوی) نمی‌فرستد
         raise ApplicationHandlerStop
 
 async def handle_bad_words(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -482,7 +479,7 @@ async def cmd_global_news(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         try: await context.bot.send_message(chat_id=target.chat_id, text=text, parse_mode="HTML"); await status_msg.edit_text("✅ خبر ارسال شد (بدون عکس).")
         except Exception as e2: await status_msg.edit_text(f"❌ خطا: {e2}")
 
-# 🚫 دستور /ban برای مسدودسازی (با اعلام در گروه)
+# 🚫 دستور /ban برای مسدودسازی (با اعلام در گروه و بدون پیام به کاربر)
 async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     if not user or not get_settings().is_admin(user.id): return
@@ -527,10 +524,8 @@ async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 )
             except Exception: pass
         
-        # ارسال پیام به کاربر متخلف
-        try: 
-            await context.bot.send_message(chat_id=target_id, text="⛔ شما به دلیل نقض قوانین، از استفاده از ربات محروم شده‌اید.")
-        except: pass
+        # ⛔️ هیچ پیامی به کاربر متخلف در پیوی فرستاده نمی‌شود (سکوت مطلق)
+        
     except Exception as e:
         logger.error("خطا در بن: %s", e)
         await update.message.reply_text(f"❌ خطای دیتابیسی: `{e}`\nمطمئن شوید جدول `banned_users` ساخته شده است.", parse_mode="Markdown")
@@ -580,7 +575,7 @@ def build_application() -> Application:
         .build()
     )
 
-    # 🚫 سیستم امنیتی سراسری (گروه -1 اجرا می‌شود و قبل از هر چیز دیگری چک می‌کند)
+    # 🚫 سیستم امنیتی سراسری (گروه -1: سکوت مطلق برای بن شده‌ها)
     application.add_handler(TypeHandler(Update, check_user_ban), group=-1)
 
     # Base

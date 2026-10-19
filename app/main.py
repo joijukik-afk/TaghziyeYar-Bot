@@ -40,6 +40,7 @@ from app.database.session import create_all, dispose_engine, init_engine
 from app.services.ai_service import get_ai_service
 from app.services.auto_content import broadcast_auto_content, post_auto_content
 from app.services.image_generator import generate_group_cover
+from app.services.news_service import get_global_magazine_news # 👈 ایمپورت سرویس جدید
 from app.utils.message_formatter import with_signature
 
 
@@ -130,7 +131,6 @@ def rate_limited(func):
 # ---------------------------------------------------------------------------
 
 async def _auto_post_job(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Job خودکار: ارسال محتوا به گروه(ها)."""
     specific_chat = os.environ.get("AUTO_POST_CHAT_ID", "").strip()
     if specific_chat:
         try:
@@ -240,7 +240,6 @@ async def ensure_user_and_group(update: Update) -> None:
 
 
 async def _send_html_safe(bot, chat_id: int, text: str, reply_to: int | None = None) -> None:
-    """ارسال پیام با HTML parse_mode. اگه خطا داد، متن ساده بفرست."""
     signed = with_signature(text)
     try:
         await bot.send_message(
@@ -335,17 +334,10 @@ async def cmd_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if profile.target_weight_kg:
         lines.append(f"• وزن هدف: {profile.target_weight_kg:.1f} کیلوگرم")
     if profile.goal:
-        goal_fa = {
-            "lose": "کاهش وزن", "gain": "افزایش وزن",
-            "muscle": "عضله‌سازی", "maintain": "حفظ وزن",
-            "quality": "بهبود کیفیت تغذیه", "sport": "هدف ورزشی",
-        }.get(profile.goal, profile.goal)
+        goal_fa = {"lose": "کاهش وزن", "gain": "افزایش وزن", "muscle": "عضله‌سازی", "maintain": "حفظ وزن", "quality": "بهبود کیفیت تغذیه", "sport": "هدف ورزشی"}.get(profile.goal, profile.goal)
         lines.append(f"• هدف: {goal_fa}")
     if profile.activity_level:
-        act_fa = {
-            "sedentary": "کم‌تحرک", "light": "سبک",
-            "moderate": "متوسط", "high": "زیاد",
-        }.get(profile.activity_level, profile.activity_level)
+        act_fa = {"sedentary": "کم‌تحرک", "light": "سبک", "moderate": "متوسط", "high": "زیاد"}.get(profile.activity_level, profile.activity_level)
         lines.append(f"• فعالیت: {act_fa}")
     lines.append("\n✏️ برای ویرایش، /setup رو بزن.")
     await update.message.reply_text(with_signature("\n".join(lines)))
@@ -364,7 +356,7 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 # ---------------------------------------------------------------------------
-#  Calculation commands (🔒 همگی خصوصی شدند)
+#  Calculation commands
 # ---------------------------------------------------------------------------
 
 @private_only
@@ -393,7 +385,7 @@ async def cmd_progress(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 # ---------------------------------------------------------------------------
-#  Extra commands (عمومی در گروه، اما با ضد اسپم)
+#  Extra commands
 # ---------------------------------------------------------------------------
 
 @rate_limited
@@ -448,7 +440,7 @@ async def cmd_bmr(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 # ---------------------------------------------------------------------------
-#  Meal commands (عمومی، در گروه قابل استفاده)
+#  Meal commands
 # ---------------------------------------------------------------------------
 
 @rate_limited
@@ -473,7 +465,7 @@ async def cmd_food(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 # ---------------------------------------------------------------------------
-#  Text -> AI (با امنیت کامل در گروه)
+#  Text -> AI
 # ---------------------------------------------------------------------------
 
 @rate_limited
@@ -512,22 +504,15 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             profile = await repo.get_profile(db_user.id)
             if profile and profile.setup_complete:
                 parts = []
-                if profile.age:
-                    parts.append(f"سن: {profile.age}")
-                if profile.height_cm:
-                    parts.append(f"قد: {profile.height_cm:.0f}")
-                if profile.weight_kg:
-                    parts.append(f"وزن: {profile.weight_kg:.1f}")
-                if profile.goal:
-                    parts.append(f"هدف: {profile.goal}")
+                if profile.age: parts.append(f"سن: {profile.age}")
+                if profile.height_cm: parts.append(f"قد: {profile.height_cm:.0f}")
+                if profile.weight_kg: parts.append(f"وزن: {profile.weight_kg:.1f}")
+                if profile.goal: parts.append(f"هدف: {profile.goal}")
                 profile_summary = "، ".join(parts)
 
     try:
-        await context.bot.send_chat_action(
-            chat_id=update.effective_chat.id, action="typing"
-        )
-    except Exception:
-        pass
+        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    except Exception: pass
 
     ai = get_ai_service()
     reply, _ = await ai.ask(
@@ -539,12 +524,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if not reply:
         reply = "متأسفانه پاسخی دریافت نشد."
 
-    await _send_html_safe(
-        bot=context.bot,
-        chat_id=update.effective_chat.id,
-        text=reply,
-        reply_to=update.message.message_id,
-    )
+    await _send_html_safe(bot=context.bot, chat_id=update.effective_chat.id, text=reply, reply_to=update.message.message_id)
 
 
 # ---------------------------------------------------------------------------
@@ -560,30 +540,17 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if data == "gq_next":
         chat = update.effective_chat
-        if chat is None:
-            return
+        if chat is None: return
         await query.answer("🔄 در حال ساخت سوال جدید...", show_alert=False)
-        await gquiz.send_quiz_from_callback(
-            context=context,
-            chat_id=chat.id,
-            chat_title=chat.title or "",
-        )
+        await gquiz.send_quiz_from_callback(context=context, chat_id=chat.id, chat_title=chat.title or "")
         return
 
     if data == "menu_quiz":
-        await query.edit_message_text(
-            with_signature(
-                "🎮 کوییز زنده\n\n"
-                "برای شروع، دستور /quiz رو بزن.\n\n"
-                "💡 همه می‌تونن شرکت کنن — سریع‌تر = امتیاز بیشتر!"
-            ),
-        )
+        await query.edit_message_text(with_signature("🎮 کوییز زنده\n\nبرای شروع، دستور /quiz رو بزن.\n\n💡 همه می‌تونن شرکت کنن — سریع‌تر = امتیاز بیشتر!"))
         return
 
     if data == "menu_lb":
-        await query.edit_message_text(
-            with_signature("🏆 برای جدول قهرمانان: /leaderboard"),
-        )
+        await query.edit_message_text(with_signature("🏆 برای جدول قهرمانان: /leaderboard"))
         return
 
     if data == "menu_help":
@@ -600,9 +567,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if data == "menu_myth":
         myth, truth = get_myth()
-        await query.edit_message_text(
-            with_signature(f"❌ باور اشتباه\n\n{myth}\n\n✅ واقعیت\n{truth}"),
-        )
+        await query.edit_message_text(with_signature(f"❌ باور اشتباه\n\n{myth}\n\n✅ واقعیت\n{truth}"))
         return
 
     hints = {
@@ -624,10 +589,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if is_group(update) and data in ["menu_weight", "menu_calories", "menu_protein", "menu_macros", "menu_progress", "menu_profile", "menu_ideal"]:
         bot_username = context.bot.username
         keyboard = [[InlineKeyboardButton("🔒 ورود به چت خصوصی", url=f"https://t.me/{bot_username}?start=private_setup")]]
-        await query.edit_message_text(
-            with_signature("🛡️ این بخش شامل اطلاعات شخصی است.\nلطفاً برای استفاده، به چت خصوصی ربات بروید:"),
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
+        await query.edit_message_text(with_signature("🛡️ این بخش شامل اطلاعات شخصی است.\nلطفاً برای استفاده، به چت خصوصی ربات بروید:"), reply_markup=InlineKeyboardMarkup(keyboard))
         return
 
     await query.edit_message_text(with_signature(text))
@@ -638,16 +600,14 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     if isinstance(update, Update) and update.effective_message is not None:
         try:
             await update.effective_message.reply_text(with_signature(msg.ERROR_GENERIC))
-        except Exception:
-            pass
+        except Exception: pass
 
 
 # ---------------------------------------------------------------------------
-#  🎨 Admin Commands (ارسال کاور به گروه‌های فعلی)
+#  🎨 Admin Commands
 # ---------------------------------------------------------------------------
 
 async def cmd_broadcast_covers(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """ارسال یکباره کاور به همه گروه‌های ثبت‌شده (فقط ادمین)"""
     user = update.effective_user
     if not user or not get_settings().is_admin(user.id):
         await update.message.reply_text("⛔ این دستور فقط برای ادمین است.")
@@ -665,7 +625,6 @@ async def cmd_broadcast_covers(update: Update, context: ContextTypes.DEFAULT_TYP
     for g in groups:
         try:
             group_name = g.title or "Nutrition Group"
-            # 🎨 تولید عکس (حالا مستقیماً فایل عکس برمی‌گردونه)
             photo_bytes = await generate_group_cover(group_name)
 
             await context.bot.send_photo(
@@ -690,12 +649,7 @@ async def cmd_broadcast_covers(update: Update, context: ContextTypes.DEFAULT_TYP
     await status_msg.edit_text(msg_text)
 
 
-# ---------------------------------------------------------------------------
-#  🚪 Admin Command: خروج مخفیانه از گروه
-# ---------------------------------------------------------------------------
-
 async def cmd_leave_group(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """خروج کامل ربات از گروه (کاملاً مخفی - فقط برای ادمین)"""
     user = update.effective_user
     chat = update.effective_chat
 
@@ -704,11 +658,7 @@ async def cmd_leave_group(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if chat.type == ChatType.PRIVATE:
         if not context.args:
-            await update.message.reply_text(
-                "⚠️ لطفاً نام یا آیدی عددی گروهی که می‌خواهید ربات از آن خارج شود را وارد کنید.\n\n"
-                "مثال:\n`/leavegroup گروه تغذیه`\nیا\n`/leavegroup -1001234567890`",
-                parse_mode="Markdown"
-            )
+            await update.message.reply_text("⚠️ لطفاً نام یا آیدی عددی گروه را وارد کنید.\nمثال:\n`/leavegroup گروه تغذیه`", parse_mode="Markdown")
             return
 
         query = " ".join(context.args).strip()
@@ -721,19 +671,18 @@ async def cmd_leave_group(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 break
 
         if not target_group:
-            await update.message.reply_text("❌ گروهی با این مشخصات پیدا نشد.\nبرای دیدن لیست گروه‌ها: /groups")
+            await update.message.reply_text("❌ گروهی پیدا نشد.\nبرای دیدن لیست: /groups")
             return
 
         try:
             await context.bot.leave_chat(chat_id=target_group.chat_id)
             await repo.deactivate_group(chat_id=target_group.chat_id)
-            await update.message.reply_text(f"✅ ربات به طور کامل از گروه «{target_group.title}» خارج شد.")
+            await update.message.reply_text(f"✅ ربات از گروه «{target_group.title}» خارج شد.")
         except Exception as e:
             await update.message.reply_text(f"❌ خطا در خروج از گروه: {e}")
 
     else:
         await update.message.reply_text("🚪 دستور محرمانه دریافت شد. در حال خروج از گروه... خداحافظ! 👋")
-        
         try:
             await context.bot.leave_chat(chat_id=chat.id)
             await repo.deactivate_group(chat_id=chat.id)
@@ -741,44 +690,24 @@ async def cmd_leave_group(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             logger.warning("خطا در خروج از گروه: %s", e)
 
 
-# ---------------------------------------------------------------------------
-#  📤 Admin Command: ارسال پیام/عکس به گروه با ریپلای
-# ---------------------------------------------------------------------------
-
 async def cmd_send_to_group(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """ارسال هر پیامی (متن، عکس، استیکر) به گروه مشخص با ریپلای کردن (فقط ادمین)"""
     user = update.effective_user
-    if not user:
-        return
+    if not user: return
 
     settings = get_settings()
-    
     logger.info(f"⚠️ تلاش برای استفاده از /sendto. آیدی کاربر: {user.id} | لیست ادمین‌ها: {settings.admin_id_list}")
 
     if not settings.is_admin(user.id):
         if update.effective_chat.type == ChatType.PRIVATE:
-            await update.message.reply_text(
-                f"⛔ شما در لیست ادمین‌های ربات نیستید.\n\n"
-                f"آیدی عددی شما: `{user.id}`\n"
-                f"لطفاً این عدد را در متغیر `ADMIN_IDS` در داشبورد Render وارد کنید.",
-                parse_mode="Markdown"
-            )
+            await update.message.reply_text(f"⛔ شما در لیست ادمین‌های ربات نیستید.\nآیدی عددی شما: `{user.id}`", parse_mode="Markdown")
         return 
 
     if not update.message.reply_to_message:
-        await update.message.reply_text(
-            "⚠️ لطفاً روی پیامی که می‌خواهید ارسال شود ریپلای کنید و دستور را بزنید.\n\n"
-            "مثال:\n`/sendto گروه تغذیه`",
-            parse_mode="Markdown"
-        )
+        await update.message.reply_text("⚠️ لطفاً روی پیامی که می‌خواهید ارسال شود ریپلای کنید و دستور را بزنید.\n\nمثال:\n`/sendto گروه تغذیه`", parse_mode="Markdown")
         return
 
     if not context.args:
-        await update.message.reply_text(
-            "⚠️ لطفاً نام یا آیدی گروه مقصد را وارد کنید.\n\n"
-            "مثال:\n`/sendto گروه تغذیه`\nیا\n`/sendto -1001234567890`",
-            parse_mode="Markdown"
-        )
+        await update.message.reply_text("⚠️ لطفاً نام یا آیدی گروه مقصد را وارد کنید.\n\nمثال:\n`/sendto گروه تغذیه`", parse_mode="Markdown")
         return
 
     query = " ".join(context.args).strip()
@@ -803,13 +732,70 @@ async def cmd_send_to_group(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await update.message.reply_text(f"✅ پیام با موفقیت به گروه «{target_group.title}» ارسال شد.")
     except Forbidden:
         await repo.deactivate_group(chat_id=target_group.chat_id)
-        await update.message.reply_text(
-            f"❌ ربات در گروه «{target_group.title}» عضو نیست (یا اخراج شده است).\n"
-            f"🧹 این گروه به طور خودکار از دیتابیس حذف شد تا دیگر خطایی رخ ندهد."
-        )
+        await update.message.reply_text(f"❌ ربات در گروه «{target_group.title}» عضو نیست.\n🧹 این گروه از دیتابیس حذف شد.")
     except Exception as e:
-        logger.warning("خطا در ارسال پیام به گروه: %s", e)
         await update.message.reply_text(f"❌ خطا در ارسال: {e}")
+
+
+async def cmd_global_news(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """ارسال خبر بین‌المللی ترجمه شده (فقط ادمین)"""
+    user = update.effective_user
+    settings = get_settings()
+    
+    if not user or not settings.is_admin(user.id):
+        return
+
+    if not context.args:
+        await update.message.reply_text("⚠️ لطفاً نام یا آیدی گروه مقصد را وارد کنید.\nمثال: `/globalnews Asli`", parse_mode="Markdown")
+        return
+
+    query = " ".join(context.args).strip()
+    groups = await repo.list_all_groups()
+    target_group = None
+
+    for g in groups:
+        if str(g.chat_id) == query or (g.title and query.lower() in g.title.lower()):
+            target_group = g
+            break
+
+    if not target_group:
+        await update.message.reply_text("❌ گروه پیدا نشد. لیست: /groups")
+        return
+
+    status_msg = await update.message.reply_text("⏳ در حال استخراج جدیدترین اخبار از WHO و Harvard...")
+
+    result = await get_global_magazine_news()
+    if not result:
+        await status_msg.edit_text("❌ متأسفانه در حال حاضر خبری دریافت نشد.")
+        return
+
+    text, image_url = result
+    await status_msg.edit_text("⏳ هوش مصنوعی در حال ترجمه و تنظیم مجله‌ای...")
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(image_url)
+            resp.raise_for_status()
+            photo_bytes = io.BytesIO(resp.content)
+            photo_bytes.name = 'global_news.jpg'
+
+        await context.bot.send_photo(
+            chat_id=target_group.chat_id,
+            photo=photo_bytes,
+            caption=text,
+            parse_mode="HTML"
+        )
+        await status_msg.edit_text(f"✅ خبر مجله‌ای با موفقیت در «{target_group.title}» منتشر شد.")
+    except Forbidden:
+        await repo.deactivate_group(chat_id=target_group.chat_id)
+        await status_msg.edit_text(f"❌ ربات در گروه «{target_group.title}» عضو نیست. گروه حذف شد.")
+    except Exception as e:
+        logger.warning("خطا در ارسال خبر: %s", e)
+        try:
+            await context.bot.send_message(chat_id=target_group.chat_id, text=text, parse_mode="HTML")
+            await status_msg.edit_text("✅ خبر ارسال شد (عکس ارسال نشد).")
+        except Exception as e2:
+            await status_msg.edit_text(f"❌ خطا در ارسال: {e2}")
 
 
 # ---------------------------------------------------------------------------
@@ -830,15 +816,10 @@ async def post_init(application: Application) -> None:
         logger.warning("Setup commands error: %s", e)
 
     if application.job_queue is not None:
-        try:
-            interval_seconds = int(os.environ.get("AUTO_POST_INTERVAL_HOURS", "8")) * 3600
-        except ValueError:
-            interval_seconds = 8 * 3600
-
-        try:
-            first_delay = int(os.environ.get("AUTO_POST_FIRST_DELAY", "28800"))
-        except ValueError:
-            first_delay = 28800
+        try: interval_seconds = int(os.environ.get("AUTO_POST_INTERVAL_HOURS", "8")) * 3600
+        except ValueError: interval_seconds = 8 * 3600
+        try: first_delay = int(os.environ.get("AUTO_POST_FIRST_DELAY", "28800"))
+        except ValueError: first_delay = 28800
 
         application.job_queue.run_repeating(
             _auto_post_job,
@@ -846,11 +827,7 @@ async def post_init(application: Application) -> None:
             first=first_delay,
             name="auto_nutrition_post",
         )
-        logger.info(
-            "✅ اولین پست %s ثانیه بعد، پست‌های بعدی هر %s ساعت.",
-            first_delay,
-            interval_seconds // 3600,
-        )
+        logger.info("✅ اولین پست %s ثانیه بعد، پست‌های بعدی هر %s ساعت.", first_delay, interval_seconds // 3600)
 
 
 async def post_shutdown(application: Application) -> None:
@@ -917,15 +894,14 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("groups", gmanager.cmd_groups))
     application.add_handler(CommandHandler("unsetgroup", gmanager.cmd_unsetgroup))
     
-    # 🎨 دستور ادمین برای ارسال کاور به گروه‌های فعلی
+    # 🎨 دستورات ادمین
     application.add_handler(CommandHandler("broadcast_covers", cmd_broadcast_covers))
-
-    # 🚪 دستورات محرمانه خروج از گروه
     application.add_handler(CommandHandler("leave", cmd_leave_group))
     application.add_handler(CommandHandler("leavegroup", cmd_leave_group))
-    
-    # 📤 دستور مخفی ارسال پیام/عکس به گروه با ریپلای
     application.add_handler(CommandHandler("sendto", cmd_send_to_group))
+    
+    # 📰 دستور مخفی اخبار بین‌المللی
+    application.add_handler(CommandHandler("globalnews", cmd_global_news))
 
     application.add_handler(
         MessageHandler(filters.ChatType.GROUPS & filters.ALL, gmanager.on_group_message),

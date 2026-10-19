@@ -6,6 +6,7 @@ from sqlalchemy import desc, func, select, delete
 
 from app.database.models import (
     AuditLog,
+    BannedUser, # 👈 اضافه شد
     Group,
     Profile,
     SentImage,
@@ -385,3 +386,40 @@ async def get_chat_quiz_stats(chat_id: int) -> dict:
         total_answers = result.scalar_one() or 0
 
         return {"players_this_week": players, "total_answers": total_answers}
+
+
+# ================================================================
+#  🚫 BAN SYSTEM (سیستم مسدودسازی کاربران)
+# ================================================================
+
+async def ban_user(telegram_id: int, reason: str = "نقض قوانین") -> None:
+    """مسدود کردن کاربر در کل ربات"""
+    async with session_scope() as session:
+        result = await session.execute(
+            select(BannedUser).where(BannedUser.telegram_id == telegram_id)
+        )
+        banned = result.scalar_one_or_none()
+        if not banned:
+            session.add(BannedUser(telegram_id=telegram_id, reason=reason))
+            await session.flush()
+
+
+async def unban_user(telegram_id: int) -> None:
+    """رفع مسدودی کاربر"""
+    async with session_scope() as session:
+        result = await session.execute(
+            select(BannedUser).where(BannedUser.telegram_id == telegram_id)
+        )
+        banned = result.scalar_one_or_none()
+        if banned:
+            await session.delete(banned)
+            await session.flush()
+
+
+async def is_user_banned(telegram_id: int) -> bool:
+    """بررسی اینکه آیا کاربر مسدود است یا نه"""
+    async with session_scope() as session:
+        result = await session.execute(
+            select(BannedUser).where(BannedUser.telegram_id == telegram_id)
+        )
+        return result.scalar_one_or_none() is not None

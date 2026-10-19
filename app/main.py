@@ -42,20 +42,6 @@ logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
-LAST_POST_FILE = "last_post_time.txt"
-
-def _get_last_post_time() -> float:
-    if os.path.exists(LAST_POST_FILE):
-        try:
-            with open(LAST_POST_FILE, "r") as f: return float(f.read().strip())
-        except Exception: return 0.0
-    return 0.0
-
-def _set_last_post_time() -> None:
-    try:
-        with open(LAST_POST_FILE, "w") as f: f.write(str(time.time()))
-    except Exception as e: logger.warning("خطا در ذخیره زمان پست: %s", e)
-
 async def check_user_ban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     if user and await repo.is_user_banned(user.id): raise ApplicationHandlerStop
@@ -94,7 +80,8 @@ def rate_limited(func):
     return wrapper
 
 async def _auto_post_job(context: ContextTypes.DEFAULT_TYPE) -> None:
-    last_time = _get_last_post_time()
+    # 🛡️ دریافت زمان آخرین پست از دیتابیس Neon
+    last_time = await repo.get_last_post_time()
     now = time.time()
     
     # ۸ ساعت = ۲۸۸۰۰ ثانیه
@@ -105,13 +92,13 @@ async def _auto_post_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     if specific_chat:
         try: 
             ok = await post_auto_content(context.bot, int(specific_chat))
-            if ok: _set_last_post_time()
+            if ok: await repo.set_last_post_time(time.time())
         except Exception as e: logger.warning("خطا در ارسال به %s: %s", specific_chat, e)
         return
 
     try: 
         sent = await broadcast_auto_content(context.bot)
-        if sent > 0: _set_last_post_time()
+        if sent > 0: await repo.set_last_post_time(time.time())
     except Exception as e: logger.warning("خطا در broadcast: %s", e)
 
 def is_group(update: Update) -> bool:

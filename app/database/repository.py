@@ -1,423 +1,195 @@
 """CRUD helpers — thin wrappers around the SQLAlchemy session."""
 
 from datetime import date, timedelta, datetime, timezone
-
 from sqlalchemy import desc, func, select, delete
-
 from app.database.models import (
-    AuditLog,
-    BannedUser,
-    Group,
-    Profile,
-    SentImage,
-    User,
-    WeightLog,
+    AuditLog, BannedUser, Group, Profile, SentImage, User, WeightLog,
 )
 from app.database.quiz_models import QuizLeaderboard, QuizLog
 from app.database.session import session_scope
 
-
-# ---------------------------------------------------------------- users
-async def get_or_create_user(
-    telegram_id: int,
-    username: str | None,
-    first_name: str | None,
-    last_name: str | None,
-) -> User:
+async def get_or_create_user(telegram_id: int, username: str | None, first_name: str | None, last_name: str | None) -> User:
     async with session_scope() as session:
-        result = await session.execute(
-            select(User).where(User.telegram_id == telegram_id)
-        )
+        result = await session.execute(select(User).where(User.telegram_id == telegram_id))
         user = result.scalar_one_or_none()
         if user is None:
-            user = User(
-                telegram_id=telegram_id,
-                username=username,
-                first_name=first_name,
-                last_name=last_name,
-            )
-            session.add(user)
-            await session.flush()
-            profile = Profile(user_id=user.id)
-            session.add(profile)
-            await session.flush()
+            user = User(telegram_id=telegram_id, username=username, first_name=first_name, last_name=last_name)
+            session.add(user); await session.flush()
+            session.add(Profile(user_id=user.id)); await session.flush()
         else:
-            user.username = username
-            user.first_name = first_name
-            user.last_name = last_name
+            user.username = username; user.first_name = first_name; user.last_name = last_name
         await session.refresh(user)
         return user
 
-
 async def get_user_by_telegram_id(telegram_id: int) -> User | None:
     async with session_scope() as session:
-        result = await session.execute(
-            select(User).where(User.telegram_id == telegram_id)
-        )
+        result = await session.execute(select(User).where(User.telegram_id == telegram_id))
         return result.scalar_one_or_none()
-
 
 async def get_user_by_username(username: str) -> User | None:
-    """پیدا کردن کاربر با یوزرنیم (برای سیستم بن)"""
     clean_username = username.lstrip('@')
     async with session_scope() as session:
-        result = await session.execute(
-            select(User).where(User.username.ilike(clean_username))
-        )
+        result = await session.execute(select(User).where(User.username.ilike(clean_username)))
         return result.scalar_one_or_none()
 
-
-# ---------------------------------------------------------------- groups
 async def get_or_create_group(chat_id: int, title: str | None) -> Group:
     async with session_scope() as session:
-        result = await session.execute(
-            select(Group).where(Group.chat_id == chat_id)
-        )
+        result = await session.execute(select(Group).where(Group.chat_id == chat_id))
         group = result.scalar_one_or_none()
         if group is None:
-            group = Group(chat_id=chat_id, title=title)
-            session.add(group)
+            group = Group(chat_id=chat_id, title=title); session.add(group)
         else:
-            group.title = title
-            group.is_active = True
-        await session.flush()
-        await session.refresh(group)
+            group.title = title; group.is_active = True
+        await session.flush(); await session.refresh(group)
         return group
-
 
 async def list_all_groups() -> list[Group]:
     async with session_scope() as session:
-        result = await session.execute(
-            select(Group).where(Group.is_active == True)
-        )
+        result = await session.execute(select(Group).where(Group.is_active == True))
         return list(result.scalars().all())
-
 
 async def deactivate_group(chat_id: int) -> None:
     async with session_scope() as session:
-        result = await session.execute(
-            select(Group).where(Group.chat_id == chat_id)
-        )
+        result = await session.execute(select(Group).where(Group.chat_id == chat_id))
         group = result.scalar_one_or_none()
         if group is not None:
-            group.is_active = False
-            await session.flush()
-
+            group.is_active = False; await session.flush()
 
 async def count_groups() -> int:
     async with session_scope() as session:
-        result = await session.execute(
-            select(func.count(Group.id)).where(Group.is_active == True)
-        )
+        result = await session.execute(select(func.count(Group.id)).where(Group.is_active == True))
         return result.scalar_one() or 0
 
-
-# ---------------------------------------------------------------- profile
 async def get_profile(user_id: int) -> Profile | None:
     async with session_scope() as session:
-        result = await session.execute(
-            select(Profile).where(Profile.user_id == user_id)
-        )
+        result = await session.execute(select(Profile).where(Profile.user_id == user_id))
         return result.scalar_one_or_none()
-
 
 async def update_profile(user_id: int, **fields) -> Profile | None:
     async with session_scope() as session:
-        result = await session.execute(
-            select(Profile).where(Profile.user_id == user_id)
-        )
+        result = await session.execute(select(Profile).where(Profile.user_id == user_id))
         profile = result.scalar_one_or_none()
-        if profile is None:
-            return None
+        if profile is None: return None
         for key, value in fields.items():
-            if hasattr(profile, key):
-                setattr(profile, key, value)
-        await session.flush()
-        await session.refresh(profile)
+            if hasattr(profile, key): setattr(profile, key, value)
+        await session.flush(); await session.refresh(profile)
         return profile
 
-
-# ---------------------------------------------------------------- weight
 async def log_weight(user_id: int, weight_kg: float) -> WeightLog:
     async with session_scope() as session:
         entry = WeightLog(user_id=user_id, weight_kg=weight_kg)
-        session.add(entry)
-        await session.flush()
-        await session.refresh(entry)
+        session.add(entry); await session.flush(); await session.refresh(entry)
         return entry
-
 
 async def list_weights(user_id: int, limit: int = 30) -> list[WeightLog]:
     async with session_scope() as session:
-        result = await session.execute(
-            select(WeightLog)
-            .where(WeightLog.user_id == user_id)
-            .order_by(WeightLog.logged_at.desc())
-            .limit(limit)
-        )
+        result = await session.execute(select(WeightLog).where(WeightLog.user_id == user_id).order_by(WeightLog.logged_at.desc()).limit(limit))
         return list(result.scalars().all())
 
-
-# ---------------------------------------------------------------- audit
 async def audit(telegram_id: int | None, event: str, details: str | None = None) -> None:
     async with session_scope() as session:
-        session.add(
-            AuditLog(telegram_id=telegram_id, event=event, details=details)
-        )
-
-
-# ================================================================
-#  SENT IMAGES (جلوگیری از تکرار عکس)
-# ================================================================
+        session.add(AuditLog(telegram_id=telegram_id, event=event, details=details))
 
 async def image_already_sent(image_url: str) -> bool:
     async with session_scope() as session:
-        result = await session.execute(
-            select(SentImage).where(SentImage.image_url == image_url)
-        )
+        result = await session.execute(select(SentImage).where(SentImage.image_url == image_url))
         return result.scalar_one_or_none() is not None
-
 
 async def mark_image_sent(image_url: str, keyword: str = "") -> None:
     async with session_scope() as session:
-        existing = await session.execute(
-            select(SentImage).where(SentImage.image_url == image_url)
-        )
+        existing = await session.execute(select(SentImage).where(SentImage.image_url == image_url))
         if existing.scalar_one_or_none() is None:
-            session.add(SentImage(image_url=image_url, keyword=keyword[:300]))
-            await session.flush()
-
+            session.add(SentImage(image_url=image_url, keyword=keyword[:300])); await session.flush()
 
 async def count_sent_images() -> int:
     async with session_scope() as session:
         result = await session.execute(select(func.count(SentImage.id)))
         return result.scalar_one() or 0
 
-
 async def cleanup_old_data(days: int = 30) -> tuple[int, int]:
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-    deleted_images = 0
-    deleted_quizzes = 0
-
     async with session_scope() as session:
-        result_img = await session.execute(
-            delete(SentImage).where(SentImage.created_at < cutoff)
-        )
-        deleted_images = result_img.rowcount
-
-        result_quiz = await session.execute(
-            delete(QuizLog).where(QuizLog.created_at < cutoff)
-        )
-        deleted_quizzes = result_quiz.rowcount
-
+        res_img = await session.execute(delete(SentImage).where(SentImage.sent_at < cutoff))
+        res_quiz = await session.execute(delete(QuizLog).where(QuizLog.created_at < cutoff))
         await session.flush()
-
-    return deleted_images, deleted_quizzes
-
-
-# ================================================================
-#  QUIZ
-# ================================================================
+        return res_img.rowcount, res_quiz.rowcount
 
 def _current_week_start() -> str:
     today = date.today()
     days_since_saturday = (today.weekday() - 5) % 7
-    saturday = today - timedelta(days=days_since_saturday)
-    return saturday.isoformat()
+    return (today - timedelta(days=days_since_saturday)).isoformat()
 
-
-async def record_quiz_answer(
-    telegram_id: int,
-    display_name: str,
-    chat_id: int,
-    chat_title: str,
-    points: int,
-    elapsed_ms: int,
-    question_text: str,
-    position: int,
-) -> None:
+async def record_quiz_answer(telegram_id: int, display_name: str, chat_id: int, chat_title: str, points: int, elapsed_ms: int, question_text: str, position: int) -> None:
     week = _current_week_start()
-
     async with session_scope() as session:
-        result = await session.execute(
-            select(User).where(User.telegram_id == telegram_id)
-        )
+        result = await session.execute(select(User).where(User.telegram_id == telegram_id))
         user = result.scalar_one_or_none()
         if user is None:
             user = User(telegram_id=telegram_id, first_name=display_name)
-            session.add(user)
-            await session.flush()
-            session.add(Profile(user_id=user.id))
-            await session.flush()
-
-        result = await session.execute(
-            select(QuizLeaderboard).where(
-                QuizLeaderboard.user_id == user.id,
-                QuizLeaderboard.chat_id == chat_id,
-                QuizLeaderboard.week_start == week,
-            )
-        )
+            session.add(user); await session.flush()
+            session.add(Profile(user_id=user.id)); await session.flush()
+        result = await session.execute(select(QuizLeaderboard).where(QuizLeaderboard.user_id == user.id, QuizLeaderboard.chat_id == chat_id, QuizLeaderboard.week_start == week))
         entry = result.scalar_one_or_none()
-
         if entry is None:
-            entry = QuizLeaderboard(
-                user_id=user.id,
-                telegram_id=telegram_id,
-                display_name=display_name,
-                chat_id=chat_id,
-                chat_title=chat_title,
-                week_start=week,
-                points=points,
-                wins=1,
-                total_games=1,
-                correct_answers=1,
-                streak=1,
-                best_streak=1,
-            )
+            entry = QuizLeaderboard(user_id=user.id, telegram_id=telegram_id, display_name=display_name, chat_id=chat_id, chat_title=chat_title, week_start=week, points=points, wins=1, total_games=1, correct_answers=1, streak=1, best_streak=1)
             session.add(entry)
         else:
-            entry.points += points
-            entry.wins += 1
-            entry.total_games += 1
-            entry.correct_answers += 1
-            entry.streak += 1
-            if entry.streak > entry.best_streak:
-                entry.best_streak = entry.streak
+            entry.points += points; entry.wins += 1; entry.total_games += 1; entry.correct_answers += 1; entry.streak += 1
+            if entry.streak > entry.best_streak: entry.best_streak = entry.streak
             entry.display_name = display_name
-
-        session.add(
-            QuizLog(
-                chat_id=chat_id,
-                question=question_text[:500],
-                user_telegram_id=telegram_id,
-                user_name=display_name,
-                points=points,
-                elapsed_ms=elapsed_ms,
-                position=position,
-            )
-        )
+        session.add(QuizLog(chat_id=chat_id, question=question_text[:500], user_telegram_id=telegram_id, user_name=display_name, points=points, elapsed_ms=elapsed_ms, position=position))
         await session.flush()
-
 
 async def record_quiz_wrong(telegram_id: int, chat_id: int) -> None:
     week = _current_week_start()
     async with session_scope() as session:
-        result = await session.execute(
-            select(User).where(User.telegram_id == telegram_id)
-        )
+        result = await session.execute(select(User).where(User.telegram_id == telegram_id))
         user = result.scalar_one_or_none()
-        if user is None:
-            return
-
-        result = await session.execute(
-            select(QuizLeaderboard).where(
-                QuizLeaderboard.user_id == user.id,
-                QuizLeaderboard.chat_id == chat_id,
-                QuizLeaderboard.week_start == week,
-            )
-        )
+        if user is None: return
+        result = await session.execute(select(QuizLeaderboard).where(QuizLeaderboard.user_id == user.id, QuizLeaderboard.chat_id == chat_id, QuizLeaderboard.week_start == week))
         entry = result.scalar_one_or_none()
-        if entry is not None:
-            entry.streak = 0
+        if entry is not None: entry.streak = 0
 
-
-async def get_leaderboard(
-    chat_id: int,
-    limit: int = 10,
-    week: bool = True,
-) -> list[QuizLeaderboard]:
+async def get_leaderboard(chat_id: int, limit: int = 10, week: bool = True) -> list[QuizLeaderboard]:
     async with session_scope() as session:
         q = select(QuizLeaderboard).where(QuizLeaderboard.chat_id == chat_id)
-        if week:
-            q = q.where(QuizLeaderboard.week_start == _current_week_start())
+        if week: q = q.where(QuizLeaderboard.week_start == _current_week_start())
         q = q.order_by(desc(QuizLeaderboard.points)).limit(limit)
-        result = await session.execute(q)
-        return list(result.scalars().all())
+        return list((await session.execute(q)).scalars().all())
 
-
-async def get_user_rank(
-    telegram_id: int,
-    chat_id: int,
-) -> tuple[int, int, int]:
+async def get_user_rank(telegram_id: int, chat_id: int) -> tuple[int, int, int]:
     week = _current_week_start()
     async with session_scope() as session:
-        result = await session.execute(
-            select(User).where(User.telegram_id == telegram_id)
-        )
+        result = await session.execute(select(User).where(User.telegram_id == telegram_id))
         user = result.scalar_one_or_none()
-        if user is None:
-            return 0, 0, 0
-
-        result = await session.execute(
-            select(QuizLeaderboard).where(
-                QuizLeaderboard.user_id == user.id,
-                QuizLeaderboard.chat_id == chat_id,
-                QuizLeaderboard.week_start == week,
-            )
-        )
+        if user is None: return 0, 0, 0
+        result = await session.execute(select(QuizLeaderboard).where(QuizLeaderboard.user_id == user.id, QuizLeaderboard.chat_id == chat_id, QuizLeaderboard.week_start == week))
         entry = result.scalar_one_or_none()
-        if entry is None:
-            return 0, 0, 0
-
-        result = await session.execute(
-            select(func.count(QuizLeaderboard.id)).where(
-                QuizLeaderboard.chat_id == chat_id,
-                QuizLeaderboard.week_start == week,
-                QuizLeaderboard.points > entry.points,
-            )
-        )
-        above = result.scalar_one() or 0
-        return above + 1, entry.points, entry.streak
-
+        if entry is None: return 0, 0, 0
+        result = await session.execute(select(func.count(QuizLeaderboard.id)).where(QuizLeaderboard.chat_id == chat_id, QuizLeaderboard.week_start == week, QuizLeaderboard.points > entry.points))
+        return (result.scalar_one() or 0) + 1, entry.points, entry.streak
 
 async def get_chat_quiz_stats(chat_id: int) -> dict:
     week = _current_week_start()
     async with session_scope() as session:
-        result = await session.execute(
-            select(func.count(QuizLeaderboard.id)).where(
-                QuizLeaderboard.chat_id == chat_id,
-                QuizLeaderboard.week_start == week,
-            )
-        )
-        players = result.scalar_one() or 0
-
-        result = await session.execute(
-            select(func.count(QuizLog.id)).where(QuizLog.chat_id == chat_id)
-        )
-        total_answers = result.scalar_one() or 0
-
-        return {"players_this_week": players, "total_answers": total_answers}
-
-
-# ================================================================
-#  🚫 BAN SYSTEM (سیستم مسدودسازی کاربران)
-# ================================================================
+        p = await session.execute(select(func.count(QuizLeaderboard.id)).where(QuizLeaderboard.chat_id == chat_id, QuizLeaderboard.week_start == week))
+        a = await session.execute(select(func.count(QuizLog.id)).where(QuizLog.chat_id == chat_id))
+        return {"players_this_week": p.scalar_one() or 0, "total_answers": a.scalar_one() or 0}
 
 async def ban_user(telegram_id: int, reason: str = "نقض قوانین") -> None:
     async with session_scope() as session:
-        result = await session.execute(
-            select(BannedUser).where(BannedUser.telegram_id == telegram_id)
-        )
-        banned = result.scalar_one_or_none()
-        if not banned:
-            session.add(BannedUser(telegram_id=telegram_id, reason=reason))
-            await session.flush()
-
+        result = await session.execute(select(BannedUser).where(BannedUser.telegram_id == telegram_id))
+        if result.scalar_one_or_none() is None:
+            session.add(BannedUser(telegram_id=telegram_id, reason=reason)); await session.flush()
 
 async def unban_user(telegram_id: int) -> None:
     async with session_scope() as session:
-        result = await session.execute(
-            select(BannedUser).where(BannedUser.telegram_id == telegram_id)
-        )
+        result = await session.execute(select(BannedUser).where(BannedUser.telegram_id == telegram_id))
         banned = result.scalar_one_or_none()
         if banned:
-            await session.delete(banned)
-            await session.flush()
-
+            await session.delete(banned); await session.flush()
 
 async def is_user_banned(telegram_id: int) -> bool:
     async with session_scope() as session:
-        result = await session.execute(
-            select(BannedUser).where(BannedUser.telegram_id == telegram_id)
-        )
+        result = await session.execute(select(BannedUser).where(BannedUser.telegram_id == telegram_id))
         return result.scalar_one_or_none() is not None

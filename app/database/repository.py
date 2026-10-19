@@ -1,8 +1,8 @@
 """CRUD helpers — thin wrappers around the SQLAlchemy session."""
 
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime, timezone
 
-from sqlalchemy import desc, func, select
+from sqlalchemy import desc, func, select, delete
 
 from app.database.models import (
     AuditLog,
@@ -184,6 +184,33 @@ async def count_sent_images() -> int:
     async with session_scope() as session:
         result = await session.execute(select(func.count(SentImage.id)))
         return result.scalar_one() or 0
+
+
+async def cleanup_old_data(days: int = 30) -> tuple[int, int]:
+    """پاکسازی خودکار داده‌های قدیمی برای جلوگیری از پر شدن دیتابیس.
+    - عکس‌های ارسال‌شده قدیمی‌تر از X روز
+    - لاگ‌های کوییز قدیمی‌تر از X روز
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    deleted_images = 0
+    deleted_quizzes = 0
+
+    async with session_scope() as session:
+        # پاکسازی عکس‌ها
+        result_img = await session.execute(
+            delete(SentImage).where(SentImage.created_at < cutoff)
+        )
+        deleted_images = result_img.rowcount
+
+        # پاکسازی لاگ‌های کوییز
+        result_quiz = await session.execute(
+            delete(QuizLog).where(QuizLog.created_at < cutoff)
+        )
+        deleted_quizzes = result_quiz.rowcount
+
+        await session.flush()
+
+    return deleted_images, deleted_quizzes
 
 
 # ================================================================

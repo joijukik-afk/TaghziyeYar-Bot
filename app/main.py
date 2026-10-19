@@ -52,7 +52,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# 🛡️ جلوگیری از لو رفتن توکن ربات در لاگ‌های Render
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 # 🚫 لیست کلمات ممنوعه (می‌توانید کلمات بیشتری اضافه کنید)
@@ -62,13 +61,12 @@ BAD_WORDS = [
 ]
 
 # ---------------------------------------------------------------------------
-#  🚫 Global Ban & Bad Words System (سیستم امنیتی سراسری)
+#  🚫 Global Ban & Bad Words System
 # ---------------------------------------------------------------------------
 async def check_user_ban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """بررسی مسدود بودن کاربر قبل از هر دستوری (سکوت مطلق)"""
     user = update.effective_user
     if user and await repo.is_user_banned(user.id):
-        # 🛑 ربات کاملاً سکوت می‌کند و هیچ پیامی (نه در گروه و نه در پیوی) نمی‌فرستد
         raise ApplicationHandlerStop
 
 async def handle_bad_words(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -81,23 +79,18 @@ async def handle_bad_words(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         user = update.effective_user
         user_name = user.first_name if user else "کاربر"
         
-        # ۱. تلاش برای پاک کردن پیام
         try: await update.message.delete()
         except Exception: pass
 
-        # ۲. ارسال اخطار
         warning_msg = await context.bot.send_message(
             chat_id=update.effective_chat.id,
             text=f"⚠️ <b>{user_name} عزیز،</b>\nاستفاده از کلمات نامناسب در این گروه مجاز نیست (حتی برای ادمین‌ها).\n\n<i>این پیام پس از ۵ ثانیه حذف می‌شود.</i>",
             parse_mode="HTML"
         )
-        
-        # ۳. حذف خودکار پیام اخطار
         await asyncio.sleep(5)
         try: await warning_msg.delete()
         except Exception: pass
 
-        # متوقف کردن پردازش‌های بعدی
         raise ApplicationHandlerStop
 
 
@@ -479,7 +472,7 @@ async def cmd_global_news(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         try: await context.bot.send_message(chat_id=target.chat_id, text=text, parse_mode="HTML"); await status_msg.edit_text("✅ خبر ارسال شد (بدون عکس).")
         except Exception as e2: await status_msg.edit_text(f"❌ خطا: {e2}")
 
-# 🚫 دستور /ban برای مسدودسازی (با اعلام در گروه و بدون پیام به کاربر)
+# 🚫 دستور /ban (پشتیبانی از ریپلای، آیدی عددی و یوزرنیم از پیوی)
 async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     if not user or not get_settings().is_admin(user.id): return
@@ -488,9 +481,11 @@ async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     target_name = "کاربر"
     origin_chat_id = update.effective_chat.id 
 
+    # ۱. اگر روی پیامی ریپلای شده باشد
     if update.message.reply_to_message:
         replied = update.message.reply_to_message
         if replied.forward_from_chat: origin_chat_id = replied.forward_from_chat.id
+        
         if replied.forward_from:
             target_id = replied.forward_from.id
             target_name = replied.forward_from.first_name or "کاربر"
@@ -498,23 +493,36 @@ async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             target_id = replied.from_user.id
             target_name = replied.from_user.first_name or "کاربر"
         else:
-            await update.message.reply_text("❌ آیدی کاربر پیدا نشد (حریم خصوصی بسته است).\nآیدی را دستی وارد کنید: `/ban 123456789`", parse_mode="Markdown")
+            await update.message.reply_text("❌ آیدی پیدا نشد (حریم خصوصی بسته است).\n💡 لطفاً از روش یوزرنیم استفاده کنید: `/ban @username`", parse_mode="Markdown")
             return
 
+    # ۲. اگر آیدی عددی یا یوزرنیم به صورت متن وارد شده باشد
     elif context.args:
-        try: 
-            target_id = int(context.args[0])
-            target_name = str(target_id)
-        except ValueError: pass
+        arg = context.args[0]
+        
+        if arg.startswith("@"):
+            db_user = await repo.get_user_by_username(arg)
+            if db_user:
+                target_id = db_user.telegram_id
+                target_name = db_user.first_name or db_user.username or "کاربر"
+            else:
+                await update.message.reply_text(f"❌ کاربری با یوزرنیم `{arg}` در دیتابیس پیدا نشد.\nاحتمالاً این کاربر تا حالا با ربات تعامل نداشته است.", parse_mode="Markdown")
+                return
+        else:
+            try: 
+                target_id = int(arg)
+                target_name = str(target_id)
+            except ValueError: 
+                await update.message.reply_text("⚠️ فرمت نامعتبر است. از `/ban 123456789` یا `/ban @username` استفاده کنید.")
+                return
 
     if not target_id:
-        return await update.message.reply_text("⚠️ راهنما:\n۱. روی پیام کاربر ریپلای کنید.\n۲. یا آیدی بدهید: `/ban 123456789`", parse_mode="Markdown")
+        return await update.message.reply_text("⚠️ راهنما:\n۱. یوزرنیم: `/ban @username`\n۲. آیدی عددی: `/ban 123456789`\n۳. یا روی پیام ریپلای کنید.", parse_mode="Markdown")
 
     try:
         await repo.ban_user(target_id, "توسط ادمین")
-        await update.message.reply_text(f"✅ کاربر <b>{target_name}</b> (آیدی: <code>{target_id}</code>) مسدود شد.", parse_mode="HTML")
+        await update.message.reply_text(f"✅ کاربر <b>{target_name}</b> (آیدی: <code>{target_id}</code>) در کل ربات مسدود شد.", parse_mode="HTML")
         
-        # 🌟 ارسال پیام اخطار به گروه اصلی (اگر از گروه فوروارد شده باشد)
         if origin_chat_id != update.effective_chat.id:
             try:
                 await context.bot.send_message(
@@ -523,19 +531,27 @@ async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                     parse_mode="HTML"
                 )
             except Exception: pass
-        
-        # ⛔️ هیچ پیامی به کاربر متخلف در پیوی فرستاده نمی‌شود (سکوت مطلق)
-        
     except Exception as e:
         logger.error("خطا در بن: %s", e)
-        await update.message.reply_text(f"❌ خطای دیتابیسی: `{e}`\nمطمئن شوید جدول `banned_users` ساخته شده است.", parse_mode="Markdown")
+        await update.message.reply_text(f"❌ خطای دیتابیسی: `{e}`", parse_mode="Markdown")
 
 async def cmd_unban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     if not user or not get_settings().is_admin(user.id): return
-    if not context.args: return await update.message.reply_text("⚠️ آیدی را وارد کنید: `/unban 123456789`", parse_mode="Markdown")
-    try: target_id = int(context.args[0])
-    except ValueError: return await update.message.reply_text("⚠️ آیدی باید عدد باشد.")
+    if not context.args: return await update.message.reply_text("⚠️ آیدی یا یوزرنیم را وارد کنید: `/unban 123456789` یا `/unban @username`", parse_mode="Markdown")
+    
+    arg = context.args[0]
+    target_id = None
+    
+    if arg.startswith("@"):
+        db_user = await repo.get_user_by_username(arg)
+        if db_user: target_id = db_user.telegram_id
+    else:
+        try: target_id = int(arg)
+        except ValueError: pass
+        
+    if not target_id: return await update.message.reply_text("❌ کاربر پیدا نشد.")
+    
     await repo.unban_user(target_id)
     await update.message.reply_text(f"✅ مسدودی کاربر `{target_id}` برداشته شد.", parse_mode="Markdown")
 
@@ -545,7 +561,7 @@ async def cmd_unban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 # ---------------------------------------------------------------------------
 async def post_init(application: Application) -> None:
     init_engine()
-    import app.database.models      # 👈 بسیار مهم: ایمپورت مدل‌ها برای ساخت جدول Ban
+    import app.database.models
     import app.database.quiz_models 
     await create_all()
     me = await application.bot.get_me()
@@ -575,10 +591,8 @@ def build_application() -> Application:
         .build()
     )
 
-    # 🚫 سیستم امنیتی سراسری (گروه -1: سکوت مطلق برای بن شده‌ها)
     application.add_handler(TypeHandler(Update, check_user_ban), group=-1)
 
-    # Base
     application.add_handler(CommandHandler("start", cmd_start))
     application.add_handler(CommandHandler("help", cmd_help))
     application.add_handler(CommandHandler("menu", cmd_menu))
@@ -586,7 +600,6 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("privacy", cmd_privacy))
     application.add_handler(CommandHandler("settings", cmd_settings))
     
-    # Secure (Private Only)
     application.add_handler(CommandHandler("profile", cmd_profile))
     application.add_handler(CommandHandler("setup", cmd_setup))
     application.add_handler(CommandHandler("cancel", cmd_cancel))
@@ -600,7 +613,6 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("bodyfat", cmd_bodyfat))
     application.add_handler(CommandHandler("bmr", cmd_bmr))
     
-    # Public
     application.add_handler(CommandHandler("tip", cmd_tip))
     application.add_handler(CommandHandler("fact", cmd_fact))
     application.add_handler(CommandHandler("myth", cmd_myth))
@@ -610,20 +622,17 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("shopping", cmd_shopping))
     application.add_handler(CommandHandler("food", cmd_food))
 
-    # Quiz
     application.add_handler(CommandHandler("quiz", gquiz.cmd_quiz))
     application.add_handler(CommandHandler("leaderboard", gquiz.cmd_leaderboard))
     application.add_handler(CommandHandler("mystats", gquiz.cmd_mystats))
     application.add_handler(PollAnswerHandler(gquiz.on_poll_answer))
     application.add_handler(CallbackQueryHandler(gquiz.on_inline_answer, pattern=r"^gq_\d+$"))
 
-    # Group manager & Admin
     application.add_handler(ChatMemberHandler(gmanager.on_bot_added, ChatMemberHandler.MY_CHAT_MEMBER))
     application.add_handler(CommandHandler("setgroup", gmanager.cmd_setgroup))
     application.add_handler(CommandHandler("groups", gmanager.cmd_groups))
     application.add_handler(CommandHandler("unsetgroup", gmanager.cmd_unsetgroup))
     
-    # Admin Commands
     application.add_handler(CommandHandler("broadcast_covers", cmd_broadcast_covers))
     application.add_handler(CommandHandler("leave", cmd_leave_group))
     application.add_handler(CommandHandler("leavegroup", cmd_leave_group))
@@ -632,16 +641,11 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("ban", cmd_ban))
     application.add_handler(CommandHandler("unban", cmd_unban))
 
-    # 🚫 فیلتر کلمات رکیک (گروه 2: بعد از مسدودی، قبل از هوش مصنوعی)
     application.add_handler(
-        MessageHandler(
-            filters.ChatType.GROUPS & filters.TEXT & ~filters.COMMAND,
-            handle_bad_words
-        ),
+        MessageHandler(filters.ChatType.GROUPS & filters.TEXT & ~filters.COMMAND, handle_bad_words),
         group=2,
     )
 
-    # Messaging
     application.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.ALL, gmanager.on_group_message), group=1)
     application.add_handler(CallbackQueryHandler(handle_callback))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))

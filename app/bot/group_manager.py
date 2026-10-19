@@ -1,13 +1,15 @@
 """ثبت خودکار گروه‌ها + ارسال به همه گروه‌ها + دستور پست فوری."""
 
 import html
+import io
 import logging
+import httpx
 from telegram import Update, ChatMember
 from telegram.ext import ContextTypes
 
 from app.config import get_settings
 from app.database import repository as repo
-from app.services.image_generator import generate_group_cover # 👈 اضافه شد
+from app.services.image_generator import generate_group_cover 
 
 logger = logging.getLogger(__name__)
 
@@ -62,9 +64,16 @@ async def on_bot_added(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             # فراخوانی هوش مصنوعی برای ساخت لینک عکس
             image_url = await generate_group_cover(group_name)
             
+            # 🛠️ دانلود عکس توسط سرور خودمان (جلوگیری از خطای تایم‌اوت تلگرام)
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.get(image_url)
+                resp.raise_for_status()
+                photo_bytes = io.BytesIO(resp.content)
+                photo_bytes.name = 'cover.jpg'
+            
             await context.bot.send_photo(
                 chat_id=chat.id,
-                photo=image_url,
+                photo=photo_bytes, # 👈 ارسال فایل دانلود شده به جای لینک
                 caption=f"🎨 این هم کاور اختصاصی گروه <b>{safe_title}</b> است که با هوش مصنوعی طراحی شده!",
                 parse_mode="HTML"
             )

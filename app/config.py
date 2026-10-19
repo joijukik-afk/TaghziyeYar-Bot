@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     telegram_bot_token: str
     admin_ids: str = ""
 
-    # AI (Groq / DeepSeek)
+    # AI (Groq)
     groq_api_key: str = Field(
         default="", 
         validation_alias=AliasChoices("GROQ_API_KEY", "DEEPSEEK_API_KEY", "deepseek_api_key", "groq_api_key")
@@ -27,13 +27,10 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("GROQ_MODEL", "DEEPSEEK_MODEL", "deepseek_model", "groq_model")
     )
     
-    # Unsplash
+    # Unsplash & Pollinations
     unsplash_access_key: str = ""
-
-    # Pollinations AI (Flux)
-    # ⚠️ هشدار: توکن زیر موقتاً در کد قرار گرفته است. برای امنیت بیشتر آن را پاک کنید و در رندر ست کنید.
     pollinations_api_key: str = Field(
-        default="sk_o9csMkTBUYJbbZQUoVajpOnfWvl5gqas", 
+        default="", 
         validation_alias=AliasChoices("POLLINATIONS_API_KEY", "pollinations_api_key")
     )
 
@@ -73,16 +70,11 @@ class Settings(BaseSettings):
         return user_id in self.admin_id_list
 
     @property
-    def deepseek_api_key(self) -> str:
-        return self.groq_api_key
-
+    def deepseek_api_key(self) -> str: return self.groq_api_key
     @property
-    def deepseek_model(self) -> str:
-        return self.groq_model
-
+    def deepseek_model(self) -> str: return self.groq_model
     @property
-    def deepseek_base_url(self) -> str:
-        return "https://api.groq.com/openai/v1"
+    def deepseek_base_url(self) -> str: return "https://api.groq.com/openai/v1"
 
 
 @lru_cache(maxsize=1)

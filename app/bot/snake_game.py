@@ -9,11 +9,12 @@ from telegram.constants import ChatType
 
 logger = logging.getLogger(__name__)
 
+# نقشه مارها و پله‌ها
 LADDERS = {2: 38, 7: 14, 8: 31, 15: 26, 21: 42, 28: 84, 36: 44, 51: 67, 71: 91, 78: 98}
 SNAKES = {16: 6, 46: 25, 49: 11, 62: 19, 64: 60, 74: 53, 89: 68, 92: 88, 95: 75, 99: 80}
 
 ACTIVE_GAMES = {}
-PLAYER_ICONS = ["🦊", "🐼", "🦁", "🐸"] # آیکون اختصاصی هر بازیکن
+PLAYER_ICONS = ["🦊", "🐼", "🦁", "🐸"] 
 TURN_TIMEOUT = 30 # ثانیه برای هر نوبت
 
 def _draw_text_board(players: list) -> str:
@@ -25,7 +26,6 @@ def _draw_text_board(players: list) -> str:
     # قرار دادن بازیکنان روی نقشه
     for p in players:
         if p["pos"] > 0:
-            # اگر بازیکن روی مار یا پله بود، آیکون بازیکن اولویت دارد
             cells[p["pos"]] = p["icon"]
 
     lines = ["<pre>"]
@@ -40,7 +40,7 @@ def _draw_text_board(players: list) -> str:
                 line += f"[ {val} ]"
             else:
                 if pos == 100:
-                    line += f"[{pos}]"
+                    line += f"[100]"
                 else:
                     line += f"[{pos:02d} ]"
         lines.append(line)
@@ -220,7 +220,6 @@ async def handle_snake(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     # 🔄 دکمه آپدیت (آوردن به پایین)
     if query.data == "snake_refresh":
         await query.answer("بازی آپدیت شد!")
-        # با ارسال یک پیام جدید و حذف قبلی، بازی می‌آید پایین
         try: await query.message.delete()
         except: pass
         msg = await context.bot.send_message(
@@ -245,7 +244,7 @@ async def handle_snake(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         if game["status"] == "lobby":
             await query.edit_message_text(_get_game_text(game), parse_mode="HTML", reply_markup=_get_lobby_keyboard(game))
         else:
-            await context.bot.send_message(chat_id=chat_id, text=f"🦊 {user.first_name} وسط بازی وارد شد! برای دیدن بازی روی دکمه آپدیت بزنید.", reply_markup=_get_game_keyboard())
+            await context.bot.send_message(chat_id=chat_id, text=f"{PLAYER_ICONS[len(game['players'])-1]} {user.first_name} وسط بازی وارد شد! برای دیدن بازی روی دکمه آپدیت بزنید.", reply_markup=_get_game_keyboard())
         return
 
     # 🚀 شروع بازی
@@ -296,7 +295,6 @@ async def handle_snake(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             await query.answer(f"نوبت شما نیست! نوبت {current['name']} است.", show_alert=True); return
 
         await query.answer("در حال حرکت... 🎲")
-        # حذف پیام قبلی برای آوردن بازی به پایین
         try: await query.message.delete()
         except: pass
         

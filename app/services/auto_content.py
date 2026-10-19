@@ -1,10 +1,11 @@
-"""تولید و ارسال خودکار محتوای تغذیه‌ای با عکس هوشمند و مرتبط."""
+"""تولید و ارسال خودکار محتوای تغذیه‌ای با عکس هوشمند و مرتبط (ضد تکرار)"""
 
 import io
 import logging
 import random
 import re
 import urllib.parse
+from collections import deque
 
 import httpx
 import telegram
@@ -15,7 +16,6 @@ from app.database import repository as repo
 from app.utils.message_formatter import with_signature
 
 logger = logging.getLogger(__name__)
-
 
 SEARCH_TOPICS = [
     "آخرین یافته‌های علمی 2025 درباره تغذیه و سلامت",
@@ -45,33 +45,44 @@ SEARCH_TOPICS = [
     "بهترین منابع پروتئین گیاهی",
 ]
 
-
 PREFERRED_MODELS = [
-    "llama-3.3-70b-versatile",
-    "llama-3.1-70b-versatile",
     "qwen/qwen3.8-27b",
     "openai/gpt-oss-120b",
     "openai/gpt-oss-20b",
-    "gemma2-9b-it",
-    "mixtral-8x7b-32768",
+    "llama-3.3-70b-versatile",
+    "llama-3.1-70b-versatile",
 ]
 
+# 🧠 حافظه ضد تکرار برای موضوعات (۱۵ موضوع آخر)
+_recent_topics = deque(maxlen=15)
 
-# 🧠 پرامپت ارتقایافته: جلوگیری از منابع جعلی و تضمین دقت علمی
+def _get_unique_topic() -> str:
+    """انتخاب موضوعی که در ۱۵ مورد اخیر استفاده نشده باشد"""
+    available = [t for t in SEARCH_TOPICS if t not in _recent_topics]
+    if not available:
+        _recent_topics.clear()
+        available = SEARCH_TOPICS
+    
+    chosen = random.choice(available)
+    _recent_topics.append(chosen)
+    return chosen
+
+# 🧠 پرامپت ارتقایافته: جلوگیری از تکرار و تضمین دقت علمی
 SYSTEM_PROMPT = """تو یک متخصص تغذیه و سلامت هستی که برای یک گروه تلگرام فارسی محتوا تولید می‌کنی.
 
 وظیفه تو:
 1. یک متن کوتاه، جذاب و کاملاً علمی به فارسی بنویس.
 2. متن شامل یک عنوان جذاب و توضیح ۳ تا ۴ خطی باشد.
 3. 🚨 هر ادعا باید پشتوانه علمی واقعی داشته باشد (WHO، NIH، Mayo Clinic، Harvard Health، NHS).
-4. 🚨 هرگز منبع جعلی یا نام مقاله‌ای که وجود ندارد نساز. فقط از منابع معتبر و شناخته‌شده بالا استفاده کن.
-5. از اغراق، وعده‌های قطعی، و ادعاهای درمانی خودداری کن. اگر عددی را دقیق نمی‌دانی، از کلمه «تقریبی» استفاده کن.
+4. 🚨 هرگز منبع جعلی یا نام مقاله‌ای که وجود ندارد نساز.
+5. از اغراق، وعده‌های قطعی، و ادعاهای درمانی خودداری کن.
 6. در انتها فقط نام منبع معتبر را ذکر کن.
 7. هرگز از عبارات انگلیسی در متن اصلی استفاده نکن.
+8. 🚨 **بسیار مهم:** در این درخواست، زاویه دید جدیدی اتخاذ کن و از کلیشه‌های تکراری پرهیز کن. برای این موضوع، یک نکته کمتر گفته‌شده و خاص ارائه بده.
 
 خروجی باید دقیقاً به این فرمت باشد (هیچ چیز اضافه ننویس):
 
-IMAGE_KEYWORD: [یک عبارت انگلیسی ۴-۶ کلمه‌ای بسیار دقیق و توصیفی که دقیقاً همان موضوع متن را توصیف کند. این عبارت باید شامل: نوع غذا/ماده، ویژگی ظاهری، و زمینه‌ی موضوعی باشد. مثال: grilled salmon fillet lemon herbs heart health]
+IMAGE_KEYWORD: [یک عبارت انگلیسی ۴-۶ کلمه‌ای بسیار دقیق و توصیفی که دقیقاً همان موضوع متن را توصیف کند. برای تنوع، زاویه عکاسی یا جزئیات خاصی را اضافه کن. مثال: close up view of fresh spinach leaves]
 
 TITLE: [عنوان جذاب فارسی]
 
@@ -79,7 +90,6 @@ BODY: [متن ۳ تا ۴ خطی فارسی]
 
 SOURCE: [نام منبع معتبر مثل WHO یا Harvard Health]
 """
-
 
 async def _get_available_models(api_key: str) -> list[str]:
     try:
@@ -90,29 +100,16 @@ async def _get_available_models(api_key: str) -> list[str]:
         logger.warning("خطا در دریافت لیست مدل‌ها: %s", e)
         return []
 
-
 async def _pick_model(api_key: str, requested: str = "") -> str | None:
     available = await _get_available_models(api_key)
-
-    if available:
-        logger.info("مدل‌های موجود Groq: %s", ", ".join(available[:10]))
-
-    if requested and requested in available:
-        return requested
-
+    if requested and requested in available: return requested
     for m in PREFERRED_MODELS:
-        if m in available:
-            return m
-
-    if available:
-        return available[0]
-
-    return requested or "llama-3.3-70b-versatile"
-
+        if m in available: return m
+    if available: return available[0]
+    return requested or "qwen/qwen3.8-27b"
 
 async def generate_nutrition_post() -> tuple[str, str] | None:
     settings = get_settings()
-    
     api_key = getattr(settings, 'groq_api_key', '') or getattr(settings, 'deepseek_api_key', '')
     req_model = getattr(settings, 'groq_model', '') or getattr(settings, 'deepseek_model', '')
 
@@ -122,114 +119,77 @@ async def generate_nutrition_post() -> tuple[str, str] | None:
 
     models_to_try = [req_model, "qwen/qwen3.8-27b", "openai/gpt-oss-120b"] if req_model else ["qwen/qwen3.8-27b", "openai/gpt-oss-120b"]
     
-    topic = random.choice(SEARCH_TOPICS)
+    topic = _get_unique_topic() # 👈 استفاده از موضوع غیرتکراری
+    logger.info("📝 موضوع جدید انتخاب شده: %s", topic)
+    
     client = AsyncGroq(api_key=api_key)
 
     for model_name in models_to_try:
-        if not model_name: 
-            continue
-        
+        if not model_name: continue
         try:
-            logger.info("تلاش برای تولید محتوا با مدل: %s", model_name)
-
             response = await client.chat.completions.create(
                 model=model_name,
                 messages=[
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": f"موضوع: {topic}"},
                 ],
-                temperature=0.3,
+                temperature=0.4, # دمای کمی بالاتر برای تنوع بیشتر
                 max_tokens=2500,
             )
 
             raw = response.choices[0].message.content
-            
             if not raw or not raw.strip():
-                logger.warning("پاسخ خالی از مدل %s دریافت شد. تلاش با مدل بعدی...", model_name)
                 continue
 
             parsed = _parse_ai_output(raw)
             if parsed is None:
-                logger.warning("فرمت خروجی AI برای مدل %s قابل پارس نبود.", model_name)
-                return raw.strip(), "healthy nutrition food"
+                return raw.strip(), f"healthy food {random.randint(1, 1000)}"
 
             title, body, source, keyword = parsed
             final_text = f"📌 {title}\n\n{body}\n\n🔗 منبع: {source}"
-            logger.info("✅ محتوا با موفقیت با مدل %s تولید شد. کلمه کلیدی عکس: %s", model_name, keyword)
+            logger.info("✅ محتوا تولید شد. کلمه کلیدی عکس: %s", keyword)
             return final_text, keyword
 
         except Exception as e:
             logger.warning("خطا در تولید با مدل %s: %s", model_name, e)
             continue
 
-    logger.error("همه مدل‌ها خطا دادند یا پاسخ خالی برگرداندند.")
     return None
-
 
 def _parse_ai_output(raw: str) -> tuple[str, str, str, str] | None:
     try:
         text = raw.replace("**", "").strip()
-
-        kw_match = re.search(
-            r"IMAGE_KEYWORD\s*:\s*(.+?)(?=\n\s*TITLE|\n\s*BODY|\n\s*SOURCE|\Z)",
-            text, re.DOTALL | re.IGNORECASE
-        )
+        kw_match = re.search(r"IMAGE_KEYWORD\s*:\s*(.+?)(?=\n\s*TITLE|\n\s*BODY|\n\s*SOURCE|\Z)", text, re.DOTALL | re.IGNORECASE)
         keyword = kw_match.group(1).strip() if kw_match else "healthy nutrition food"
         keyword = keyword.split("\n")[0].strip()
-
-        title_match = re.search(
-            r"TITLE\s*:\s*(.+?)(?=\n\s*BODY|\n\s*SOURCE|\Z)",
-            text, re.DOTALL | re.IGNORECASE
-        )
+        title_match = re.search(r"TITLE\s*:\s*(.+?)(?=\n\s*BODY|\n\s*SOURCE|\Z)", text, re.DOTALL | re.IGNORECASE)
         title = title_match.group(1).strip() if title_match else ""
         title = title.split("\n")[0].strip()
-
-        body_match = re.search(
-            r"BODY\s*:\s*(.+?)(?=\n\s*SOURCE|\Z)",
-            text, re.DOTALL | re.IGNORECASE
-        )
+        body_match = re.search(r"BODY\s*:\s*(.+?)(?=\n\s*SOURCE|\Z)", text, re.DOTALL | re.IGNORECASE)
         body = body_match.group(1).strip() if body_match else ""
-
-        source_match = re.search(
-            r"SOURCE\s*:\s*(.+?)\Z",
-            text, re.DOTALL | re.IGNORECASE
-        )
+        source_match = re.search(r"SOURCE\s*:\s*(.+?)\Z", text, re.DOTALL | re.IGNORECASE)
         source = source_match.group(1).strip() if source_match else ""
         source = source.split("\n")[0].strip()
-
-        if not title or not body:
-            return None
-
+        if not title or not body: return None
         return title, body, source, keyword
-
     except Exception as e:
         logger.warning("خطا در پارس: %s", e)
         return None
 
-
 async def _get_unsplash_image(keyword: str, api_key: str) -> str | None:
     url = "https://api.unsplash.com/search/photos"
-    params = {
-        "query": keyword,
-        "per_page": 10,
-        "orientation": "landscape",
-        "client_id": api_key,
-    }
+    params = {"query": keyword, "per_page": 10, "orientation": "landscape", "client_id": api_key}
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             r = await client.get(url, params=params)
             if r.status_code == 200:
-                data = r.json()
-                results = data.get("results") or []
+                results = r.json().get("results") or []
                 random.shuffle(results)
                 for item in results:
                     img = item.get("urls", {}).get("regular")
-                    if img:
-                        return img
-    except Exception as e:
-        logger.debug("Unsplash خطا: %s", e)
+                    if img: return img
+    except Exception as e: logger.debug("Unsplash خطا: %s", e)
     return None
-
 
 async def _get_duckduckgo_image(keyword: str) -> str | None:
     try:
@@ -240,234 +200,137 @@ async def _get_duckduckgo_image(keyword: str) -> str | None:
                 random.shuffle(results)
                 for item in results:
                     url = item.get("image")
-                    if url and url.startswith("http"):
-                        return url
-    except Exception as e:
-        logger.debug("DuckDuckGo خطا: %s", e)
+                    if url and url.startswith("http"): return url
+    except Exception as e: logger.debug("DuckDuckGo خطا: %s", e)
     return None
-
 
 async def _get_themealdb_image(keyword: str) -> str | None:
     kw_lower = keyword.lower()
     cat = None
-    if any(w in kw_lower for w in ["chicken", "protein", "meat", "beef", "lamb"]):
-        cat = "Chicken"
-    elif any(w in kw_lower for w in ["fish", "salmon", "seafood", "tuna", "shrimp"]):
-        cat = "Seafood"
-    elif any(w in kw_lower for w in ["vegetable", "salad", "vegan", "green", "spinach"]):
-        cat = "Vegetarian"
-    elif any(w in kw_lower for w in ["fruit", "berry", "apple", "orange", "banana"]):
-        cat = "Dessert"
-    elif any(w in kw_lower for w in ["pasta", "rice", "grain", "bread", "cereal"]):
-        cat = "Pasta"
-    elif any(w in kw_lower for w in ["breakfast", "morning", "egg", "oats"]):
-        cat = "Breakfast"
-    else:
-        return None
+    if any(w in kw_lower for w in ["chicken", "protein", "meat", "beef", "lamb"]): cat = "Chicken"
+    elif any(w in kw_lower for w in ["fish", "salmon", "seafood", "tuna", "shrimp"]): cat = "Seafood"
+    elif any(w in kw_lower for w in ["vegetable", "salad", "vegan", "green", "spinach"]): cat = "Vegetarian"
+    elif any(w in kw_lower for w in ["fruit", "berry", "apple", "orange", "banana"]): cat = "Dessert"
+    elif any(w in kw_lower for w in ["pasta", "rice", "grain", "bread", "cereal"]): cat = "Pasta"
+    elif any(w in kw_lower for w in ["breakfast", "morning", "egg", "oats"]): cat = "Breakfast"
+    else: return None
 
     url = f"https://www.themealdb.com/api/json/v1/1/filter.php?c={cat}"
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             r = await client.get(url)
             if r.status_code == 200:
-                data = r.json()
-                meals = data.get("meals") or []
+                meals = r.json().get("meals") or []
                 if meals:
                     random.shuffle(meals)
                     for m in meals[:5]:
                         img = m.get("strMealThumb")
-                        if img and img.startswith("http"):
-                            return img
-    except Exception as e:
-        logger.debug("TheMealDB خطا: %s", e)
+                        if img and img.startswith("http"): return img
+    except Exception as e: logger.debug("TheMealDB خطا: %s", e)
     return None
 
-
 async def _get_foodish_image() -> str | None:
-    cat = random.choice([
-        "biryani", "burger", "butter-chicken", "dessert",
-        "dosa", "pasta", "pizza", "rice", "samosa",
-    ])
+    cat = random.choice(["biryani", "burger", "butter-chicken", "dessert", "dosa", "pasta", "pizza", "rice", "samosa"])
     url = f"https://foodish-api.com/api/images/{cat}"
     try:
         async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
             r = await client.get(url)
             if r.status_code == 200:
-                ct = r.headers.get("content-type", "")
-                if "application/json" in ct:
-                    data = r.json()
-                    img = data.get("image")
-                    if img and img.startswith("http"):
-                        return img
-                elif "image" in ct:
-                    return str(r.url)
-    except Exception as e:
-        logger.debug("Foodish خطا: %s", e)
+                if "application/json" in r.headers.get("content-type", ""): return r.json().get("image")
+                elif "image" in r.headers.get("content-type", ""): return str(r.url)
+    except Exception as e: logger.debug("Foodish خطا: %s", e)
     return None
 
-
 async def _get_pollinations_image(keyword: str) -> str | None:
-    """🚀 تولید عکس فوری با هوش مصنوعی به عنوان پشتیبان نهایی (اگر بقیه پیدا نکردند)"""
-    # استفاده از پرامپت انگلیسی برای کیفیت بالاتر
-    prompt = f"{keyword}, professional food photography, highly detailed, realistic, appetizing, 8k resolution"
+    # اضافه کردن عدد رندوم به پرامپت برای جلوگیری از تولید عکس تکراری
+    seed = random.randint(1, 999999)
+    prompt = f"{keyword}, professional food photography, high detail, random angle, seed {seed}"
     encoded = urllib.parse.quote(prompt)
     
-    # استفاده از مدل Flux برای کیفیت عالی
     settings = get_settings()
     api_key = getattr(settings, 'pollinations_api_key', '')
     
     if api_key:
-        return f"https://gen.pollinations.ai/image/{encoded}?width=1024&height=1024&nologo=true&model=flux&key={api_key}"
+        return f"https://gen.pollinations.ai/image/{encoded}?width=1024&height=1024&nologo=true&model=flux&key={api_key}&seed={seed}"
     else:
-        return f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&nologo=true"
-
+        return f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&nologo=true&seed={seed}"
 
 async def search_food_image(keyword: str) -> str | None:
     settings = get_settings()
 
-    # ۱. Unsplash
     if settings.unsplash_access_key:
         for attempt in range(2):
             img = await _get_unsplash_image(keyword, settings.unsplash_access_key)
-            if img and not await repo.image_already_sent(img):
-                logger.info("✅ عکس از Unsplash: %s", keyword)
-                return img
+            if img and not await repo.image_already_sent(img): return img
 
-    # ۲. DuckDuckGo
     for attempt in range(2):
         img = await _get_duckduckgo_image(keyword)
-        if img and not await repo.image_already_sent(img):
-            logger.info("✅ عکس از DuckDuckGo: %s", keyword)
-            return img
+        if img and not await repo.image_already_sent(img): return img
 
-    # ۳. TheMealDB
     img = await _get_themealdb_image(keyword)
-    if img and not await repo.image_already_sent(img):
-        logger.info("✅ عکس از TheMealDB: %s", keyword)
-        return img
+    if img and not await repo.image_already_sent(img): return img
 
-    # ۴. Foodish
     for _ in range(3):
         img = await _get_foodish_image()
-        if img and not await repo.image_already_sent(img):
-            logger.info("✅ عکس از Foodish (رندوم)")
-            return img
+        if img and not await repo.image_already_sent(img): return img
 
-    # ۵. 🚀 پشتیبان نهایی: تولید با هوش مصنوعی
-    logger.warning("هیچ عکس آماده‌ای پیدا نشد. استفاده از هوش مصنوعی برای ساخت عکس پست...")
+    logger.warning("استفاده از هوش مصنوعی برای ساخت عکس پست...")
     ai_img = await _get_pollinations_image(keyword)
     return ai_img
 
-
 async def _send_with_photo(bot, chat_id: int, content: str, keyword: str) -> bool:
     image_url = await search_food_image(keyword)
-
     if image_url:
         try:
-            # 🛠️ دانلود عکس توسط سرور خودمان برای جلوگیری از خطای تایم‌اوت تلگرام
             async with httpx.AsyncClient(timeout=45.0) as client:
                 resp = await client.get(image_url)
                 resp.raise_for_status()
                 photo_bytes = io.BytesIO(resp.content)
                 photo_bytes.name = 'post_image.jpg'
 
-            await bot.send_photo(
-                chat_id=chat_id,
-                photo=photo_bytes,
-                caption=with_signature(content),
-            )
+            await bot.send_photo(chat_id=chat_id, photo=photo_bytes, caption=with_signature(content))
             await repo.mark_image_sent(image_url, keyword)
-            logger.info("✅ عکس + متن ارسال شد به %s", chat_id)
             return True
         except telegram.error.Forbidden as e:
-            logger.warning("ارسال عکس خطا داد (Forbidden): %s", e)
             raise e
         except Exception as e:
             logger.warning("ارسال عکس خطا داد: %s", e)
-            
-            # تلاش دوم با یک عکس رندوم دیگر
-            try:
-                backup = await _get_foodish_image()
-                if backup and not await repo.image_already_sent(backup):
-                    async with httpx.AsyncClient(timeout=45.0) as client:
-                        resp = await client.get(backup)
-                        resp.raise_for_status()
-                        photo_bytes = io.BytesIO(resp.content)
-                        photo_bytes.name = 'post_image.jpg'
-                        
-                    await bot.send_photo(
-                        chat_id=chat_id,
-                        photo=photo_bytes,
-                        caption=with_signature(content),
-                    )
-                    await repo.mark_image_sent(backup, keyword)
-                    logger.info("✅ عکس (تلاش دوم) ارسال شد.")
-                    return True
-            except telegram.error.Forbidden as e2:
-                raise e2
-            except Exception as e2:
-                logger.warning("تلاش دوم هم خطا: %s", e2)
 
     try:
-        await bot.send_message(
-            chat_id=chat_id,
-            text=with_signature(content),
-        )
-        logger.info("✅ فقط متن ارسال شد (بدون عکس).")
+        await bot.send_message(chat_id=chat_id, text=with_signature(content))
         return True
     except telegram.error.Forbidden as e:
-        logger.warning("ارسال متن خطا داد (Forbidden): %s", e)
         raise e
     except Exception as e:
-        logger.warning("ارسال متن هم خطا: %s", e)
         return False
-
 
 async def broadcast_auto_content(bot) -> int:
     try:
         groups = await repo.list_all_groups()
-    except Exception as e:
-        logger.warning("لیست گروه‌ها خطا: %s", e)
+    except Exception:
         return 0
-
-    if not groups:
-        logger.info("هیچ گروهی ثبت نشده — پست ارسال نشد.")
-        return 0
-
-    logger.info("ارسال به %d گروه...", len(groups))
+    if not groups: return 0
 
     result = await generate_nutrition_post()
-    if result is None:
-        logger.info("محتوایی تولید نشد.")
-        return 0
+    if result is None: return 0
 
     content, image_keyword = result
-
     sent = 0
     for g in groups:
         try:
             ok = await _send_with_photo(bot, g.chat_id, content, image_keyword)
-            if ok:
-                sent += 1
+            if ok: sent += 1
         except telegram.error.Forbidden:
-            logger.warning("🛑 ربات دیگر عضو گروه %s نیست. حذف خودکار از دیتابیس...", g.chat_id)
             await repo.deactivate_group(chat_id=g.chat_id)
-        except Exception as e:
-            logger.warning("❌ ارسال به %s خطا: %s", g.chat_id, e)
-
-    logger.info("پست خودکار: %d از %d گروه موفق.", sent, len(groups))
+        except Exception: pass
     return sent
-
 
 async def post_auto_content(bot, chat_id: int) -> bool:
     result = await generate_nutrition_post()
-    if result is None:
-        return False
-
+    if result is None: return False
     content, image_keyword = result
     try:
         return await _send_with_photo(bot, chat_id, content, image_keyword)
     except telegram.error.Forbidden:
-        logger.warning("🛑 ربات دیگر عضو گروه %s نیست.", chat_id)
         await repo.deactivate_group(chat_id=chat_id)
         return False

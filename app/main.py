@@ -36,7 +36,7 @@ from app.database import repository as repo
 from app.database.session import create_all, dispose_engine, init_engine
 from app.services.ai_service import get_ai_service
 from app.services.auto_content import broadcast_auto_content, post_auto_content
-from app.services.image_generator import generate_group_cover # 👈 اضافه شد
+from app.services.image_generator import generate_group_cover
 from app.utils.message_formatter import with_signature
 
 
@@ -678,6 +678,60 @@ async def cmd_broadcast_covers(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 # ---------------------------------------------------------------------------
+#  🚪 Stealth Admin Command: خروج مخفیانه از گروه
+# ---------------------------------------------------------------------------
+
+async def cmd_leave_group(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """خروج کامل ربات از گروه (کاملاً مخفی - فقط برای ادمین)"""
+    user = update.effective_user
+    chat = update.effective_chat
+
+    # 🛡️ حالت مخفی: اگر کاربر ادمین ربات نباشد، ربات کاملاً سکوت می‌کند
+    if not user or not get_settings().is_admin(user.id):
+        return
+
+    # حالت ۱: ادمین در چت خصوصی (مثلاً /leavegroup اسم گروه)
+    if chat.type == ChatType.PRIVATE:
+        if not context.args:
+            await update.message.reply_text(
+                "⚠️ لطفاً نام یا آیدی عددی گروهی که می‌خواهید ربات از آن خارج شود را وارد کنید.\n\n"
+                "مثال:\n`/leavegroup گروه تغذیه`\nیا\n`/leavegroup -1001234567890`",
+                parse_mode="Markdown"
+            )
+            return
+
+        query = " ".join(context.args).strip()
+        groups = await repo.list_all_groups()
+        target_group = None
+
+        for g in groups:
+            if str(g.chat_id) == query or (g.title and query.lower() in g.title.lower()):
+                target_group = g
+                break
+
+        if not target_group:
+            await update.message.reply_text("❌ گروهی با این مشخصات پیدا نشد.\nبرای دیدن لیست گروه‌ها: /groups")
+            return
+
+        try:
+            await context.bot.leave_chat(chat_id=target_group.chat_id)
+            await repo.deactivate_group(chat_id=target_group.chat_id)
+            await update.message.reply_text(f"✅ ربات به طور کامل از گروه «{target_group.title}» خارج شد.")
+        except Exception as e:
+            await update.message.reply_text(f"❌ خطا در خروج از گروه: {e}")
+
+    # حالت ۲: ادمین در داخل خود گروه (فقط با زدن /leave)
+    else:
+        await update.message.reply_text("🚪 دستور محرمانه دریافت شد. در حال خروج از گروه... خداحافظ! 👋")
+        
+        try:
+            await context.bot.leave_chat(chat_id=chat.id)
+            await repo.deactivate_group(chat_id=chat.id)
+        except Exception as e:
+            logger.warning("خطا در خروج از گروه: %s", e)
+
+
+# ---------------------------------------------------------------------------
 #  Lifecycle
 # ---------------------------------------------------------------------------
 
@@ -784,6 +838,10 @@ def build_application() -> Application:
     
     # 🎨 دستور ادمین برای ارسال کاور به گروه‌های فعلی
     application.add_handler(CommandHandler("broadcast_covers", cmd_broadcast_covers))
+
+    # 🚪 دستورات محرمانه خروج از گروه (به لیست اسلش‌ها اضافه نشده‌اند)
+    application.add_handler(CommandHandler("leave", cmd_leave_group))
+    application.add_handler(CommandHandler("leavegroup", cmd_leave_group))
 
     application.add_handler(
         MessageHandler(filters.ChatType.GROUPS & filters.ALL, gmanager.on_group_message),

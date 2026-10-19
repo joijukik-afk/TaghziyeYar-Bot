@@ -16,7 +16,6 @@ ACTIVE_GAMES = {}
 PLAYER_ICONS = ["🦊", "🐼", "🦁", "🐸"]
 TURN_TIMEOUT = 30 
 
-# نقشه پیش‌فرض (اگر هوش مصنوعی خطا داد)
 DEFAULT_MAP = {
     "theme": "ماجراجویی کلاسیک 🏕️",
     "ladders": {"4": 14, "8": 26, "20": 38, "30": 44, "42": 56, "50": 58},
@@ -25,7 +24,6 @@ DEFAULT_MAP = {
 }
 
 async def _generate_ai_map() -> dict:
-    """استفاده از هوش مصنوعی برای ساخت مپ، موانع و تم جدید"""
     prompt = (
         "You are a creative game designer. Generate a unique map for a Snakes and Ladders game (8x8 grid, 64 squares).\n"
         "Output MUST be a valid JSON object (no markdown, no extra text) with this exact structure:\n"
@@ -43,27 +41,18 @@ async def _generate_ai_map() -> dict:
     try:
         ai = get_ai_service()
         reply, _ = await ai.ask(user_message=prompt, user_id=0)
-        
-        # پاکسازی و پارس JSON
         reply = reply.strip().replace("```json", "").replace("```", "")
         data = json.loads(reply)
-        
-        # اعتبارسنجی ساده
-        if "ladders" in data and "snakes" in data:
-            return data
+        if "ladders" in data and "snakes" in data: return data
     except Exception as e:
         logger.warning("خطا در تولید مپ توسط هوش مصنوعی: %s", e)
-    
     return DEFAULT_MAP
 
 def _get_identifier(user) -> str:
     return f"@{user.username}" if user.username else user.first_name
 
 def _draw_map(players: list, game_map: dict) -> str:
-    """کشیدن نقشه ۸×۸ بر اساس موانع تولید شده توسط هوش مصنوعی"""
     cells = {}
-    
-    # تبدیل کلیدهای رشته‌ای به عدد
     ladders = {int(k): v for k, v in game_map.get("ladders", {}).items()}
     snakes = {int(k): v for k, v in game_map.get("snakes", {}).items()}
     dragons = {int(k): v for k, v in game_map.get("dragons", {}).items()}
@@ -71,8 +60,6 @@ def _draw_map(players: list, game_map: dict) -> str:
     for start in ladders: cells[start] = "🪜"
     for start in snakes: cells[start] = "🐍"
     for start in dragons: cells[start] = "🐉"
-    
-    # قرار دادن بازیکنان
     for p in players:
         if p["pos"] > 0: cells[p["pos"]] = p["icon"]
 
@@ -86,8 +73,6 @@ def _draw_map(players: list, game_map: dict) -> str:
             if val: line += f" {val} "
             else: line += f" {pos:02d} "
         lines.append(line.strip())
-    
-    # استفاده از تگ pre فقط برای خود نقشه تا روی موبایل مرتب بماند
     return f"<pre>{chr(10).join(lines)}</pre>"
 
 def _get_game_ui(game: dict) -> str:
@@ -99,8 +84,7 @@ def _get_game_ui(game: dict) -> str:
         return text
     
     current = game["players"][game["turn_index"]]
-    if current["id"] == -1:
-        header = "🤖 <b>نوبت ربات است...</b>"
+    if current["id"] == -1: header = "🤖 <b>نوبت ربات است...</b>"
     else:
         dice_text = f" | 🎲 {game['last_dice']}" if game.get('last_dice') else ""
         header = f"🎲 <b>نوبت:</b> {current['icon']} {current['name']}{dice_text}"
@@ -125,14 +109,12 @@ def _get_lobby_keyboard(game: dict) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(f"🎮 ورود به بازی ({len(game['players'])}/4)", callback_data="snake_join")],
         [InlineKeyboardButton("🤖 بازی با ربات", callback_data="snake_play_bot")]
     ]
-    if len(game["players"]) >= 2: 
-        kb.append([InlineKeyboardButton("🚀 شروع بازی", callback_data="snake_start")])
+    if len(game["players"]) >= 2: kb.append([InlineKeyboardButton("🚀 شروع بازی", callback_data="snake_start")])
     return InlineKeyboardMarkup(kb)
 
 def _get_game_keyboard(game: dict) -> InlineKeyboardMarkup:
     kb = []
-    if len(game["players"]) < 4:
-        kb.append([InlineKeyboardButton(f"🎮 ورود به بازی ({len(game['players'])}/4)", callback_data="snake_join")])
+    if len(game["players"]) < 4: kb.append([InlineKeyboardButton(f"🎮 ورود به بازی ({len(game['players'])}/4)", callback_data="snake_join")])
     kb.append([InlineKeyboardButton("🎲 پرتاب تاس", callback_data="snake_roll")])
     kb.append([InlineKeyboardButton("🔄 آوردن به پایین", callback_data="snake_bump")])
     kb.append([InlineKeyboardButton("❌ انصراف", callback_data="snake_surrender")])
@@ -177,13 +159,11 @@ async def _process_roll(context: ContextTypes.DEFAULT_TYPE, chat_id: int, msg_id
         
         current["pos"] = target_pos
         
-        # بررسی برخورد با بازیکن دیگر
         for p in game["players"]:
             if p["id"] != current["id"] and p["pos"] == target_pos:
                 p["pos"] = 0
                 game["last_action"] = f"💥 {current['name']} زد به {p['name']} و فرستادش خانه ۱!"
 
-        # بررسی موانع تولید شده توسط هوش مصنوعی
         ladders = {int(k): v for k, v in game["map"].get("ladders", {}).items()}
         snakes = {int(k): v for k, v in game["map"].get("snakes", {}).items()}
         dragons = {int(k): v for k, v in game["map"].get("dragons", {}).items()}
@@ -200,7 +180,6 @@ async def _process_roll(context: ContextTypes.DEFAULT_TYPE, chat_id: int, msg_id
 
     try: await context.bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=_get_game_ui(game), parse_mode="HTML", reply_markup=_get_game_keyboard(game))
     except BadRequest: pass
-
     await asyncio.sleep(1.0)
 
     if current["pos"] == MAX_POS:
@@ -229,7 +208,6 @@ async def cmd_snake(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
     if chat_id in ACTIVE_GAMES: return await update.message.reply_text("⚠️ یک بازی در جریان است!")
     
-    # فراخوانی هوش مصنوعی برای ساخت نقشه
     status_msg = await update.message.reply_text("🧠 هوش مصنوعی در حال طراحی نقشه جدید است...")
     ai_map = await _generate_ai_map()
     

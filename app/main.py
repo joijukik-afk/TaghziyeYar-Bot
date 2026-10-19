@@ -42,12 +42,23 @@ logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
-# 🚫 فقط سیستم مسدودسازی سراسری (بدون فیلتر کلمات)
+LAST_POST_FILE = "last_post_time.txt"
+
+def _get_last_post_time() -> float:
+    if os.path.exists(LAST_POST_FILE):
+        try:
+            with open(LAST_POST_FILE, "r") as f: return float(f.read().strip())
+        except Exception: return 0.0
+    return 0.0
+
+def _set_last_post_time() -> None:
+    try:
+        with open(LAST_POST_FILE, "w") as f: f.write(str(time.time()))
+    except Exception as e: logger.warning("خطا در ذخیره زمان پست: %s", e)
+
 async def check_user_ban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """بررسی مسدود بودن کاربر قبل از هر دستوری"""
     user = update.effective_user
-    if user and await repo.is_user_banned(user.id): 
-        raise ApplicationHandlerStop
+    if user and await repo.is_user_banned(user.id): raise ApplicationHandlerStop
 
 class _HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -83,13 +94,25 @@ def rate_limited(func):
     return wrapper
 
 async def _auto_post_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    last_time = _get_last_post_time()
+    now = time.time()
+    
+    # ۸ ساعت = ۲۸۸۰۰ ثانیه
+    if now - last_time < 28800:
+        return
+
     specific_chat = os.environ.get("AUTO_POST_CHAT_ID", "").strip()
     if specific_chat:
-        try: await post_auto_content(context.bot, int(specific_chat))
-        except: pass
+        try: 
+            ok = await post_auto_content(context.bot, int(specific_chat))
+            if ok: _set_last_post_time()
+        except Exception as e: logger.warning("خطا در ارسال به %s: %s", specific_chat, e)
         return
-    try: await broadcast_auto_content(context.bot)
-    except Exception as e: logger.warning("broadcast error: %s", e)
+
+    try: 
+        sent = await broadcast_auto_content(context.bot)
+        if sent > 0: _set_last_post_time()
+    except Exception as e: logger.warning("خطا در broadcast: %s", e)
 
 def is_group(update: Update) -> bool:
     return update.effective_chat and update.effective_chat.type in (ChatType.GROUP, ChatType.SUPERGROUP)
@@ -423,7 +446,6 @@ def build_application() -> Application:
     settings = get_settings()
     app = (ApplicationBuilder().token(settings.telegram_bot_token).post_init(post_init).post_shutdown(post_shutdown).build())
     
-    # 🚫 فقط سیستم مسدودسازی سراسری
     app.add_handler(TypeHandler(Update, check_user_ban), group=-1)
 
     app.add_handler(CommandHandler("start", cmd_start)); app.add_handler(CommandHandler("help", cmd_help)); app.add_handler(CommandHandler("menu", cmd_menu))
@@ -437,7 +459,6 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("quiz", gquiz.cmd_quiz)); app.add_handler(CommandHandler("leaderboard", gquiz.cmd_leaderboard)); app.add_handler(CommandHandler("mystats", gquiz.cmd_mystats))
     app.add_handler(PollAnswerHandler(gquiz.on_poll_answer)); app.add_handler(CallbackQueryHandler(gquiz.on_inline_answer, pattern=r"^gq_\d+$"))
     
-    # 🐍 بازی مار و پله
     app.add_handler(CommandHandler("snake", snake_game.cmd_snake))
     app.add_handler(CallbackQueryHandler(snake_game.handle_snake, pattern=r"^snake_"))
     
@@ -446,7 +467,6 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("broadcast_covers", cmd_broadcast_covers)); app.add_handler(CommandHandler("leave", cmd_leave_group)); app.add_handler(CommandHandler("leavegroup", cmd_leave_group))
     app.add_handler(CommandHandler("sendto", cmd_send_to_group)); app.add_handler(CommandHandler("globalnews", cmd_global_news)); app.add_handler(CommandHandler("ban", cmd_ban)); app.add_handler(CommandHandler("unban", cmd_unban))
     
-    # ⛔️ هندلر مربوط به فیلتر کلمات کاملاً حذف شد
     app.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.ALL, gmanager.on_group_message), group=1)
     
     app.add_handler(CallbackQueryHandler(handle_callback))

@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     telegram_bot_token: str
     admin_ids: str = ""
 
-    # AI (Groq / DeepSeek) - حالا با هر دو نام کار می‌کند
+    # AI (Groq / DeepSeek)
     groq_api_key: str = Field(
         default="", 
         validation_alias=AliasChoices("GROQ_API_KEY", "DEEPSEEK_API_KEY", "deepseek_api_key", "groq_api_key")
@@ -29,6 +29,13 @@ class Settings(BaseSettings):
     
     # Unsplash
     unsplash_access_key: str = ""
+
+    # Pollinations AI (Flux)
+    # ⚠️ هشدار: توکن زیر موقتاً در کد قرار گرفته است. برای امنیت بیشتر آن را پاک کنید و در رندر ست کنید.
+    pollinations_api_key: str = Field(
+        default="sk_o9csMkTBUYJbbZQUoVajpOnfWvl5gqas", 
+        validation_alias=AliasChoices("POLLINATIONS_API_KEY", "pollinations_api_key")
+    )
 
     # Database
     database_url: str = "sqlite+aiosqlite:///./taghziye_yar.db"
@@ -46,7 +53,6 @@ class Settings(BaseSettings):
     port: int = 8080       
     rate_limit_seconds: float = 2.0  
     
-    # 🛡️ کلید مخفی برای امنیت وبهوک (جلوگیری از درخواست‌های جعلی)
     webhook_secret_token: str = Field(
         default="", 
         validation_alias=AliasChoices("WEBHOOK_SECRET_TOKEN", "webhook_secret_token")
@@ -66,9 +72,6 @@ class Settings(BaseSettings):
     def is_admin(self, user_id: int) -> bool:
         return user_id in self.admin_id_list
 
-    # =====================================================================
-    # 🔄 سازگاری با کدهای قبلی (حیاتی برای ai_service.py و auto_content.py)
-    # =====================================================================
     @property
     def deepseek_api_key(self) -> str:
         return self.groq_api_key

@@ -64,7 +64,7 @@ BAD_WORDS = [
 #  🚫 Global Ban & Bad Words System
 # ---------------------------------------------------------------------------
 async def check_user_ban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """بررسی مسدود بودن کاربر قبل از هر دستوری (سکوت مطلق برای دستورات)"""
+    """بررسی مسدود بودن کاربر قبل از هر دستوری (سکوت مطلق)"""
     user = update.effective_user
     if user and await repo.is_user_banned(user.id):
         raise ApplicationHandlerStop
@@ -472,63 +472,67 @@ async def cmd_global_news(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         try: await context.bot.send_message(chat_id=target.chat_id, text=text, parse_mode="HTML"); await status_msg.edit_text("✅ خبر ارسال شد (بدون عکس).")
         except Exception as e2: await status_msg.edit_text(f"❌ خطا: {e2}")
 
-# 🚫 دستور /ban (پشتیبانی از ریپلای، آیدی عددی و یوزرنیم + پیام زیبا)
+# 🚫 دستور /ban (با قابلیت اعلام در گروه و دلیل مسدودی)
 async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     if not user or not get_settings().is_admin(user.id): return
 
     target_id = None
     target_name = "کاربر"
-    origin_chat_id = update.effective_chat.id 
+    group_to_notify = None
 
+    # ۱. بررسی ریپلای (در گروه یا روی پیام فوروارد شده)
     if update.message.reply_to_message:
         replied = update.message.reply_to_message
-        if replied.forward_from_chat: origin_chat_id = replied.forward_from_chat.id
-        
+        if replied.forward_from_chat: 
+            group_to_notify = replied.forward_from_chat.id
         if replied.forward_from:
             target_id = replied.forward_from.id
             target_name = replied.forward_from.first_name or "کاربر"
         elif replied.from_user:
             target_id = replied.from_user.id
             target_name = replied.from_user.first_name or "کاربر"
-        else:
-            await update.message.reply_text("❌ آیدی پیدا نشد (حریم خصوصی بسته است).\n💡 لطفاً از روش یوزرنیم استفاده کنید: `/ban @username`", parse_mode="Markdown")
-            return
 
-    elif context.args:
+    # ۲. بررسی متن دستور (آیدی عددی یا یوزرنیم)
+    if not target_id and context.args:
         arg = context.args[0]
         if arg.startswith("@"):
             db_user = await repo.get_user_by_username(arg)
             if db_user:
                 target_id = db_user.telegram_id
                 target_name = db_user.first_name or db_user.username or "کاربر"
-            else:
-                await update.message.reply_text(f"❌ کاربری با یوزرنیم `{arg}` پیدا نشد.", parse_mode="Markdown")
-                return
         else:
             try: 
                 target_id = int(arg)
                 target_name = str(target_id)
-            except ValueError: 
-                await update.message.reply_text("⚠️ فرمت نامعتبر است.")
-                return
+            except ValueError: pass
 
     if not target_id:
-        return await update.message.reply_text("⚠️ راهنما:\n۱. یوزرنیم: `/ban @username`\n۲. آیدی عددی: `/ban 123456789`\n۳. یا روی پیام ریپلای کنید.", parse_mode="Markdown")
+        return await update.message.reply_text(
+            "⚠️ راهنما:\n"
+            "برای ارسال پیام به گروه، نام گروه را هم بنویسید:\n"
+            "`/ban @username Asli`\n"
+            "یا آیدی عددی: `/ban 123456789`", 
+            parse_mode="Markdown"
+        )
+
+    # ۳. پیدا کردن گروه برای ارسال پیام اخطار
+    if not group_to_notify and len(context.args) > 1:
+        group_query = " ".join(context.args[1:]).strip()
+        groups = await repo.list_all_groups()
+        target_group = next((g for g in groups if str(g.chat_id) == group_query or (g.title and group_query.lower() in g.title.lower())), None)
+        if target_group:
+            group_to_notify = target_group.chat_id
+    elif not group_to_notify and update.effective_chat.type in (ChatType.GROUP, ChatType.SUPERGROUP):
+        group_to_notify = update.effective_chat.id
 
     try:
-        await repo.ban_user(target_id, "توهین یا نقض قوانین")
-        await update.message.reply_text(f"✅ کاربر <b>{target_name}</b> (آیدی: <code>{target_id}</code>) مسدود شد.", parse_mode="HTML")
+        await repo.ban_user(target_id, "توهین به ربات یا نقض قوانین")
         
-        # 🌟 ارسال پیام اعلام به گروه اصلی
-        if origin_chat_id != update.effective_chat.id:
-            try:
-                await context.bot.send_message(
-                    chat_id=origin_chat_id,
-                    text=f"🚫 کاربر <b>{target_name}</b> به دلیل نقض قوانین، از استفاده از ربات محروم شد.",
-                    parse_mode="HTML"
-                )
-            except Exception: pass
+        await update.message.reply_text(
+            f"✅ کاربر <b>{target_name}</b> (آیدی: <code>{target_id}</code>) مسدود شد.", 
+            parse_mode="HTML"
+        )
         
         # 🌟 ارسال پیام زیبا به کاربر متخلف در پیوی
         try: 
@@ -543,9 +547,26 @@ async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 ),
                 parse_mode="HTML"
             )
-        except Exception: 
-            pass # اگر کاربر ربات را بلاک کرده باشد، خطا نمی‌دهد
-            
+        except Exception: pass
+
+        # 🌟 ارسال پیام اعلام مسدودی به گروه
+        if group_to_notify:
+            try:
+                await context.bot.send_message(
+                    chat_id=group_to_notify,
+                    text=(
+                        f"🚫 <b>اخطار مدیریتی</b>\n\n"
+                        f"کاربر <b>{target_name}</b> به دلیل توهین به ربات یا نقض قوانین، از استفاده از ربات محروم شد.\n"
+                        f"<i>(دسترسی این کاربر در تمام گروه‌ها مسدود شده است)</i>"
+                    ),
+                    parse_mode="HTML"
+                )
+            except Exception as e:
+                logger.warning("ارسال پیام مسدودی به گروه خطا داد: %s", e)
+                await update.message.reply_text("⚠️ کاربر مسدود شد، اما ارسال پیام به گروه با خطا مواجه شد.")
+        else:
+            await update.message.reply_text("ℹ️ (پیام اعلام مسدودی به گروه ارسال نشد، چون نام گروه ذکر نشده بود).")
+
     except Exception as e:
         logger.error("خطا در بن: %s", e)
         await update.message.reply_text(f"❌ خطای دیتابیسی: `{e}`", parse_mode="Markdown")
@@ -599,11 +620,11 @@ async def post_init(application: Application) -> None:
         await setup_commands(application.bot)
     except Exception as e: logger.warning("Setup commands error: %s", e)
 
-    # ⏱️ زمان‌بندی پست خودکار (پیش‌فرض: اولین پست ۱۰ دقیقه بعد، سپس هر ۸ ساعت)
+    # ⏱️ زمان‌بندی پست خودکار (اولین پست ۱۰ دقیقه بعد)
     if application.job_queue is not None:
         try: interval = int(os.environ.get("AUTO_POST_INTERVAL_HOURS", "8")) * 3600
         except ValueError: interval = 8 * 3600
-        try: first = int(os.environ.get("AUTO_POST_FIRST_DELAY", "600")) # 👈 تغییر به ۱۰ دقیقه (۶۰۰ ثانیه)
+        try: first = int(os.environ.get("AUTO_POST_FIRST_DELAY", "600")) 
         except ValueError: first = 600
         
         application.job_queue.run_repeating(_auto_post_job, interval=interval, first=first, name="auto_nutrition_post")

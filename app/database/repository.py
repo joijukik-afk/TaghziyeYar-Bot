@@ -6,7 +6,7 @@ from sqlalchemy import desc, func, select, delete
 
 from app.database.models import (
     AuditLog,
-    BannedUser, # 👈 اضافه شد
+    BannedUser,
     Group,
     Profile,
     SentImage,
@@ -53,6 +53,16 @@ async def get_user_by_telegram_id(telegram_id: int) -> User | None:
     async with session_scope() as session:
         result = await session.execute(
             select(User).where(User.telegram_id == telegram_id)
+        )
+        return result.scalar_one_or_none()
+
+
+async def get_user_by_username(username: str) -> User | None:
+    """پیدا کردن کاربر با یوزرنیم (برای سیستم بن)"""
+    clean_username = username.lstrip('@')
+    async with session_scope() as session:
+        result = await session.execute(
+            select(User).where(User.username.ilike(clean_username))
         )
         return result.scalar_one_or_none()
 
@@ -161,7 +171,6 @@ async def audit(telegram_id: int | None, event: str, details: str | None = None)
 # ================================================================
 
 async def image_already_sent(image_url: str) -> bool:
-    """بررسی اینکه این URL قبلاً ارسال شده یا نه."""
     async with session_scope() as session:
         result = await session.execute(
             select(SentImage).where(SentImage.image_url == image_url)
@@ -170,7 +179,6 @@ async def image_already_sent(image_url: str) -> bool:
 
 
 async def mark_image_sent(image_url: str, keyword: str = "") -> None:
-    """ثبت URL عکس به‌عنوان ارسال شده."""
     async with session_scope() as session:
         existing = await session.execute(
             select(SentImage).where(SentImage.image_url == image_url)
@@ -181,29 +189,22 @@ async def mark_image_sent(image_url: str, keyword: str = "") -> None:
 
 
 async def count_sent_images() -> int:
-    """تعداد عکس‌های ارسال‌شده."""
     async with session_scope() as session:
         result = await session.execute(select(func.count(SentImage.id)))
         return result.scalar_one() or 0
 
 
 async def cleanup_old_data(days: int = 30) -> tuple[int, int]:
-    """پاکسازی خودکار داده‌های قدیمی برای جلوگیری از پر شدن دیتابیس.
-    - عکس‌های ارسال‌شده قدیمی‌تر از X روز
-    - لاگ‌های کوییز قدیمی‌تر از X روز
-    """
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     deleted_images = 0
     deleted_quizzes = 0
 
     async with session_scope() as session:
-        # پاکسازی عکس‌ها
         result_img = await session.execute(
             delete(SentImage).where(SentImage.created_at < cutoff)
         )
         deleted_images = result_img.rowcount
 
-        # پاکسازی لاگ‌های کوییز
         result_quiz = await session.execute(
             delete(QuizLog).where(QuizLog.created_at < cutoff)
         )
@@ -393,7 +394,6 @@ async def get_chat_quiz_stats(chat_id: int) -> dict:
 # ================================================================
 
 async def ban_user(telegram_id: int, reason: str = "نقض قوانین") -> None:
-    """مسدود کردن کاربر در کل ربات"""
     async with session_scope() as session:
         result = await session.execute(
             select(BannedUser).where(BannedUser.telegram_id == telegram_id)
@@ -405,7 +405,6 @@ async def ban_user(telegram_id: int, reason: str = "نقض قوانین") -> Non
 
 
 async def unban_user(telegram_id: int) -> None:
-    """رفع مسدودی کاربر"""
     async with session_scope() as session:
         result = await session.execute(
             select(BannedUser).where(BannedUser.telegram_id == telegram_id)
@@ -417,7 +416,6 @@ async def unban_user(telegram_id: int) -> None:
 
 
 async def is_user_banned(telegram_id: int) -> bool:
-    """بررسی اینکه آیا کاربر مسدود است یا نه"""
     async with session_scope() as session:
         result = await session.execute(
             select(BannedUser).where(BannedUser.telegram_id == telegram_id)

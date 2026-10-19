@@ -115,3 +115,9 @@ class BannedUser(Base):
     telegram_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True)
     reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
     banned_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+class QuizHistory(Base):
+    __tablename__ = "quiz_history"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    question_text: Mapped[str] = mapped_column(String(500), unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

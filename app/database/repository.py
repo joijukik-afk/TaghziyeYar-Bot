@@ -3,7 +3,7 @@
 from datetime import date, timedelta, datetime, timezone
 from sqlalchemy import desc, func, select, delete
 from app.database.models import (
-    AuditLog, BannedUser, Group, Profile, SentImage, User, WeightLog,
+    AuditLog, BannedUser, Group, Profile, SentImage, User, WeightLog, QuizHistory
 )
 from app.database.quiz_models import QuizLeaderboard, QuizLog
 from app.database.session import session_scope
@@ -101,11 +101,6 @@ async def mark_image_sent(image_url: str, keyword: str = "") -> None:
         if existing.scalar_one_or_none() is None:
             session.add(SentImage(image_url=image_url, keyword=keyword[:300])); await session.flush()
 
-async def count_sent_images() -> int:
-    async with session_scope() as session:
-        result = await session.execute(select(func.count(SentImage.id)))
-        return result.scalar_one() or 0
-
 async def cleanup_old_data(days: int = 30) -> tuple[int, int]:
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     async with session_scope() as session:
@@ -193,3 +188,27 @@ async def is_user_banned(telegram_id: int) -> bool:
     async with session_scope() as session:
         result = await session.execute(select(BannedUser).where(BannedUser.telegram_id == telegram_id))
         return result.scalar_one_or_none() is not None
+
+# ================================================================
+#  🧠 QUIZ HISTORY (تاریخچه سوالات کوییز در Neon)
+# ================================================================
+
+async def get_recent_quiz_questions(limit: int = 30) -> list[str]:
+    """دریافت سوالات اخیر برای جلوگیری از تکرار"""
+    async with session_scope() as session:
+        result = await session.execute(
+            select(QuizHistory.question_text)
+            .order_by(QuizHistory.id.desc())
+            .limit(limit)
+        )
+        return [row[0] for row in result.fetchall()]
+
+async def save_quiz_question(question_text: str) -> None:
+    """ذخیره سوال جدید در تاریخچه"""
+    async with session_scope() as session:
+        result = await session.execute(
+            select(QuizHistory).where(QuizHistory.question_text == question_text[:500])
+        )
+        if result.scalar_one_or_none() is None:
+            session.add(QuizHistory(question_text=question_text[:500]))
+            await session.flush()

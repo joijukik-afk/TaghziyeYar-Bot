@@ -67,7 +67,6 @@ def _get_unique_topic() -> str:
     _recent_topics.append(chosen)
     return chosen
 
-# 🧠 پرامپت ارتقایافته: جلوگیری از تکرار و تضمین دقت علمی
 SYSTEM_PROMPT = """تو یک متخصص تغذیه و سلامت هستی که برای یک گروه تلگرام فارسی محتوا تولید می‌کنی.
 
 وظیفه تو:
@@ -119,7 +118,7 @@ async def generate_nutrition_post() -> tuple[str, str] | None:
 
     models_to_try = [req_model, "qwen/qwen3.8-27b", "openai/gpt-oss-120b"] if req_model else ["qwen/qwen3.8-27b", "openai/gpt-oss-120b"]
     
-    topic = _get_unique_topic() # 👈 استفاده از موضوع غیرتکراری
+    topic = _get_unique_topic()
     logger.info("📝 موضوع جدید انتخاب شده: %s", topic)
     
     client = AsyncGroq(api_key=api_key)
@@ -133,13 +132,12 @@ async def generate_nutrition_post() -> tuple[str, str] | None:
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": f"موضوع: {topic}"},
                 ],
-                temperature=0.4, # دمای کمی بالاتر برای تنوع بیشتر
+                temperature=0.4,
                 max_tokens=2500,
             )
 
             raw = response.choices[0].message.content
-            if not raw or not raw.strip():
-                continue
+            if not raw or not raw.strip(): continue
 
             parsed = _parse_ai_output(raw)
             if parsed is None:
@@ -147,7 +145,6 @@ async def generate_nutrition_post() -> tuple[str, str] | None:
 
             title, body, source, keyword = parsed
             final_text = f"📌 {title}\n\n{body}\n\n🔗 منبع: {source}"
-            logger.info("✅ محتوا تولید شد. کلمه کلیدی عکس: %s", keyword)
             return final_text, keyword
 
         except Exception as e:
@@ -242,7 +239,6 @@ async def _get_foodish_image() -> str | None:
     return None
 
 async def _get_pollinations_image(keyword: str) -> str | None:
-    # اضافه کردن عدد رندوم به پرامپت برای جلوگیری از تولید عکس تکراری
     seed = random.randint(1, 999999)
     prompt = f"{keyword}, professional food photography, high detail, random angle, seed {seed}"
     encoded = urllib.parse.quote(prompt)

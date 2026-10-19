@@ -1,8 +1,10 @@
 """تولید و ارسال خودکار محتوای تغذیه‌ای با عکس هوشمند و مرتبط."""
 
+import io
 import logging
 import random
 import re
+import urllib.parse
 
 import httpx
 import telegram
@@ -304,9 +306,26 @@ async def _get_foodish_image() -> str | None:
     return None
 
 
+async def _get_pollinations_image(keyword: str) -> str | None:
+    """🚀 تولید عکس فوری با هوش مصنوعی به عنوان پشتیبان نهایی (اگر بقیه پیدا نکردند)"""
+    # استفاده از پرامپت انگلیسی برای کیفیت بالاتر
+    prompt = f"{keyword}, professional food photography, highly detailed, realistic, appetizing, 8k resolution"
+    encoded = urllib.parse.quote(prompt)
+    
+    # استفاده از مدل Flux برای کیفیت عالی
+    settings = get_settings()
+    api_key = getattr(settings, 'pollinations_api_key', '')
+    
+    if api_key:
+        return f"https://gen.pollinations.ai/image/{encoded}?width=1024&height=1024&nologo=true&model=flux&key={api_key}"
+    else:
+        return f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&nologo=true"
+
+
 async def search_food_image(keyword: str) -> str | None:
     settings = get_settings()
 
+    # ۱. Unsplash
     if settings.unsplash_access_key:
         for attempt in range(2):
             img = await _get_unsplash_image(keyword, settings.unsplash_access_key)
@@ -314,25 +333,30 @@ async def search_food_image(keyword: str) -> str | None:
                 logger.info("✅ عکس از Unsplash: %s", keyword)
                 return img
 
+    # ۲. DuckDuckGo
     for attempt in range(2):
         img = await _get_duckduckgo_image(keyword)
         if img and not await repo.image_already_sent(img):
             logger.info("✅ عکس از DuckDuckGo: %s", keyword)
             return img
 
+    # ۳. TheMealDB
     img = await _get_themealdb_image(keyword)
     if img and not await repo.image_already_sent(img):
         logger.info("✅ عکس از TheMealDB: %s", keyword)
         return img
 
+    # ۴. Foodish
     for _ in range(3):
         img = await _get_foodish_image()
         if img and not await repo.image_already_sent(img):
             logger.info("✅ عکس از Foodish (رندوم)")
             return img
 
-    logger.warning("هیچ عکس جدیدی پیدا نشد.")
-    return None
+    # ۵. 🚀 پشتیبان نهایی: تولید با هوش مصنوعی
+    logger.warning("هیچ عکس آماده‌ای پیدا نشد. استفاده از هوش مصنوعی برای ساخت عکس پست...")
+    ai_img = await _get_pollinations_image(keyword)
+    return ai_img
 
 
 async def _send_with_photo(bot, chat_id: int, content: str, keyword: str) -> bool:
@@ -340,9 +364,16 @@ async def _send_with_photo(bot, chat_id: int, content: str, keyword: str) -> boo
 
     if image_url:
         try:
+            # 🛠️ دانلود عکس توسط سرور خودمان برای جلوگیری از خطای تایم‌اوت تلگرام
+            async with httpx.AsyncClient(timeout=45.0) as client:
+                resp = await client.get(image_url)
+                resp.raise_for_status()
+                photo_bytes = io.BytesIO(resp.content)
+                photo_bytes.name = 'post_image.jpg'
+
             await bot.send_photo(
                 chat_id=chat_id,
-                photo=image_url,
+                photo=photo_bytes,
                 caption=with_signature(content),
             )
             await repo.mark_image_sent(image_url, keyword)
@@ -353,12 +384,20 @@ async def _send_with_photo(bot, chat_id: int, content: str, keyword: str) -> boo
             raise e
         except Exception as e:
             logger.warning("ارسال عکس خطا داد: %s", e)
+            
+            # تلاش دوم با یک عکس رندوم دیگر
             try:
                 backup = await _get_foodish_image()
                 if backup and not await repo.image_already_sent(backup):
+                    async with httpx.AsyncClient(timeout=45.0) as client:
+                        resp = await client.get(backup)
+                        resp.raise_for_status()
+                        photo_bytes = io.BytesIO(resp.content)
+                        photo_bytes.name = 'post_image.jpg'
+                        
                     await bot.send_photo(
                         chat_id=chat_id,
-                        photo=backup,
+                        photo=photo_bytes,
                         caption=with_signature(content),
                     )
                     await repo.mark_image_sent(backup, keyword)
@@ -411,7 +450,6 @@ async def broadcast_auto_content(bot) -> int:
             if ok:
                 sent += 1
         except telegram.error.Forbidden:
-            # 🧹 پاکسازی خودکار دیتابیس (اگر ربات از گروه اخراج شده باشد)
             logger.warning("🛑 ربات دیگر عضو گروه %s نیست. حذف خودکار از دیتابیس...", g.chat_id)
             await repo.deactivate_group(chat_id=g.chat_id)
         except Exception as e:

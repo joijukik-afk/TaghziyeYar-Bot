@@ -2,26 +2,15 @@
 
 from datetime import datetime
 from sqlalchemy import (
-    BigInteger,
-    Boolean,
-    DateTime,
-    Float,
-    ForeignKey,
-    Integer,
-    String,
-    Text,
-    UniqueConstraint,
+    BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
-
 
 class Base(DeclarativeBase):
     pass
 
-
 class User(Base):
     __tablename__ = "users"
-
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     telegram_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True)
     username: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -30,39 +19,23 @@ class User(Base):
     language: Mapped[str] = mapped_column(String(8), default="fa")
     is_blocked: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
-    )
-
-    profile: Mapped["Profile | None"] = relationship(
-        back_populates="user", uselist=False, cascade="all, delete-orphan"
-    )
-    weights: Mapped[list["WeightLog"]] = relationship(
-        back_populates="user", cascade="all, delete-orphan"
-    )
-
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    profile: Mapped["Profile | None"] = relationship(back_populates="user", uselist=False, cascade="all, delete-orphan")
+    weights: Mapped[list["WeightLog"]] = relationship(back_populates="user", cascade="all, delete-orphan")
 
 class Group(Base):
     __tablename__ = "groups"
-
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     chat_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True)
     title: Mapped[str | None] = mapped_column(String(255), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     added_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
-    )
-
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 class Profile(Base):
     __tablename__ = "profiles"
-
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), unique=True
-    )
-
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), unique=True)
     age: Mapped[int | None] = mapped_column(Integer, nullable=True)
     gender: Mapped[str | None] = mapped_column(String(16), nullable=True)
     height_cm: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -80,31 +53,21 @@ class Profile(Base):
     dietary_style: Mapped[str | None] = mapped_column(String(32), nullable=True)
     medical_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     timezone: Mapped[str | None] = mapped_column(String(64), nullable=True)
-
     setup_step: Mapped[int] = mapped_column(Integer, default=0)
     setup_complete: Mapped[bool] = mapped_column(Boolean, default=False)
-
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
-    )
-
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     user: Mapped["User"] = relationship(back_populates="profile")
-
 
 class WeightLog(Base):
     __tablename__ = "weight_logs"
-
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
     weight_kg: Mapped[float] = mapped_column(Float)
     logged_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-
     user: Mapped["User"] = relationship(back_populates="weights")
-
 
 class DailyLog(Base):
     __tablename__ = "daily_logs"
-
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
     log_date: Mapped[str] = mapped_column(String(10), index=True)
@@ -112,13 +75,10 @@ class DailyLog(Base):
     meals_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     adherence_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-
     __table_args__ = (UniqueConstraint("user_id", "log_date", name="uq_user_day"),)
-
 
 class Reminder(Base):
     __tablename__ = "reminders"
-
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
     kind: Mapped[str] = mapped_column(String(32))
@@ -126,43 +86,31 @@ class Reminder(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
-
 class Conversation(Base):
     __tablename__ = "conversations"
-
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
     role: Mapped[str] = mapped_column(String(16))
     content: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
-
 class AuditLog(Base):
     __tablename__ = "audit_logs"
-
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     telegram_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     event: Mapped[str] = mapped_column(String(64))
     details: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
-
 class SentImage(Base):
-    """URL عکس‌هایی که قبلاً ارسال شده‌اند (برای جلوگیری از تکرار)."""
     __tablename__ = "sent_images"
-
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     image_url: Mapped[str] = mapped_column(String(1000), unique=True, index=True)
     keyword: Mapped[str | None] = mapped_column(String(300), nullable=True)
     sent_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
-
-# ================================================================
-#  🚫 BAN SYSTEM (مدل کاربران مسدود شده)
-# ================================================================
 class BannedUser(Base):
     __tablename__ = "banned_users"
-
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     telegram_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True)
     reason: Mapped[str | None] = mapped_column(String(255), nullable=True)

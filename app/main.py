@@ -23,6 +23,8 @@ from telegram.ext import (
     ContextTypes,
     MessageHandler,
     PollAnswerHandler,
+    TypeHandler,             # 👈 اضافه شد برای سیستم مسدودسازی
+    ApplicationHandlerStop,  # 👈 اضافه شد برای سیستم مسدودسازی
     filters,
 )
 
@@ -40,7 +42,7 @@ from app.database.session import create_all, dispose_engine, init_engine
 from app.services.ai_service import get_ai_service
 from app.services.auto_content import broadcast_auto_content, post_auto_content
 from app.services.image_generator import generate_group_cover
-from app.services.news_service import get_global_magazine_news # 👈 ایمپورت سرویس جدید
+from app.services.news_service import get_global_magazine_news 
 from app.utils.message_formatter import with_signature
 
 
@@ -52,6 +54,23 @@ logger = logging.getLogger(__name__)
 
 # 🛡️ جلوگیری از لو رفتن توکن ربات در لاگ‌های Render
 logging.getLogger("httpx").setLevel(logging.WARNING)
+
+
+# ---------------------------------------------------------------------------
+#  🚫 Global Ban System (سیستم مسدودسازی کاربران)
+# ---------------------------------------------------------------------------
+async def check_user_ban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """این تابع قبل از هر دستور دیگری اجرا می‌شود و کاربران مسدود را بیرون می‌اندازد"""
+    user = update.effective_user
+    if user and await repo.is_user_banned(user.id):
+        # اگر کاربر در چت خصوصی بود، به او اطلاع بده
+        if update.effective_chat and update.effective_chat.type == ChatType.PRIVATE and update.message:
+            try:
+                await update.message.reply_text("⛔ شما از استفاده از این ربات محروم شده‌اید.")
+            except Exception:
+                pass
+        # متوقف کردن کامل پردازش پیام (ربات سکوت می‌کند)
+        raise ApplicationHandlerStop
 
 
 # ---------------------------------------------------------------------------
@@ -798,6 +817,37 @@ async def cmd_global_news(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await status_msg.edit_text(f"❌ خطا در ارسال: {e2}")
 
 
+# 🚫 دستور /ban برای مسدودسازی
+async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    if not user or not get_settings().is_admin(user.id): return
+
+    target_id = None
+    if update.message.reply_to_message:
+        target_id = update.message.reply_to_message.from_user.id
+    elif context.args:
+        try: target_id = int(context.args[0])
+        except ValueError: pass
+
+    if not target_id:
+        return await update.message.reply_text("⚠️ روی پیام کاربر ریپلای کنید یا آیدی بدهید:\n`/ban 123456789`", parse_mode="Markdown")
+
+    await repo.ban_user(target_id, "توسط ادمین")
+    await update.message.reply_text(f"✅ کاربر `{target_id}` در کل ربات مسدود شد.", parse_mode="Markdown")
+    try: await context.bot.send_message(chat_id=target_id, text="⛔ شما از استفاده از ربات محروم شده‌اید.")
+    except: pass
+
+# ✅ دستور /unban برای رفع مسدودی
+async def cmd_unban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    if not user or not get_settings().is_admin(user.id): return
+    if not context.args: return await update.message.reply_text("⚠️ آیدی عددی کاربر را وارد کنید: `/unban 123456789`", parse_mode="Markdown")
+    try: target_id = int(context.args[0])
+    except ValueError: return await update.message.reply_text("⚠️ آیدی باید عدد باشد.")
+    await repo.unban_user(target_id)
+    await update.message.reply_text(f"✅ مسدودی کاربر `{target_id}` برداشته شد.", parse_mode="Markdown")
+
+
 # ---------------------------------------------------------------------------
 #  Lifecycle
 # ---------------------------------------------------------------------------
@@ -844,6 +894,9 @@ def build_application() -> Application:
         .post_shutdown(post_shutdown)
         .build()
     )
+
+    # 🚫 سیستم Global Ban (باید در گروه -1 باشد تا قبل از همه چیز اجرا شود)
+    application.add_handler(TypeHandler(Update, check_user_ban), group=-1)
 
     # Base
     application.add_handler(CommandHandler("start", cmd_start))
@@ -902,6 +955,10 @@ def build_application() -> Application:
     
     # 📰 دستور مخفی اخبار بین‌المللی
     application.add_handler(CommandHandler("globalnews", cmd_global_news))
+    
+    # 🚫 دستورات مسدودسازی
+    application.add_handler(CommandHandler("ban", cmd_ban))
+    application.add_handler(CommandHandler("unban", cmd_unban))
 
     application.add_handler(
         MessageHandler(filters.ChatType.GROUPS & filters.ALL, gmanager.on_group_message),

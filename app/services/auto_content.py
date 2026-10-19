@@ -5,6 +5,7 @@ import random
 import re
 
 import httpx
+import telegram
 from groq import AsyncGroq
 
 from app.config import get_settings
@@ -110,7 +111,6 @@ async def _pick_model(api_key: str, requested: str = "") -> str | None:
 async def generate_nutrition_post() -> tuple[str, str] | None:
     settings = get_settings()
     
-    # پشتیبانی همزمان از کلیدهای Groq و DeepSeek
     api_key = getattr(settings, 'groq_api_key', '') or getattr(settings, 'deepseek_api_key', '')
     req_model = getattr(settings, 'groq_model', '') or getattr(settings, 'deepseek_model', '')
 
@@ -118,8 +118,6 @@ async def generate_nutrition_post() -> tuple[str, str] | None:
         logger.warning("کلید API تنظیم نشده.")
         return None
 
-    # لیست مدل‌هایی که در صورت خطا یا پاسخ خالی امتحان می‌شوند
-    # مدل qwen در لیست لاگ شما بود و بسیار قوی است
     models_to_try = [req_model, "qwen/qwen3.8-27b", "openai/gpt-oss-120b"] if req_model else ["qwen/qwen3.8-27b", "openai/gpt-oss-120b"]
     
     topic = random.choice(SEARCH_TOPICS)
@@ -139,12 +137,11 @@ async def generate_nutrition_post() -> tuple[str, str] | None:
                     {"role": "user", "content": f"موضوع: {topic}"},
                 ],
                 temperature=0.3,
-                max_tokens=2500,  # 🔥 افزایش یافت تا مدل‌های استدلالی فرصت جواب دادن داشته باشند
+                max_tokens=2500,
             )
 
             raw = response.choices[0].message.content
             
-            # اگر پاسخ خالی بود، سراغ مدل بعدی برو
             if not raw or not raw.strip():
                 logger.warning("پاسخ خالی از مدل %s دریافت شد. تلاش با مدل بعدی...", model_name)
                 continue
@@ -152,7 +149,6 @@ async def generate_nutrition_post() -> tuple[str, str] | None:
             parsed = _parse_ai_output(raw)
             if parsed is None:
                 logger.warning("فرمت خروجی AI برای مدل %s قابل پارس نبود.", model_name)
-                # اگر پارس نشد، خود متن خام را بفرست
                 return raw.strip(), "healthy nutrition food"
 
             title, body, source, keyword = parsed
@@ -162,7 +158,7 @@ async def generate_nutrition_post() -> tuple[str, str] | None:
 
         except Exception as e:
             logger.warning("خطا در تولید با مدل %s: %s", model_name, e)
-            continue # سراغ مدل بعدی برو
+            continue
 
     logger.error("همه مدل‌ها خطا دادند یا پاسخ خالی برگرداندند.")
     return None
@@ -210,7 +206,6 @@ def _parse_ai_output(raw: str) -> tuple[str, str, str, str] | None:
 
 
 async def _get_unsplash_image(keyword: str, api_key: str) -> str | None:
-    """عکس باکیفیت از Unsplash."""
     url = "https://api.unsplash.com/search/photos"
     params = {
         "query": keyword,
@@ -310,10 +305,8 @@ async def _get_foodish_image() -> str | None:
 
 
 async def search_food_image(keyword: str) -> str | None:
-    """جستجوی عکس — اولویت با تطابق و عدم تکرار."""
     settings = get_settings()
 
-    # ۱. Unsplash
     if settings.unsplash_access_key:
         for attempt in range(2):
             img = await _get_unsplash_image(keyword, settings.unsplash_access_key)
@@ -321,20 +314,17 @@ async def search_food_image(keyword: str) -> str | None:
                 logger.info("✅ عکس از Unsplash: %s", keyword)
                 return img
 
-    # ۲. DuckDuckGo
     for attempt in range(2):
         img = await _get_duckduckgo_image(keyword)
         if img and not await repo.image_already_sent(img):
             logger.info("✅ عکس از DuckDuckGo: %s", keyword)
             return img
 
-    # ۳. TheMealDB
     img = await _get_themealdb_image(keyword)
     if img and not await repo.image_already_sent(img):
         logger.info("✅ عکس از TheMealDB: %s", keyword)
         return img
 
-    # ۴. Foodish (آخرین راه‌حل)
     for _ in range(3):
         img = await _get_foodish_image()
         if img and not await repo.image_already_sent(img):
@@ -358,6 +348,9 @@ async def _send_with_photo(bot, chat_id: int, content: str, keyword: str) -> boo
             await repo.mark_image_sent(image_url, keyword)
             logger.info("✅ عکس + متن ارسال شد به %s", chat_id)
             return True
+        except telegram.error.Forbidden as e:
+            logger.warning("ارسال عکس خطا داد (Forbidden): %s", e)
+            raise e
         except Exception as e:
             logger.warning("ارسال عکس خطا داد: %s", e)
             try:
@@ -371,6 +364,8 @@ async def _send_with_photo(bot, chat_id: int, content: str, keyword: str) -> boo
                     await repo.mark_image_sent(backup, keyword)
                     logger.info("✅ عکس (تلاش دوم) ارسال شد.")
                     return True
+            except telegram.error.Forbidden as e2:
+                raise e2
             except Exception as e2:
                 logger.warning("تلاش دوم هم خطا: %s", e2)
 
@@ -381,6 +376,9 @@ async def _send_with_photo(bot, chat_id: int, content: str, keyword: str) -> boo
         )
         logger.info("✅ فقط متن ارسال شد (بدون عکس).")
         return True
+    except telegram.error.Forbidden as e:
+        logger.warning("ارسال متن خطا داد (Forbidden): %s", e)
+        raise e
     except Exception as e:
         logger.warning("ارسال متن هم خطا: %s", e)
         return False
@@ -412,6 +410,10 @@ async def broadcast_auto_content(bot) -> int:
             ok = await _send_with_photo(bot, g.chat_id, content, image_keyword)
             if ok:
                 sent += 1
+        except telegram.error.Forbidden:
+            # 🧹 پاکسازی خودکار دیتابیس (اگر ربات از گروه اخراج شده باشد)
+            logger.warning("🛑 ربات دیگر عضو گروه %s نیست. حذف خودکار از دیتابیس...", g.chat_id)
+            await repo.deactivate_group(chat_id=g.chat_id)
         except Exception as e:
             logger.warning("❌ ارسال به %s خطا: %s", g.chat_id, e)
 
@@ -425,4 +427,9 @@ async def post_auto_content(bot, chat_id: int) -> bool:
         return False
 
     content, image_keyword = result
-    return await _send_with_photo(bot, chat_id, content, image_keyword)
+    try:
+        return await _send_with_photo(bot, chat_id, content, image_keyword)
+    except telegram.error.Forbidden:
+        logger.warning("🛑 ربات دیگر عضو گروه %s نیست.", chat_id)
+        await repo.deactivate_group(chat_id=chat_id)
+        return False

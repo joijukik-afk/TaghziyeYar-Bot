@@ -54,7 +54,7 @@ logger = logging.getLogger(__name__)
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
-# 🚫 لیست کلمات ممنوعه (می‌توانید کلمات بیشتری اضافه کنید)
+# 🚫 لیست کلمات ممنوعه
 BAD_WORDS = [
     "فحش1", "فحش2", "کلمه_بد", "احمق", "خرف", "کص", "کیر", "کس", "گوه", "شر", 
     "fuck", "shit", "bitch", "asshole", "dick"
@@ -64,13 +64,13 @@ BAD_WORDS = [
 #  🚫 Global Ban & Bad Words System
 # ---------------------------------------------------------------------------
 async def check_user_ban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """بررسی مسدود بودن کاربر قبل از هر دستوری (سکوت مطلق)"""
+    """بررسی مسدود بودن کاربر قبل از هر دستوری (سکوت مطلق برای دستورات)"""
     user = update.effective_user
     if user and await repo.is_user_banned(user.id):
         raise ApplicationHandlerStop
 
 async def handle_bad_words(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """فیلتر کلمات رکیک (برای ادمین‌ها هم اعمال می‌شود)"""
+    """فیلتر کلمات رکیک"""
     if not update.message or not update.message.text:
         return
 
@@ -95,7 +95,7 @@ async def handle_bad_words(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 
 # ---------------------------------------------------------------------------
-#  Health server (فقط برای اجرای لوکال)
+#  Health server
 # ---------------------------------------------------------------------------
 class _HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -472,7 +472,7 @@ async def cmd_global_news(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         try: await context.bot.send_message(chat_id=target.chat_id, text=text, parse_mode="HTML"); await status_msg.edit_text("✅ خبر ارسال شد (بدون عکس).")
         except Exception as e2: await status_msg.edit_text(f"❌ خطا: {e2}")
 
-# 🚫 دستور /ban (پشتیبانی از ریپلای، آیدی عددی و یوزرنیم از پیوی)
+# 🚫 دستور /ban (پشتیبانی از ریپلای، آیدی عددی و یوزرنیم + پیام زیبا)
 async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     if not user or not get_settings().is_admin(user.id): return
@@ -481,7 +481,6 @@ async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     target_name = "کاربر"
     origin_chat_id = update.effective_chat.id 
 
-    # ۱. اگر روی پیامی ریپلای شده باشد
     if update.message.reply_to_message:
         replied = update.message.reply_to_message
         if replied.forward_from_chat: origin_chat_id = replied.forward_from_chat.id
@@ -496,33 +495,32 @@ async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await update.message.reply_text("❌ آیدی پیدا نشد (حریم خصوصی بسته است).\n💡 لطفاً از روش یوزرنیم استفاده کنید: `/ban @username`", parse_mode="Markdown")
             return
 
-    # ۲. اگر آیدی عددی یا یوزرنیم به صورت متن وارد شده باشد
     elif context.args:
         arg = context.args[0]
-        
         if arg.startswith("@"):
             db_user = await repo.get_user_by_username(arg)
             if db_user:
                 target_id = db_user.telegram_id
                 target_name = db_user.first_name or db_user.username or "کاربر"
             else:
-                await update.message.reply_text(f"❌ کاربری با یوزرنیم `{arg}` در دیتابیس پیدا نشد.\nاحتمالاً این کاربر تا حالا با ربات تعامل نداشته است.", parse_mode="Markdown")
+                await update.message.reply_text(f"❌ کاربری با یوزرنیم `{arg}` پیدا نشد.", parse_mode="Markdown")
                 return
         else:
             try: 
                 target_id = int(arg)
                 target_name = str(target_id)
             except ValueError: 
-                await update.message.reply_text("⚠️ فرمت نامعتبر است. از `/ban 123456789` یا `/ban @username` استفاده کنید.")
+                await update.message.reply_text("⚠️ فرمت نامعتبر است.")
                 return
 
     if not target_id:
         return await update.message.reply_text("⚠️ راهنما:\n۱. یوزرنیم: `/ban @username`\n۲. آیدی عددی: `/ban 123456789`\n۳. یا روی پیام ریپلای کنید.", parse_mode="Markdown")
 
     try:
-        await repo.ban_user(target_id, "توسط ادمین")
-        await update.message.reply_text(f"✅ کاربر <b>{target_name}</b> (آیدی: <code>{target_id}</code>) در کل ربات مسدود شد.", parse_mode="HTML")
+        await repo.ban_user(target_id, "توهین یا نقض قوانین")
+        await update.message.reply_text(f"✅ کاربر <b>{target_name}</b> (آیدی: <code>{target_id}</code>) مسدود شد.", parse_mode="HTML")
         
+        # 🌟 ارسال پیام اعلام به گروه اصلی
         if origin_chat_id != update.effective_chat.id:
             try:
                 await context.bot.send_message(
@@ -531,6 +529,23 @@ async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                     parse_mode="HTML"
                 )
             except Exception: pass
+        
+        # 🌟 ارسال پیام زیبا به کاربر متخلف در پیوی
+        try: 
+            await context.bot.send_message(
+                chat_id=target_id, 
+                text=(
+                    "🚫 <b>دسترسی شما مسدود شد</b>\n\n"
+                    f"کاربر گرامی <b>{target_name}</b>،\n"
+                    "به دلیل توهین به ربات یا استفاده از کلمات نامناسب، دسترسی شما به «تغذیه‌یار» در تمام گروه‌ها مسدود شده است.\n\n"
+                    "در صورت داشتن اعتراض، می‌توانید به پشتیبانی پیام دهید:\n"
+                    "@AliAkbaro0"
+                ),
+                parse_mode="HTML"
+            )
+        except Exception: 
+            pass # اگر کاربر ربات را بلاک کرده باشد، خطا نمی‌دهد
+            
     except Exception as e:
         logger.error("خطا در بن: %s", e)
         await update.message.reply_text(f"❌ خطای دیتابیسی: `{e}`", parse_mode="Markdown")
@@ -566,17 +581,33 @@ async def post_init(application: Application) -> None:
     await create_all()
     me = await application.bot.get_me()
     logger.info("Bot started as @%s (id=%s)", me.username, me.id)
+
+    # 🏷️ تنظیم خودکار بیو و توضیحات ربات
+    try:
+        await application.bot.set_my_description(
+            description="🌱 دستیار هوشمند تغذیه\n\n👨‍⚕️ زیر نظر کارشناس و متخصص تغذیه: علی اکبر ابراهیم پور\n📞 پشتیبانی: @AliAkbaro0"
+        )
+        await application.bot.set_my_short_description(
+            short_description="زیر نظر متخصص تغذیه علی اکبر ابراهیم پور | پشتیبانی: @AliAkbaro0"
+        )
+        logger.info("✅ Bio and description updated successfully.")
+    except Exception as e:
+        logger.warning("خطا در تنظیم بیو: %s", e)
+
     try:
         from app.bot.commands_setup import setup_commands
         await setup_commands(application.bot)
     except Exception as e: logger.warning("Setup commands error: %s", e)
 
+    # ⏱️ زمان‌بندی پست خودکار (پیش‌فرض: اولین پست ۱۰ دقیقه بعد، سپس هر ۸ ساعت)
     if application.job_queue is not None:
         try: interval = int(os.environ.get("AUTO_POST_INTERVAL_HOURS", "8")) * 3600
         except ValueError: interval = 8 * 3600
-        try: first = int(os.environ.get("AUTO_POST_FIRST_DELAY", "28800"))
-        except ValueError: first = 28800
+        try: first = int(os.environ.get("AUTO_POST_FIRST_DELAY", "600")) # 👈 تغییر به ۱۰ دقیقه (۶۰۰ ثانیه)
+        except ValueError: first = 600
+        
         application.job_queue.run_repeating(_auto_post_job, interval=interval, first=first, name="auto_nutrition_post")
+        logger.info("✅ اولین پست ۱۰ دقیقه بعد، پست‌های بعدی هر %s ساعت.", interval // 3600)
 
 async def post_shutdown(application: Application) -> None:
     await dispose_engine()

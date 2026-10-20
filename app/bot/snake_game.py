@@ -1,83 +1,60 @@
-"""بازی مار و پله با طراحی هوش مصنوعی، مپ متنی تمیز و دکمه‌های عمودی"""
+"""بازی مار و پله ۱۰۰ خانه‌ای، هیجانی و حرفه‌ای"""
 
 import random
 import logging
 import asyncio
-import json
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from telegram.error import BadRequest
-from app.services.ai_service import get_ai_service
 
 logger = logging.getLogger(__name__)
 
-MAX_POS = 64
+# نقشه ۱۰۰ خانه‌ای استاندارد + رویدادهای شانس و صاعقه
+LADDERS = {1: 38, 4: 14, 9: 31, 21: 42, 28: 84, 36: 44, 51: 67, 71: 91, 80: 100}
+SNAKES = {16: 6, 47: 26, 49: 11, 56: 53, 62: 19, 64: 60, 87: 24, 93: 73, 95: 75, 98: 78}
+DRAGONS = {20: 5, 40: 15, 70: 35, 90: 55} # اژدها (مثل مار بدتر)
+LUCK = {10: 5, 35: 10, 60: 15, 85: 10} # جعبه شانس (جلو می‌ره)
+MISFORTUNE = {30: -5, 50: -10, 75: -5, 97: -10} # صاعقه (عقب می‌ره)
+
+MAX_POS = 100
 ACTIVE_GAMES = {}
 PLAYER_ICONS = ["🦊", "🐼", "🦁", "🐸"]
 TURN_TIMEOUT = 30 
 
-DEFAULT_MAP = {
-    "theme": "ماجراجویی کلاسیک 🏕️",
-    "ladders": {"4": 14, "8": 26, "20": 38, "30": 44, "42": 56, "50": 58},
-    "snakes": {"15": 3, "25": 12, "36": 18, "48": 30, "55": 40, "62": 52},
-    "dragons": {"10": 2, "32": 16, "45": 28}
-}
-
-async def _generate_ai_map() -> dict:
-    prompt = (
-        "You are a creative game designer. Generate a unique map for a Snakes and Ladders game (8x8 grid, 64 squares).\n"
-        "Output MUST be a valid JSON object (no markdown, no extra text) with this exact structure:\n"
-        '{"theme": "A short creative Persian name for the map theme (e.g., جنگل جادویی)", '
-        '"ladders": {"start": end, ...}, '
-        '"snakes": {"start": end, ...}, '
-        '"dragons": {"start": end, ...}}\n'
-        "RULES:\n"
-        "1. All numbers must be between 2 and 63.\n"
-        "2. For ladders, end > start (going up).\n"
-        "3. For snakes and dragons, end < start (going down).\n"
-        "4. Do NOT reuse the same starting position for different obstacles.\n"
-        "5. Provide exactly 4 ladders, 4 snakes, and 2 dragons."
-    )
-    try:
-        ai = get_ai_service()
-        reply, _ = await ai.ask(user_message=prompt, user_id=0)
-        reply = reply.strip().replace("```json", "").replace("```", "")
-        data = json.loads(reply)
-        if "ladders" in data and "snakes" in data: return data
-    except Exception as e:
-        logger.warning("خطا در تولید مپ توسط هوش مصنوعی: %s", e)
-    return DEFAULT_MAP
-
 def _get_identifier(user) -> str:
     return f"@{user.username}" if user.username else user.first_name
 
-def _draw_map(players: list, game_map: dict) -> str:
+def _draw_map(players: list) -> str:
+    """کشیدن نقشه ۱۰x۱۰ جدول‌بندی شده"""
     cells = {}
-    ladders = {int(k): v for k, v in game_map.get("ladders", {}).items()}
-    snakes = {int(k): v for k, v in game_map.get("snakes", {}).items()}
-    dragons = {int(k): v for k, v in game_map.get("dragons", {}).items()}
+    for start in LADDERS: cells[start] = "🪜"
+    for start in SNAKES: cells[start] = "🐍"
+    for start in DRAGONS: cells[start] = "🐉"
+    for start in LUCK: cells[start] = "🎁"
+    for start in MISFORTUNE: cells[start] = "⚡️"
     
-    for start in ladders: cells[start] = "🪜"
-    for start in snakes: cells[start] = "🐍"
-    for start in dragons: cells[start] = "🐉"
     for p in players:
         if p["pos"] > 0: cells[p["pos"]] = p["icon"]
 
     lines = []
-    for row in range(8, 0, -1):
+    for row in range(10, 0, -1):
         line = ""
-        cols = range(1, 9) if row % 2 != 0 else range(8, 0, -1)
+        cols = range(1, 11) if row % 2 != 0 else range(10, 0, -1)
         for col in cols:
-            pos = (row - 1) * 8 + col
+            pos = (row - 1) * 10 + col
             val = cells.get(pos)
-            if val: line += f" {val} "
-            else: line += f" {pos:02d} "
+            if val: 
+                line += f" {val} "
+            else: 
+                line += f" {pos:02d} " if pos < 100 else "100 "
         lines.append(line.strip())
+    
+    # استفاده از pre برای نقشه تا مربعی بماند
     return f"<pre>{chr(10).join(lines)}</pre>"
 
 def _get_game_ui(game: dict) -> str:
     if game["status"] == "lobby":
-        text = f"🐍 <b>بازی مار و پله: {game['map']['theme']}</b> 🪜🐉\n\n"
+        text = "🐍 <b>لابی بازی مار و پله (۱۰۰ خانه)</b> 🪜🐉\n\n"
         text += f"👥 بازیکنان ({len(game['players'])}/4):\n"
         for p in game["players"]: text += f"👤 {p['icon']} {p['name']}\n"
         text += "\n👇 برای ورود کلیک کنید. (برای شروع باید ۶ بیاورید!)"
@@ -89,8 +66,8 @@ def _get_game_ui(game: dict) -> str:
         dice_text = f" | 🎲 {game['last_dice']}" if game.get('last_dice') else ""
         header = f"🎲 <b>نوبت:</b> {current['icon']} {current['name']}{dice_text}"
 
-    map_text = f"\n🗺 <b>نقشه {game['map']['theme']}:</b>\n"
-    map_text += _draw_map(game["players"], game["map"])
+    map_text = f"\n🗺 <b>نقشه (راهنما: 🪜 پله | 🐍 مار | 🐉 اژدها | 🎁 شانس | ⚡️ صاعقه):</b>\n"
+    map_text += _draw_map(game["players"])
     map_text += "\n"
 
     stats = "\n📊 <b>آمار:</b>\n"
@@ -112,11 +89,15 @@ def _get_lobby_keyboard(game: dict) -> InlineKeyboardMarkup:
     if len(game["players"]) >= 2: kb.append([InlineKeyboardButton("🚀 شروع بازی", callback_data="snake_start")])
     return InlineKeyboardMarkup(kb)
 
-def _get_game_keyboard(game: dict) -> InlineKeyboardMarkup:
+def _get_game_keyboard(game: dict, is_rolling: bool = False) -> InlineKeyboardMarkup:
+    if is_rolling:
+        return InlineKeyboardMarkup([[InlineKeyboardButton("⏳ در حال حرکت...", callback_data="snake_wait")]])
+    
     kb = []
-    if len(game["players"]) < 4: kb.append([InlineKeyboardButton(f"🎮 ورود به بازی ({len(game['players'])}/4)", callback_data="snake_join")])
+    if len(game["players"]) < 4: 
+        kb.append([InlineKeyboardButton(f"🎮 ورود به بازی ({len(game['players'])}/4)", callback_data="snake_join")])
     kb.append([InlineKeyboardButton("🎲 پرتاب تاس", callback_data="snake_roll")])
-    kb.append([InlineKeyboardButton("🔄 آوردن به پایین", callback_data="snake_bump")])
+    kb.append([InlineKeyboardButton("🔄 آوردن بازی به پایین", callback_data="snake_bump")])
     kb.append([InlineKeyboardButton("❌ انصراف", callback_data="snake_surrender")])
     return InlineKeyboardMarkup(kb)
 
@@ -143,61 +124,86 @@ async def _process_roll(context: ContextTypes.DEFAULT_TYPE, chat_id: int, msg_id
     for job in context.job_queue.get_jobs_by_name(f"snake_timer_{chat_id}"): job.schedule_removal()
     for job in context.job_queue.get_jobs_by_name(f"snake_bot_{chat_id}"): job.schedule_removal()
 
+    # قفل کردن دکمه‌ها
+    try: await context.bot.edit_message_reply_markup(chat_id=chat_id, message_id=msg_id, reply_markup=_get_game_keyboard(game, True))
+    except: pass
+
     dice = random.randint(1, 6)
     game["last_dice"] = dice
     old_pos = current["pos"]
     
     if old_pos == 0 and dice != 6:
         game["last_action"] = f"🔒 {current['name']} برای ورود باید ۶ بیاورد! (تاس: {dice})"
+        try: await context.bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=_get_game_ui(game), parse_mode="HTML", reply_markup=_get_game_keyboard(game, False))
+        except: pass
+        await asyncio.sleep(1)
     else:
         target_pos = old_pos + dice
         if target_pos > MAX_POS:
             target_pos = MAX_POS - (target_pos - MAX_POS)
-            game["last_action"] = f"🔄 {current['name']} تاس {dice} آورد، از ۶۴ رد شد و برگشت به {target_pos}."
+            game["last_action"] = f"🔄 {current['name']} تاس {dice} آورد، از ۱۰۰ رد شد و برگشت به {target_pos}."
         else:
             game["last_action"] = f"➡️ {current['name']} تاس {dice} آورد و به خانه {target_pos} رفت."
         
-        current["pos"] = target_pos
-        
+        # انیمیشن حرکت قدم به قدم
+        step_dir = 1 if target_pos > old_pos else -1
+        for step in range(old_pos + step_dir, target_pos + step_dir, step_dir):
+            current["pos"] = step
+            try: await context.bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=_get_game_ui(game), parse_mode="HTML", reply_markup=_get_game_keyboard(game, True))
+            except: pass
+            await asyncio.sleep(0.4) # تاخیر برای هیجان
+
+        # بررسی برخورد با بازیکن دیگر
         for p in game["players"]:
             if p["id"] != current["id"] and p["pos"] == target_pos:
                 p["pos"] = 0
                 game["last_action"] = f"💥 {current['name']} زد به {p['name']} و فرستادش خانه ۱!"
+                try: await context.bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=_get_game_ui(game), parse_mode="HTML", reply_markup=_get_game_keyboard(game, True))
+                except: pass
+                await asyncio.sleep(1.5)
 
-        ladders = {int(k): v for k, v in game["map"].get("ladders", {}).items()}
-        snakes = {int(k): v for k, v in game["map"].get("snakes", {}).items()}
-        dragons = {int(k): v for k, v in game["map"].get("dragons", {}).items()}
-
-        if target_pos in ladders:
-            current["pos"] = ladders[target_pos]
+        # بررسی موانع و رویدادها
+        if target_pos in LADDERS:
+            current["pos"] = LADDERS[target_pos]
             game["last_action"] = f"🪜 {current['name']} پله رفت! به خانه {current['pos']}."
-        elif target_pos in snakes:
-            current["pos"] = snakes[target_pos]
+        elif target_pos in SNAKES:
+            current["pos"] = SNAKES[target_pos]
             game["last_action"] = f"🐍 {current['name']} مار خورد! به خانه {current['pos']}."
-        elif target_pos in dragons:
-            current["pos"] = dragons[target_pos]
+        elif target_pos in DRAGONS:
+            current["pos"] = DRAGONS[target_pos]
             game["last_action"] = f"🐉 {current['name']} اژدها خورد! به خانه {current['pos']}."
+        elif target_pos in LUCK:
+            current["pos"] = min(MAX_POS, target_pos + LUCK[target_pos])
+            game["last_action"] = f"🎁 {current['name']} جعبه شانس پیدا کرد! {LUCK[target_pos]} خانه جلو رفت."
+        elif target_pos in MISFORTUNE:
+            current["pos"] = max(0, target_pos + MISFORTUNE[target_pos])
+            game["last_action"] = f"⚡️ {current['name']} صاعقه خورد! {abs(MISFORTUNE[target_pos])} خانه عقب افتاد."
 
-    try: await context.bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=_get_game_ui(game), parse_mode="HTML", reply_markup=_get_game_keyboard(game))
-    except BadRequest: pass
-    await asyncio.sleep(1.0)
+        try: await context.bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=_get_game_ui(game), parse_mode="HTML", reply_markup=_get_game_keyboard(game, True))
+        except: pass
+        await asyncio.sleep(1.2) # تاخیر برای خواندن رویداد
 
+    game["is_rolling"] = False
+    
+    # 🏆 بررسی برد
     if current["pos"] == MAX_POS:
         game["status"] = "finished"
-        game["last_action"] = f"🏆🎉 <b>تبریک بزرگ به {current['name']}!</b> 🎉🏆\n👑 قهرمان نقشه {game['map']['theme']} شد!"
+        game["last_action"] = f"🏆🎉 <b>تبریک بزرگ به {current['name']}!</b> 🎉🏆\n👑 با رسیدن به خانه ۱۰۰ قهرمان شد!"
         try: await context.bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=_get_game_ui(game), parse_mode="HTML", reply_markup=None)
-        except BadRequest: pass
+        except: pass
         del ACTIVE_GAMES[chat_id]
         return
 
-    if dice != 6: game["turn_index"] = (game["turn_index"] + 1) % len(game["players"])
-    else: game["last_action"] += " (چون ۶ آورد، دوباره می‌ندازه!)"
+    # تغییر نوبت
+    if dice != 6: 
+        game["turn_index"] = (game["turn_index"] + 1) % len(game["players"])
+    else: 
+        game["last_action"] += " (چون ۶ آورد، دوباره می‌ندازه!)"
 
     next_player = game["players"][game["turn_index"]]
-    game["is_rolling"] = False
     
-    try: await context.bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=_get_game_ui(game), parse_mode="HTML", reply_markup=_get_game_keyboard(game))
-    except BadRequest: pass
+    try: await context.bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=_get_game_ui(game), parse_mode="HTML", reply_markup=_get_game_keyboard(game, False))
+    except: pass
 
     if next_player["id"] == -1:
         context.job_queue.run_once(_bot_roll_job, when=1.5, chat_id=chat_id, name=f"snake_bot_{chat_id}")
@@ -208,17 +214,12 @@ async def cmd_snake(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
     if chat_id in ACTIVE_GAMES: return await update.message.reply_text("⚠️ یک بازی در جریان است!")
     
-    status_msg = await update.message.reply_text("🧠 هوش مصنوعی در حال طراحی نقشه جدید است...")
-    ai_map = await _generate_ai_map()
-    
     user_name = _get_identifier(update.effective_user)
     ACTIVE_GAMES[chat_id] = {
-        "status": "lobby", "host_id": update.effective_user.id, "map": ai_map,
+        "status": "lobby", "host_id": update.effective_user.id, 
         "players": [{"id": update.effective_user.id, "name": user_name, "pos": 0, "icon": PLAYER_ICONS[0]}],
         "turn_index": 0, "last_action": "بازی ساخته شد.", "is_rolling": False, "last_dice": None, "message_id": None
     }
-    
-    await status_msg.delete()
     msg = await update.message.reply_text(_get_game_ui(ACTIVE_GAMES[chat_id]), parse_mode="HTML", reply_markup=_get_lobby_keyboard(ACTIVE_GAMES[chat_id]))
     ACTIVE_GAMES[chat_id]["message_id"] = msg.message_id
 
@@ -229,10 +230,10 @@ async def handle_snake(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     if query.data == "snake_bump":
         if not any(p["id"] == user.id for p in game["players"]): return await query.answer("فقط بازیکنان!", show_alert=True)
-        await query.answer("بازی آپدیت شد.")
-        try: await query.message.delete() 
-        except: pass
-        kb = _get_lobby_keyboard(game) if game["status"] == "lobby" else _get_game_keyboard(game)
+        await query.answer("بازی به پایین منتقل شد.")
+        
+        # ارسال پیام جدید به پایین بدون پاک کردن قبلی
+        kb = _get_lobby_keyboard(game) if game["status"] == "lobby" else _get_game_keyboard(game, game.get("is_rolling"))
         new_msg = await context.bot.send_message(chat_id=chat_id, text=_get_game_ui(game), parse_mode="HTML", reply_markup=kb)
         game["message_id"] = new_msg.message_id
         return

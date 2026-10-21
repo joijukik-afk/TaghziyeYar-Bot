@@ -42,10 +42,17 @@ logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
+# ---------------------------------------------------------------------------
+#  🚫 Global Ban System
+# ---------------------------------------------------------------------------
 async def check_user_ban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
-    if user and await repo.is_user_banned(user.id): raise ApplicationHandlerStop
+    if user and await repo.is_user_banned(user.id): 
+        raise ApplicationHandlerStop
 
+# ---------------------------------------------------------------------------
+#  Health server
+# ---------------------------------------------------------------------------
 class _HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200); self.send_header("Content-Type", "text/plain; charset=utf-8"); self.end_headers()
@@ -57,6 +64,9 @@ def _start_health_server() -> None:
     server = HTTPServer(("0.0.0.0", int(os.environ.get("PORT", "8080"))), _HealthHandler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
 
+# ---------------------------------------------------------------------------
+#  Security & Rate Limits
+# ---------------------------------------------------------------------------
 _user_last_message_time = {}
 
 def private_only(func):
@@ -79,28 +89,43 @@ def rate_limited(func):
         return await func(update, context, *args, **kwargs)
     return wrapper
 
+# ---------------------------------------------------------------------------
+#  🤖 Auto-post Job (تایمر ضد اسپم)
+# ---------------------------------------------------------------------------
 async def _auto_post_job(context: ContextTypes.DEFAULT_TYPE) -> None:
-    # 🛡️ دریافت زمان آخرین پست از دیتابیس Neon
-    last_time = await repo.get_last_post_time()
-    now = time.time()
-    
-    # ۸ ساعت = ۲۸۸۰۰ ثانیه
-    if now - last_time < 28800:
-        return
+    """اجرای خودکار پست با چک کردن زمان دیتابیس"""
+    try:
+        last_time = await repo.get_last_post_time()
+        now = time.time()
+        
+        # اگر هرگز پستی فرستاده نشده بود، صبر نکن
+        if last_time > 0 and (now - last_time < 28800):
+            logger.info("⏳ هنوز ۸ ساعت از پست قبلی نگذشته. زمان باقی‌مانده: %.1f ساعت", (28800 - (now - last_time)) / 3600)
+            return
 
-    specific_chat = os.environ.get("AUTO_POST_CHAT_ID", "").strip()
-    if specific_chat:
-        try: 
-            ok = await post_auto_content(context.bot, int(specific_chat))
-            if ok: await repo.set_last_post_time(time.time())
-        except Exception as e: logger.warning("خطا در ارسال به %s: %s", specific_chat, e)
-        return
+        specific_chat = os.environ.get("AUTO_POST_CHAT_ID", "").strip()
+        if specific_chat:
+            try: 
+                ok = await post_auto_content(context.bot, int(specific_chat))
+                if ok: 
+                    await repo.set_last_post_time(time.time())
+                    logger.info("✅ پست خودکار ارسال شد به گروه مشخص.")
+            except Exception as e: 
+                logger.warning("خطا در ارسال به %s: %s", specific_chat, e)
+            return
 
-    try: 
         sent = await broadcast_auto_content(context.bot)
-        if sent > 0: await repo.set_last_post_time(time.time())
-    except Exception as e: logger.warning("خطا در broadcast: %s", e)
+        if sent > 0: 
+            await repo.set_last_post_time(time.time())
+            logger.info("✅ پست خودکار به %d گروه ارسال شد و زمان ثبت شد.", sent)
+        else:
+            logger.warning("⚠️ تلاش برای ارسال پست انجام شد اما به هیچ گروهی ارسال نشد (شاید AI خطا داد یا گروهی در دیتابیس نیست).")
+    except Exception as e:
+        logger.error("❌ خطای پیش‌بینی نشده در _auto_post_job: %s", e)
 
+# ---------------------------------------------------------------------------
+#  Helpers
+# ---------------------------------------------------------------------------
 def is_group(update: Update) -> bool:
     return update.effective_chat and update.effective_chat.type in (ChatType.GROUP, ChatType.SUPERGROUP)
 
@@ -111,7 +136,8 @@ def is_for_me(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     replied = update.message.reply_to_message
     return replied and replied.from_user and replied.from_user.id == context.bot.id
 
-def clean_mention(text: str, bot_username: str) -> str: return text.replace(f"@{bot_username}", "").strip()
+def clean_mention(text: str, bot_username: str) -> str: 
+    return text.replace(f"@{bot_username}", "").strip()
 
 def main_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
@@ -133,8 +159,13 @@ async def ensure_user_and_group(update: Update) -> None:
 
 async def _send_html_safe(bot, chat_id: int, text: str, reply_to: int | None = None) -> None:
     try: await bot.send_message(chat_id=chat_id, text=with_signature(text), parse_mode="HTML", reply_to_message_id=reply_to)
-    except: await bot.send_message(chat_id=chat_id, text=with_signature(re.sub(r"<[^>]+>", "", text)), reply_to_message_id=reply_to)
+    except: 
+        try: await bot.send_message(chat_id=chat_id, text=with_signature(re.sub(r"<[^>]+>", "", text)), reply_to_message_id=reply_to)
+        except: pass
 
+# ---------------------------------------------------------------------------
+#  Commands
+# ---------------------------------------------------------------------------
 @rate_limited
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
@@ -237,6 +268,9 @@ async def cmd_shopping(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 @rate_limited
 async def cmd_food(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None: await ensure_user_and_group(update); await mcmd.cmd_food(update, context)
 
+# ---------------------------------------------------------------------------
+#  Text -> AI
+# ---------------------------------------------------------------------------
 @rate_limited
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.message.text: return
@@ -289,6 +323,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.exception("Exception", exc_info=context.error)
 
+# ---------------------------------------------------------------------------
+#  Admin Commands
+# ---------------------------------------------------------------------------
 async def cmd_broadcast_covers(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     if not user or not get_settings().is_admin(user.id): return
@@ -405,6 +442,28 @@ async def cmd_unban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await repo.unban_user(target_id)
     await update.message.reply_text(f"✅ مسدودی `{target_id}` برداشته شد.", parse_mode="Markdown")
 
+# ---------------------------------------------------------------------------
+#  🚀 FORCE POST (دستور جدید برای ارسال فوری پست)
+# ---------------------------------------------------------------------------
+async def cmd_forcepost(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    if not user or not get_settings().is_admin(user.id): return
+    
+    status = await update.message.reply_text("🔄 در حال ساخت و ارسال پست فوری به همه گروه‌ها...")
+    try:
+        sent = await broadcast_auto_content(context.bot)
+        if sent > 0:
+            # ریست کردن زمان پست در دیتابیس تا اسپم نشه
+            await repo.set_last_post_time(time.time())
+            await status.edit_text(f"✅ پست فوری با موفقیت به {sent} گروه ارسال شد و تایمر ۸ ساعته ریست شد.")
+        else:
+            await status.edit_text("⚠️ متأسفانه پست ساخته نشد یا هیچ گروه فعالی پیدا نشد. لاگ‌های رندر را چک کنید.")
+    except Exception as e:
+        await status.edit_text(f"❌ خطای فنی: {e}")
+
+# ---------------------------------------------------------------------------
+#  Lifecycle
+# ---------------------------------------------------------------------------
 async def post_init(application: Application) -> None:
     init_engine()
     import app.database.models
@@ -412,20 +471,27 @@ async def post_init(application: Application) -> None:
     await create_all()
     me = await application.bot.get_me()
     logger.info("Bot started as @%s", me.username)
+    
     try:
         await application.bot.set_my_description(description="🌱 دستیار هوشمند تغذیه\n\n👨‍⚕️ زیر نظر متخصص: علی اکبر ابراهیم پور\n📞 پشتیبانی: @AliAkbaro0")
         await application.bot.set_my_short_description(short_description="زیر نظر متخصص علی اکبر ابراهیم پور | @AliAkbaro0")
     except: pass
+    
     try:
         from app.bot.commands_setup import setup_commands
         await setup_commands(application.bot)
     except: pass
+    
+    # ⏱️ زمان‌بندی پست خودکار
     if application.job_queue is not None:
         try: interval = int(os.environ.get("AUTO_POST_INTERVAL_HOURS", "8")) * 3600
         except: interval = 8 * 3600
+        
         try: first = int(os.environ.get("AUTO_POST_FIRST_DELAY", "600")) 
         except: first = 600
-        application.job_queue.run_repeating(_auto_post_job, interval=interval, first=first, name="auto_nutrition_post")
+        
+        # هر 10 دقیقه چک میکنه ببینه 8 ساعت گذشته یا نه
+        application.job_queue.run_repeating(_auto_post_job, interval=600, first=first, name="auto_nutrition_post")
 
 async def post_shutdown(application: Application) -> None: await dispose_engine()
 
@@ -453,6 +519,9 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("setgroup", gmanager.cmd_setgroup)); app.add_handler(CommandHandler("groups", gmanager.cmd_groups)); app.add_handler(CommandHandler("unsetgroup", gmanager.cmd_unsetgroup))
     app.add_handler(CommandHandler("broadcast_covers", cmd_broadcast_covers)); app.add_handler(CommandHandler("leave", cmd_leave_group)); app.add_handler(CommandHandler("leavegroup", cmd_leave_group))
     app.add_handler(CommandHandler("sendto", cmd_send_to_group)); app.add_handler(CommandHandler("globalnews", cmd_global_news)); app.add_handler(CommandHandler("ban", cmd_ban)); app.add_handler(CommandHandler("unban", cmd_unban))
+    
+    # 🚀 دستور اجباری پست
+    app.add_handler(CommandHandler("forcepost", cmd_forcepost))
     
     app.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.ALL, gmanager.on_group_message), group=1)
     

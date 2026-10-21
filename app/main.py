@@ -11,7 +11,7 @@ from functools import wraps
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import httpx
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, User
 from telegram.constants import ChatType
 from telegram.error import Forbidden
 from telegram.ext import (
@@ -42,6 +42,38 @@ from app.utils.message_formatter import with_signature
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=get_settings().log_level)
 logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
+
+# ---------------------------------------------------------------------------
+#  Helper: Dynamic Admin Check & Monitoring
+# ---------------------------------------------------------------------------
+async def is_admin_user(user_id: int) -> bool:
+    """چک کردن ادمین بودن (هم صاحب ربات، هم ادمین‌های داینامیک)"""
+    if get_settings().is_admin(user_id): return True
+    dyn_admins = await repo.get_dynamic_admins()
+    return user_id in dyn_admins
+
+async def notify_owner(context: ContextTypes.DEFAULT_TYPE, actor: User, action: str):
+    """ارسال گزارش لحظه‌ای به پی‌وی صاحب ربات"""
+    settings = get_settings()
+    # پیدا کردن آیدی صاحب ربات (اولین آیدی موجود در لیست ادمین‌های اصلی)
+    owner_id = None
+    if hasattr(settings, 'admin_ids') and settings.admin_ids:
+        owner_id = settings.admin_ids[0] if isinstance(settings.admin_ids, list) else int(str(settings.admin_ids).split(',')[0])
+    elif hasattr(settings, 'admin_id'):
+        owner_id = settings.admin_id
+        
+    if not owner_id or actor.id == owner_id: 
+        return  # اگر خود صاحب ربات بود، پیام نده
+    
+    text = (
+        f"🔔 <b>گزارش لحظه‌ای مدیریت:</b>\n\n"
+        f"👤 <b>ادمین:</b> <a href='tg://user?id={actor.id}'>{actor.full_name}</a> (ID: <code>{actor.id}</code>)\n"
+        f"📝 <b>عملیات:</b> {action}"
+    )
+    try:
+        await context.bot.send_message(chat_id=owner_id, text=text, parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"Failed to send monitor msg to owner: {e}")
 
 # ---------------------------------------------------------------------------
 #  🚫 Global Ban System
@@ -91,7 +123,7 @@ def rate_limited(func):
     return wrapper
 
 # ---------------------------------------------------------------------------
-#  🤖 Auto-post Job (تایمر ضد اسپم)
+#  🤖 Auto-post Job
 # ---------------------------------------------------------------------------
 async def _auto_post_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
@@ -227,7 +259,7 @@ async def cmd_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     lines.append("\n✏️ برای ویرایش، /setup رو بزن.")
     await update.message.reply_text(with_signature("\n".join(lines)))
 
-# 👇 دستور کارت گرافیکی (با دسترسی نامحدود برای ادمین) 👇
+# 👇 دستور کارت گرافیکی 👇
 @private_only
 @rate_limited
 async def cmd_mycard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -235,7 +267,7 @@ async def cmd_mycard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     user = update.effective_user
     if not user or not update.message: return
     
-    is_admin = get_settings().is_admin(user.id)
+    is_admin = await is_admin_user(user.id)
     
     if not is_admin:
         can_generate = await repo.check_and_mark_card_generated(user.id)
@@ -244,6 +276,9 @@ async def cmd_mycard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
                 "⚠️ شما قبلاً کارت دیجیتال خود را دریافت کرده‌اید.\n"
                 "طبق قوانین ربات، هر کاربر فقط یک بار می‌تواند این کارت اختصاصی را بسازد."
             )
+    else:
+        # رصد لحظه‌ای برای ادمین
+        await notify_owner(context, user, "درخواست ساخت کارت دیجیتال سلامت (دسترسی نامحدود)")
 
     db_user = await repo.get_user_by_telegram_id(user.id)
     if not db_user: return
@@ -270,7 +305,6 @@ async def cmd_mycard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     }.get(profile.goal or "", "نامشخص")
     
     try:
-        # 👇 اعداد دقیقاً اینجا به عدد صحیح تبدیل می‌شوند تا هیچ نقطه اعشاری به عکس‌ساز نره
         card_img = await generate_ai_health_card(
             name=user.first_name or "کاربر",
             age=str(int(profile.age)) if profile.age else "-",
@@ -409,15 +443,83 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.exception("Exception", exc_info=context.error)
 
 # ---------------------------------------------------------------------------
-#  Admin Commands
+#  Admin Management Commands (فقط برای صاحب ربات)
+# ---------------------------------------------------------------------------
+async def cmd_addadmin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    if not user or not get_settings().is_admin(user.id): 
+        return await update.message.reply_text("⛔️ این دستور فقط برای صاحب ربات است.")
+    
+    target_id, target_name = None, "کاربر"
+    
+    if update.message.reply_to_message:
+        replied = update.message.reply_to_message
+        target_id = replied.from_user.id
+        target_name = replied.from_user.first_name or "کاربر"
+    elif context.args:
+        arg = context.args[0]
+        if arg.startswith("@"):
+            db_user = await repo.get_user_by_username(arg)
+            if db_user: target_id, target_name = db_user.telegram_id, db_user.first_name or db_user.username
+        else:
+            try: target_id, target_name = int(arg), str(arg)
+            except: pass
+            
+    if not target_id:
+        return await update.message.reply_text("⚠️ راهنما:\n`/addadmin 123456789` یا `/addadmin @username` یا روی پیام کاربر ریپلای کنید.", parse_mode="Markdown")
+        
+    await repo.add_dynamic_admin(target_id)
+    await update.message.reply_text(f"✅ کاربر <b>{target_name}</b> با آیدی <code>{target_id}</code> به عنوان ادمین منصوب شد.", parse_mode="HTML")
+
+async def cmd_removeadmin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    if not user or not get_settings().is_admin(user.id): 
+        return await update.message.reply_text("⛔️ این دستور فقط برای صاحب ربات است.")
+    
+    target_id, target_name = None, "کاربر"
+    
+    if update.message.reply_to_message:
+        replied = update.message.reply_to_message
+        target_id = replied.from_user.id
+        target_name = replied.from_user.first_name or "کاربر"
+    elif context.args:
+        arg = context.args[0]
+        if arg.startswith("@"):
+            db_user = await repo.get_user_by_username(arg)
+            if db_user: target_id, target_name = db_user.telegram_id, db_user.first_name or db_user.username
+        else:
+            try: target_id, target_name = int(arg), str(arg)
+            except: pass
+            
+    if not target_id:
+        return await update.message.reply_text("⚠️ راهنما:\n`/removeadmin 123456789` یا `/removeadmin @username` یا روی پیام کاربر ریپلای کنید.", parse_mode="Markdown")
+        
+    await repo.remove_dynamic_admin(target_id)
+    await update.message.reply_text(f"✅ دسترسی ادمینی کاربر <b>{target_name}</b> گرفته شد.", parse_mode="HTML")
+
+async def cmd_admins(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    if not user or not get_settings().is_admin(user.id): 
+        return await update.message.reply_text("⛔️ این دستور فقط برای صاحب ربات است.")
+        
+    dyn_admins = await repo.get_dynamic_admins()
+    if not dyn_admins: return await update.message.reply_text("📋 هیچ ادمین داینامیکی ثبت نشده است.")
+        
+    text = "👑 <b>لیست ادمین‌های ربات:</b>\n\n"
+    for adm in dyn_admins: text += f"• <code>{adm}</code>\n"
+    await update.message.reply_text(text, parse_mode="HTML")
+
+# ---------------------------------------------------------------------------
+#  Admin Commands (با سیستم رصد لحظه‌ای)
 # ---------------------------------------------------------------------------
 async def cmd_advertise(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
-    if not user or not get_settings().is_admin(user.id): return
+    if not user or not await is_admin_user(user.id): return
+    
+    await notify_owner(context, user, "ارسال کمپین تبلیغاتی به گروه‌ها")
     
     groups = await repo.list_all_groups()
-    if not groups:
-        return await update.message.reply_text("⚠️ ربات در هیچ گروهی عضو نیست.")
+    if not groups: return await update.message.reply_text("⚠️ ربات در هیچ گروهی عضو نیست.")
         
     status_msg = await update.message.reply_text(f"⏳ در حال ارسال تبلیغ به {len(groups)} گروه...")
     
@@ -440,26 +542,21 @@ async def cmd_advertise(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     success, fail = 0, 0
     for g in groups:
         try:
-            await context.bot.send_message(
-                chat_id=g.chat_id, 
-                text=ad_text, 
-                parse_mode="HTML", 
-                reply_markup=reply_markup
-            )
+            await context.bot.send_message(chat_id=g.chat_id, text=ad_text, parse_mode="HTML", reply_markup=reply_markup)
             success += 1
             await asyncio.sleep(1) 
         except Forbidden:
             await repo.deactivate_group(chat_id=g.chat_id)
             fail += 1
-        except Exception as e:
-            logger.error(f"خطا در ارسال تبلیغ به گروه {g.chat_id}: {e}")
-            fail += 1
+        except Exception: fail += 1
             
     await status_msg.edit_text(f"✅ تبلیغ به {success} گروه ارسال شد.\n❌ {fail} گروه ناموفق.")
 
 async def cmd_broadcast_covers(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
-    if not user or not get_settings().is_admin(user.id): return
+    if not user or not await is_admin_user(user.id): return
+    await notify_owner(context, user, "ارسال کاور به گروه‌ها")
+    
     groups = await repo.list_all_groups()
     if not groups: return await update.message.reply_text("هیچ گروهی نیست.")
     status_msg = await update.message.reply_text(f"⏳ در حال ساخت کاور برای {len(groups)} گروه...")
@@ -475,7 +572,7 @@ async def cmd_broadcast_covers(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def cmd_leave_group(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user, chat = update.effective_user, update.effective_chat
-    if not user or not get_settings().is_admin(user.id): return
+    if not user or not await is_admin_user(user.id): return
     if chat.type == ChatType.PRIVATE:
         if not context.args: return await update.message.reply_text("⚠️ مثال: `/leavegroup Asli`", parse_mode="Markdown")
         query = " ".join(context.args).strip(); groups = await repo.list_all_groups()
@@ -484,15 +581,17 @@ async def cmd_leave_group(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         try:
             await context.bot.leave_chat(chat_id=target.chat_id); await repo.deactivate_group(chat_id=target.chat_id)
             await update.message.reply_text(f"✅ ربات از «{target.title}» خارج شد.")
+            await notify_owner(context, user, f"اخراج ربات از گروه: {target.title}")
         except Exception as e: await update.message.reply_text(f"❌ خطا: {e}")
     else:
         await update.message.reply_text("🚪 در حال خروج...")
+        await notify_owner(context, user, f"اخراج ربات از گروه: {chat.title}")
         try: await context.bot.leave_chat(chat_id=chat.id); await repo.deactivate_group(chat_id=chat.id)
         except: pass
 
 async def cmd_send_to_group(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
-    if not user or not get_settings().is_admin(user.id): return
+    if not user or not await is_admin_user(user.id): return
     if not update.message.reply_to_message: return await update.message.reply_text("⚠️ روی پیام ریپلای کنید.")
     if not context.args: return await update.message.reply_text("⚠️ مثال: `/sendto Asli`", parse_mode="Markdown")
     query = " ".join(context.args).strip(); groups = await repo.list_all_groups()
@@ -501,12 +600,13 @@ async def cmd_send_to_group(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     try:
         await context.bot.copy_message(chat_id=target.chat_id, from_chat_id=update.message.chat_id, message_id=update.message.reply_to_message.message_id)
         await update.message.reply_text(f"✅ پیام به «{target.title}» ارسال شد.")
+        await notify_owner(context, user, f"ارسال پیام به گروه {target.title}")
     except Forbidden: await repo.deactivate_group(chat_id=target.chat_id); await update.message.reply_text(f"❌ ربات در گروه نیست.")
     except Exception as e: await update.message.reply_text(f"❌ خطا: {e}")
 
 async def cmd_global_news(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
-    if not user or not get_settings().is_admin(user.id): return
+    if not user or not await is_admin_user(user.id): return
     if not context.args: return await update.message.reply_text("⚠️ مثال: `/globalnews Asli`", parse_mode="Markdown")
     query = " ".join(context.args).strip(); groups = await repo.list_all_groups()
     target = next((g for g in groups if str(g.chat_id) == query or (g.title and query.lower() in g.title.lower())), None)
@@ -521,13 +621,14 @@ async def cmd_global_news(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             photo = io.BytesIO(resp.content); photo.name = 'news.jpg'
         await context.bot.send_photo(chat_id=target.chat_id, photo=photo, caption=text, parse_mode="HTML")
         await status_msg.edit_text(f"✅ خبر منتشر شد.")
+        await notify_owner(context, user, f"ارسال خبر به گروه {target.title}")
     except Exception as e:
         try: await context.bot.send_message(chat_id=target.chat_id, text=text, parse_mode="HTML"); await status_msg.edit_text("✅ خبر ارسال شد (بدون عکس).")
         except Exception as e2: await status_msg.edit_text(f"❌ خطا: {e2}")
 
 async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
-    if not user or not get_settings().is_admin(user.id): return
+    if not user or not await is_admin_user(user.id): return
     target_id, target_name, group_to_notify = None, "کاربر", None
     if update.message.reply_to_message:
         replied = update.message.reply_to_message
@@ -551,6 +652,7 @@ async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         await repo.ban_user(target_id, "نقض قوانین")
         await update.message.reply_text(f"✅ کاربر <b>{target_name}</b> مسدود شد.", parse_mode="HTML")
+        await notify_owner(context, user, f"مسدود کردن کاربر {target_name} (ID: {target_id})")
         try: await context.bot.send_message(chat_id=target_id, text="🚫 <b>دسترسی شما مسدود شد</b>\n\n@AliAkbaro0", parse_mode="HTML")
         except: pass
         if group_to_notify:
@@ -560,7 +662,7 @@ async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def cmd_unban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
-    if not user or not get_settings().is_admin(user.id): return
+    if not user or not await is_admin_user(user.id): return
     if not context.args: return await update.message.reply_text("⚠️ `/unban 123456789`", parse_mode="Markdown")
     arg = context.args[0]; target_id = None
     if arg.startswith("@"):
@@ -572,12 +674,15 @@ async def cmd_unban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not target_id: return await update.message.reply_text("❌ کاربر پیدا نشد.")
     await repo.unban_user(target_id)
     await update.message.reply_text(f"✅ مسدودی `{target_id}` برداشته شد.", parse_mode="Markdown")
+    await notify_owner(context, user, f"رفع مسدودی کاربر (ID: {target_id})")
 
 async def cmd_forcepost(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
-    if not user or not get_settings().is_admin(user.id): return
+    if not user or not await is_admin_user(user.id): return
     
     status = await update.message.reply_text("🔄 در حال ساخت و ارسال پست فوری به همه گروه‌ها...")
+    await notify_owner(context, user, "ارسال پست فوری (Force Post) به همه گروه‌ها")
+    
     try:
         sent = await broadcast_auto_content(context.bot)
         if sent > 0:
@@ -602,7 +707,6 @@ async def post_init(application: Application) -> None:
     try:
         short_desc = "زیر نظر متخصص تغذیه علی اکبر ابراهیم پور | پشتیبانی: @AliAkbaro0"
         await application.bot.set_my_short_description(short_description=short_desc)
-        
         full_desc = (
             "🌱 دستیار هوشمند تغذیه و سلامت\n\n"
             "👨‍⚕️ زیر نظر کارشناس و متخصص تغذیه: علی اکبر ابراهیم پور\n"
@@ -654,6 +758,12 @@ def build_application() -> Application:
     
     app.add_handler(ChatMemberHandler(gmanager.on_bot_added, ChatMemberHandler.MY_CHAT_MEMBER))
     app.add_handler(CommandHandler("setgroup", gmanager.cmd_setgroup)); app.add_handler(CommandHandler("groups", gmanager.cmd_groups)); app.add_handler(CommandHandler("unsetgroup", gmanager.cmd_unsetgroup))
+    
+    # دستورات مدیریت ادمین‌ها
+    app.add_handler(CommandHandler("addadmin", cmd_addadmin))
+    app.add_handler(CommandHandler("removeadmin", cmd_removeadmin))
+    app.add_handler(CommandHandler("admins", cmd_admins))
+    
     app.add_handler(CommandHandler("broadcast_covers", cmd_broadcast_covers)); app.add_handler(CommandHandler("leave", cmd_leave_group)); app.add_handler(CommandHandler("leavegroup", cmd_leave_group))
     app.add_handler(CommandHandler("sendto", cmd_send_to_group)); app.add_handler(CommandHandler("globalnews", cmd_global_news)); app.add_handler(CommandHandler("ban", cmd_ban)); app.add_handler(CommandHandler("unban", cmd_unban))
     app.add_handler(CommandHandler("forcepost", cmd_forcepost))

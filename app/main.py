@@ -34,7 +34,7 @@ from app.database import repository as repo
 from app.database.session import create_all, dispose_engine, init_engine
 from app.services.ai_service import get_ai_service
 from app.services.auto_content import broadcast_auto_content, post_auto_content
-from app.services.card_generator import generate_profile_card # 👈 اضافه شد
+from app.services.card_generator import generate_profile_card  # 👈 اضافه شد
 from app.services.image_generator import generate_group_cover
 from app.services.news_service import get_global_magazine_news
 from app.utils.message_formatter import with_signature
@@ -52,7 +52,7 @@ async def check_user_ban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         raise ApplicationHandlerStop
 
 # ---------------------------------------------------------------------------
-#  Health server
+#  Health server (فقط برای اجرای لوکال)
 # ---------------------------------------------------------------------------
 class _HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -98,6 +98,7 @@ async def _auto_post_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         last_time = await repo.get_last_post_time()
         now = time.time()
         
+        # اگر کمتر از ۸ ساعت گذشته، پست نفرست
         if last_time > 0 and (now - last_time < 28800):
             logger.info("⏳ هنوز ۸ ساعت از پست قبلی نگذشته. زمان باقی‌مانده: %.1f ساعت", (28800 - (now - last_time)) / 3600)
             return
@@ -116,7 +117,7 @@ async def _auto_post_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         sent = await broadcast_auto_content(context.bot)
         if sent > 0: 
             await repo.set_last_post_time(time.time())
-            logger.info("✅ پست خودکار به %d گروه ارسال شد.", sent)
+            logger.info("✅ پست خودکار به %d گروه ارسال شد و زمان ثبت شد.", sent)
         else:
             logger.warning("⚠️ پستی ارسال نشد (شاید AI خطا داد یا گروهی نیست).")
     except Exception as e:
@@ -224,7 +225,7 @@ async def cmd_mycard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if not profile or not profile.setup_complete:
         return await update.message.reply_text("⚠️ اول باید با /setup اطلاعاتت رو کامل کنی.")
     
-    status_msg = await update.message.reply_text("🎨 در حال طراحی کارت گرافیکی شما...")
+    status_msg = await update.message.reply_text("🎨 در حال طراحی کارت دیجیتال شما...")
     
     # محاسبه BMI
     weight = profile.weight_kg or 0
@@ -256,7 +257,7 @@ async def cmd_mycard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         
         await update.message.reply_photo(
             photo=card_img,
-            caption="📸 <b>کارت تغذیه اختصاصی شما</b>\n\nاین عکس رو می‌تونی تو استوری یا گروه‌ها به اشتراک بذاری! 🚀",
+            caption="🪪 <b>کارت دیجیتال تغذیه شما</b>\n\nاین کارت رو می‌تونی ذخیره کنی یا تو استوری به اشتراک بذاری! 🚀",
             parse_mode="HTML"
         )
         await status_msg.delete()
@@ -548,7 +549,9 @@ def build_application() -> Application:
 
     app.add_handler(CommandHandler("start", cmd_start)); app.add_handler(CommandHandler("help", cmd_help)); app.add_handler(CommandHandler("menu", cmd_menu))
     app.add_handler(CommandHandler("about", cmd_about)); app.add_handler(CommandHandler("privacy", cmd_privacy)); app.add_handler(CommandHandler("settings", cmd_settings))
-    app.add_handler(CommandHandler("profile", cmd_profile)); app.add_handler(CommandHandler("mycard", cmd_mycard)) # 👈 دستور کارت اینجاست
+    
+    app.add_handler(CommandHandler("profile", cmd_profile))
+    app.add_handler(CommandHandler("mycard", cmd_mycard)) # 👈 دستور کارت اینجاست
     app.add_handler(CommandHandler("setup", cmd_setup)); app.add_handler(CommandHandler("cancel", cmd_cancel))
     
     app.add_handler(CommandHandler("bmi", cmd_bmi)); app.add_handler(CommandHandler("calories", cmd_calories)); app.add_handler(CommandHandler("weight", cmd_weight))

@@ -5,13 +5,13 @@ import os
 import logging
 import urllib.parse
 import httpx
+import re
 from PIL import Image, ImageDraw, ImageFont
 import arabic_reshaper
 from bidi.algorithm import get_display
 
 logger = logging.getLogger(__name__)
 
-# استفاده از CDN پایدار برای فونت وزیرمتن
 FONT_PATH = "Vazirmatn-Bold.ttf"
 FONT_URL = "https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/fonts/ttf/Vazirmatn-Bold.ttf"
 
@@ -28,16 +28,21 @@ async def _ensure_font_exists():
 
 def _shape_text(text: str) -> str:
     if not text: return ""
-    # تنظیمات برای پشتیبانی بهتر از حروف فارسی و کردی
-    config = {
-        'delete_harakat': False,
-        'support_ligatures': True,
-        'RIAL': False
-    }
-    reshaped = arabic_reshaper.reshape(str(text), configuration=config)
-    return get_display(reshaped)
+    try:
+        # پاکسازی ایموجی‌ها و کاراکترهای غیرمجاز که باعث کرش PIL می‌شوند
+        text = re.sub(r'[^\w\s\u0600-\u06FF\uFB50-\uFDFF\uFE70-\uFEFF\.\!\-\+\%\(\)\/]', '', str(text))
+        
+        config = {
+            'delete_harakat': False,
+            'support_ligatures': True,
+            'RIAL': False
+        }
+        reshaped = arabic_reshaper.reshape(text.strip(), configuration=config)
+        return get_display(reshaped)
+    except Exception as e:
+        logger.error(f"Error shaping text '{text}': {e}")
+        return str(text)
 
-# تابع کمکی برای فرمت کردن اعداد که bidi آنها را خراب نکند (حل مشکل 170.0 -> 607)
 def _format_num(val: str) -> str:
     try:
         num = float(val)
@@ -53,7 +58,6 @@ async def generate_ai_health_card(
     
     await _ensure_font_exists()
     
-    # ۱. دریافت پس‌زمینه از هوش مصنوعی
     prompt = (
         "A highly professional, modern, dark-themed digital ID card template background. "
         "Dark blue gradient with glassmorphism, glowing neon blue accents. "
@@ -72,10 +76,9 @@ async def generate_ai_health_card(
         logger.error(f"خطا در دریافت پس‌زمینه AI: {e}")
         bg_img = Image.new("RGBA", (1024, 640), "#0f172a")
 
-    # ۲. آماده‌سازی تصویر
     overlay = Image.new("RGBA", bg_img.size, (0, 0, 0, 0))
     draw_overlay = ImageDraw.Draw(overlay)
-    draw_overlay.rectangle([(0, 0), bg_img.size], fill=(15, 23, 42, 180)) # تاریک کردن برای خوانایی
+    draw_overlay.rectangle([(0, 0), bg_img.size], fill=(15, 23, 42, 180))
     bg_img = Image.alpha_composite(bg_img, overlay)
     draw = ImageDraw.Draw(bg_img)
 
@@ -92,29 +95,21 @@ async def generate_ai_health_card(
 
     width, height = bg_img.size
 
-    # هدر
-    draw.text((width//2, 50), _shape_text("🌱 پاسپورت سلامت تغذیه‌یار"), font=font_title, fill="#38bdf8", anchor="mm")
-    
-    # نام کاربر
+    draw.text((width//2, 50), _shape_text("پاسپورت سلامت تغذیه‌یار"), font=font_title, fill="#38bdf8", anchor="mm")
     draw.text((width - 80, 150), _shape_text(name), font=font_name, fill="#f8fafc", anchor="ra")
 
-    # مختصات ستون راست (اطلاعات)
     start_y = 260
     gap = 80
     
-    # سن
     draw.text((width - 80, start_y), _shape_text("سن"), font=font_label, fill="#94a3b8", anchor="ra")
     draw.text((width - 180, start_y), _shape_text(f"{_format_num(age)} سال"), font=font_value, fill="#e2e8f0", anchor="ra")
     
-    # قد
     draw.text((width - 80, start_y + gap), _shape_text("قد"), font=font_label, fill="#94a3b8", anchor="ra")
-    draw.text((width - 180, start_y + gap), _shape_text(f"{_format_num(height)} cm"), font=font_value, fill="#e2e8f0", anchor="ra")
+    draw.text((width - 180, start_y + gap), _shape_text(f"{_format_num(height)} سانتی‌متر"), font=font_value, fill="#e2e8f0", anchor="ra")
     
-    # وزن
     draw.text((width - 80, start_y + gap*2), _shape_text("وزن"), font=font_label, fill="#94a3b8", anchor="ra")
-    draw.text((width - 180, start_y + gap*2), _shape_text(f"{_format_num(weight)} kg"), font=font_value, fill="#e2e8f0", anchor="ra")
+    draw.text((width - 180, start_y + gap*2), _shape_text(f"{_format_num(weight)} کیلوگرم"), font=font_value, fill="#e2e8f0", anchor="ra")
 
-    # کادر BMI (سمت چپ)
     box_x1, box_y1 = 80, 180
     box_x2, box_y2 = 450, 480
     
@@ -128,21 +123,16 @@ async def generate_ai_health_card(
     draw.text(((box_x1+box_x2)//2, box_y1 + 170), _shape_text(_format_num(bmi)), font=font_bmi, fill=status_color, anchor="mm")
     draw.text(((box_x1+box_x2)//2, box_y1 + 260), _shape_text(bmi_status), font=font_value, fill=status_color, anchor="mm")
 
-    # خط جداکننده پایین
     draw.line([(80, 520), (width-80, 520)], fill="#334155", width=2)
 
-    # بخش پایین - هدف
-    draw.text((width - 80, 560), _shape_text("🎯 هدف فعلی"), font=font_small, fill="#94a3b8", anchor="ra")
+    draw.text((width - 80, 560), _shape_text("هدف فعلی"), font=font_small, fill="#94a3b8", anchor="ra")
     draw.text((width - 80, 600), _shape_text(goal), font=font_value, fill="#38bdf8", anchor="ra")
 
-    # بخش پایین - متخصص
     draw.text((80, 560), _shape_text("زیر نظر متخصص:"), font=font_small, fill="#94a3b8", anchor="la")
     draw.text((80, 600), _shape_text("علی اکبر ابراهیم پور"), font=font_value, fill="#f8fafc", anchor="la")
     
-    # آیدی تلگرام (وسط پایین)
     draw.text((width//2, 615), _shape_text("@AliAkbaro0"), font=font_small, fill="#64748b", anchor="mm")
 
-    # خروجی
     img_io = io.BytesIO()
     bg_img.convert("RGB").save(img_io, format="JPEG", quality=95)
     img_io.seek(0)

@@ -231,4 +231,51 @@ async def check_and_mark_card_generated(telegram_id: int) -> bool:
             return False  
         session.add(GeneratedCard(telegram_id=telegram_id))
         await session.flush()
-        return True 
+        return True
+
+# ---------------------------------------------------------------------------
+#  👇 توابع جدید برای مدیریت ادمین‌ها (اضافه شده در انتهای فایل)
+# ---------------------------------------------------------------------------
+
+async def get_dynamic_admins() -> list[int]:
+    """دریافت لیست ادمین‌های داینامیک از دیتابیس"""
+    async with session_scope() as session:
+        result = await session.execute(select(SystemState).where(SystemState.key == "dynamic_admins"))
+        state = result.scalar_one_or_none()
+        if state and state.value:
+            try:
+                return [int(x.strip()) for x in state.value.split(",") if x.strip()]
+            except:
+                return []
+        return []
+
+async def add_dynamic_admin(telegram_id: int) -> None:
+    """افزودن یک ادمین جدید به دیتابیس"""
+    async with session_scope() as session:
+        result = await session.execute(select(SystemState).where(SystemState.key == "dynamic_admins"))
+        state = result.scalar_one_or_none()
+        admins = []
+        if state and state.value:
+            try: admins = [int(x.strip()) for x in state.value.split(",") if x.strip()]
+            except: pass
+        if telegram_id not in admins:
+            admins.append(telegram_id)
+            if state:
+                state.value = ",".join(map(str, admins))
+            else:
+                session.add(SystemState(key="dynamic_admins", value=",".join(map(str, admins))))
+            await session.flush()
+
+async def remove_dynamic_admin(telegram_id: int) -> None:
+    """حذف یک ادمین از دیتابیس"""
+    async with session_scope() as session:
+        result = await session.execute(select(SystemState).where(SystemState.key == "dynamic_admins"))
+        state = result.scalar_one_or_none()
+        if state and state.value:
+            try:
+                admins = [int(x.strip()) for x in state.value.split(",") if x.strip()]
+                if telegram_id in admins:
+                    admins.remove(telegram_id)
+                    state.value = ",".join(map(str, admins))
+                    await session.flush()
+            except: pass

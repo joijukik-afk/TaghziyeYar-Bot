@@ -34,7 +34,7 @@ from app.database import repository as repo
 from app.database.session import create_all, dispose_engine, init_engine
 from app.services.ai_service import get_ai_service
 from app.services.auto_content import broadcast_auto_content, post_auto_content
-from app.services.card_generator import generate_ai_health_card  # 👈 ایمپورت کارت جدید
+from app.services.card_generator import generate_ai_health_card
 from app.services.image_generator import generate_group_cover
 from app.services.news_service import get_global_magazine_news
 from app.utils.message_formatter import with_signature
@@ -209,7 +209,7 @@ async def cmd_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     lines.append("\n✏️ برای ویرایش، /setup رو بزن.")
     await update.message.reply_text(with_signature("\n".join(lines)))
 
-# 👇 دستور کارت گرافیکی هوشمند با محدودیت 👇
+# 👇 دستور کارت گرافیکی (با دسترسی نامحدود برای ادمین) 👇
 @private_only
 @rate_limited
 async def cmd_mycard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -217,12 +217,17 @@ async def cmd_mycard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     user = update.effective_user
     if not user or not update.message: return
     
-    can_generate = await repo.check_and_mark_card_generated(user.id)
-    if not can_generate:
-        return await update.message.reply_text(
-            "⚠️ شما قبلاً کارت دیجیتال خود را دریافت کرده‌اید.\n"
-            "طبق قوانین ربات، هر کاربر فقط یک بار می‌تواند این کارت اختصاصی را بسازد."
-        )
+    # بررسی ادمین بودن (صاحب ربات)
+    is_admin = get_settings().is_admin(user.id)
+    
+    # اگر ادمین نبود، محدودیت یک‌بار اعمال می‌شود
+    if not is_admin:
+        can_generate = await repo.check_and_mark_card_generated(user.id)
+        if not can_generate:
+            return await update.message.reply_text(
+                "⚠️ شما قبلاً کارت دیجیتال خود را دریافت کرده‌اید.\n"
+                "طبق قوانین ربات، هر کاربر فقط یک بار می‌تواند این کارت اختصاصی را بسازد."
+            )
 
     db_user = await repo.get_user_by_telegram_id(user.id)
     if not db_user: return
@@ -264,7 +269,7 @@ async def cmd_mycard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         
         await update.message.reply_photo(
             photo=card_img,
-            caption="🪪 <b>کارت دیجیتال سلامت شما</b>\n\nاین کارت مخصوص شماست و فقط یک بار می‌توانستید آن را دریافت کنید. 🚀",
+            caption="🪪 <b>کارت دیجیتال سلامت شما</b>\n\nاین کارت مخصوص شماست. 🚀",
             parse_mode="HTML"
         )
         await status_msg.delete()

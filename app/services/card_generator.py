@@ -85,6 +85,9 @@ async def generate_ai_health_card(
     bg_img = Image.alpha_composite(bg_img, overlay)
     draw = ImageDraw.Draw(bg_img)
 
+    # 👇 تعریف ابعاد (مشکل قبلی اینجا بود که پایین‌تر تعریف شده بود)
+    width, height = bg_img.size
+
     # 👇 رسم کادر شیشه‌ای (Glassmorphism) برای زیبایی و ست شدن
     glass_box = Image.new("RGBA", bg_img.size, (0, 0, 0, 0))
     glass_draw = ImageDraw.Draw(glass_box)
@@ -103,8 +106,6 @@ async def generate_ai_health_card(
     except Exception as e:
         logger.error("فونت لود نشد: %s", e)
         return io.BytesIO()
-
-    width, height = bg_img.size
 
     # ۱. هدر کارت
     draw.text((width//2, 90), _shape_text("پاسپورت سلامت تغذیه‌یار"), font=font_title, fill="#38bdf8", anchor="mm")

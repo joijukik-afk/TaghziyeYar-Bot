@@ -11,7 +11,7 @@ from bidi.algorithm import get_display
 
 logger = logging.getLogger(__name__)
 
-# استفاده از CDN پایدار برای فونت وزیرمتن (پشتیبانی از کردی و فارسی)
+# استفاده از CDN پایدار برای فونت وزیرمتن
 FONT_PATH = "Vazirmatn-Bold.ttf"
 FONT_URL = "https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/fonts/ttf/Vazirmatn-Bold.ttf"
 
@@ -37,10 +37,9 @@ def _shape_text(text: str) -> str:
     reshaped = arabic_reshaper.reshape(str(text), configuration=config)
     return get_display(reshaped)
 
-# تابع کمکی برای فرمت کردن اعداد که bidi آنها را خراب نکند
+# تابع کمکی برای فرمت کردن اعداد که bidi آنها را خراب نکند (حل مشکل 170.0 -> 607)
 def _format_num(val: str) -> str:
     try:
-        # اگر اعشار داشت و صفر بود حذفش میکنیم (مثلا 170.0 بشه 170)
         num = float(val)
         if num.is_integer():
             return str(int(num))
@@ -54,7 +53,7 @@ async def generate_ai_health_card(
     
     await _ensure_font_exists()
     
-    # ۱. دریافت پس‌زمینه شیک از هوش مصنوعی
+    # ۱. دریافت پس‌زمینه از هوش مصنوعی
     prompt = (
         "A highly professional, modern, dark-themed digital ID card template background. "
         "Dark blue gradient with glassmorphism, glowing neon blue accents. "
@@ -76,14 +75,14 @@ async def generate_ai_health_card(
     # ۲. آماده‌سازی تصویر
     overlay = Image.new("RGBA", bg_img.size, (0, 0, 0, 0))
     draw_overlay = ImageDraw.Draw(overlay)
-    draw_overlay.rectangle([(0, 0), bg_img.size], fill=(15, 23, 42, 180)) # تاریک‌تر کردن پس‌زمینه برای خوانایی بهتر
+    draw_overlay.rectangle([(0, 0), bg_img.size], fill=(15, 23, 42, 180)) # تاریک کردن برای خوانایی
     bg_img = Image.alpha_composite(bg_img, overlay)
     draw = ImageDraw.Draw(bg_img)
 
     try:
         font_title = ImageFont.truetype(FONT_PATH, 40)
         font_name = ImageFont.truetype(FONT_PATH, 65)
-        font_value = ImageFont.truetype(FONT_PATH, 38) # کمی کوچکتر شد تا جا بشه
+        font_value = ImageFont.truetype(FONT_PATH, 38)
         font_label = ImageFont.truetype(FONT_PATH, 26)
         font_bmi = ImageFont.truetype(FONT_PATH, 85)
         font_small = ImageFont.truetype(FONT_PATH, 22)
@@ -93,7 +92,7 @@ async def generate_ai_health_card(
 
     width, height = bg_img.size
 
-    # هدر (بالای عکس)
+    # هدر
     draw.text((width//2, 50), _shape_text("🌱 پاسپورت سلامت تغذیه‌یار"), font=font_title, fill="#38bdf8", anchor="mm")
     
     # نام کاربر
@@ -119,7 +118,6 @@ async def generate_ai_health_card(
     box_x1, box_y1 = 80, 180
     box_x2, box_y2 = 450, 480
     
-    # تعیین رنگ بر اساس وضعیت
     if "نرمال" in bmi_status: status_color = "#10b981" 
     elif "اضافه" in bmi_status or "چاقی" in bmi_status: status_color = "#ef4444" 
     else: status_color = "#f59e0b" 

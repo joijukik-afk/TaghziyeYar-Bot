@@ -34,7 +34,7 @@ from app.database import repository as repo
 from app.database.session import create_all, dispose_engine, init_engine
 from app.services.ai_service import get_ai_service
 from app.services.auto_content import broadcast_auto_content, post_auto_content
-from app.services.card_generator import generate_profile_card  # 👈 اضافه شد
+from app.services.card_generator import generate_ai_health_card  # 👈 ایمپورت کارت جدید
 from app.services.image_generator import generate_group_cover
 from app.services.news_service import get_global_magazine_news
 from app.utils.message_formatter import with_signature
@@ -52,7 +52,7 @@ async def check_user_ban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         raise ApplicationHandlerStop
 
 # ---------------------------------------------------------------------------
-#  Health server (فقط برای اجرای لوکال)
+#  Health server
 # ---------------------------------------------------------------------------
 class _HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -116,7 +116,7 @@ async def _auto_post_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         sent = await broadcast_auto_content(context.bot)
         if sent > 0: 
             await repo.set_last_post_time(time.time())
-            logger.info("✅ پست خودکار به %d گروه ارسال شد و زمان ثبت شد.", sent)
+            logger.info("✅ پست خودکار به %d گروه ارسال شد.", sent)
         else:
             logger.warning("⚠️ پستی ارسال نشد (شاید AI خطا داد یا گروهی نیست).")
     except Exception as e:
@@ -209,7 +209,7 @@ async def cmd_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     lines.append("\n✏️ برای ویرایش، /setup رو بزن.")
     await update.message.reply_text(with_signature("\n".join(lines)))
 
-# 👇 دستور کارت گرافیکی (با await اصلاح شد) 👇
+# 👇 دستور کارت گرافیکی هوشمند با محدودیت 👇
 @private_only
 @rate_limited
 async def cmd_mycard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -217,6 +217,13 @@ async def cmd_mycard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     user = update.effective_user
     if not user or not update.message: return
     
+    can_generate = await repo.check_and_mark_card_generated(user.id)
+    if not can_generate:
+        return await update.message.reply_text(
+            "⚠️ شما قبلاً کارت دیجیتال خود را دریافت کرده‌اید.\n"
+            "طبق قوانین ربات، هر کاربر فقط یک بار می‌تواند این کارت اختصاصی را بسازد."
+        )
+
     db_user = await repo.get_user_by_telegram_id(user.id)
     if not db_user: return
     
@@ -224,7 +231,7 @@ async def cmd_mycard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if not profile or not profile.setup_complete:
         return await update.message.reply_text("⚠️ اول باید با /setup اطلاعاتت رو کامل کنی.")
     
-    status_msg = await update.message.reply_text("🎨 در حال طراحی پاسپورت سلامت شما...")
+    status_msg = await update.message.reply_text("🧠 هوش مصنوعی در حال طراحی پس‌زمینه و کارت اختصاصی شماست... (حدود ۱۰ ثانیه)")
     
     weight = profile.weight_kg or 0
     height_m = (profile.height_cm or 1) / 100
@@ -242,7 +249,7 @@ async def cmd_mycard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     }.get(profile.goal or "", "نامشخص")
     
     try:
-        card_img = await generate_profile_card(
+        card_img = await generate_ai_health_card(
             name=user.first_name or "کاربر",
             age=str(profile.age or "-"),
             weight=str(weight),
@@ -252,9 +259,12 @@ async def cmd_mycard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             goal=goal_fa
         )
         
+        if card_img.getbuffer().nbytes == 0:
+             return await status_msg.edit_text("❌ خطا در ساخت کارت. لطفاً دوباره تلاش کنید.")
+        
         await update.message.reply_photo(
             photo=card_img,
-            caption="🪪 <b>پاسپورت سلامت شما</b>\n\nاین کارت رو می‌تونی ذخیره کنی یا تو استوری به اشتراک بذاری! 🚀",
+            caption="🪪 <b>کارت دیجیتال سلامت شما</b>\n\nاین کارت مخصوص شماست و فقط یک بار می‌توانستید آن را دریافت کنید. 🚀",
             parse_mode="HTML"
         )
         await status_msg.delete()

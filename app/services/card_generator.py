@@ -15,7 +15,6 @@ logger = logging.getLogger(__name__)
 FONT_PATH = "Vazirmatn-Bold.ttf"
 FONT_URL = "https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/fonts/ttf/Vazirmatn-Bold.ttf"
 
-# بررسی اینکه آیا سرور از پردازش خودکار RTL پشتیبانی می‌کند یا نه
 HAS_RAQM = features.check("raqm")
 logger.info(f"Pillow Raqm Support: {HAS_RAQM}")
 
@@ -37,19 +36,26 @@ def _clean_num(val: str) -> str:
     except:
         return str(val)
 
-# تابع کمکی برای رسم متن به صورت کاملاً هوشمند
 def _draw_text(draw, xy, text, font, fill, anchor="ra"):
+    """رسم متن‌های فارسی (RTL)"""
     if not text: return
     text = str(text)
-    
     if HAS_RAQM:
-        # اگر سرور خودش فارسی را می‌فهمد، مستقیم با دستور RTL رسم می‌کنیم
         draw.text(xy, text, font=font, fill=fill, anchor=anchor, direction="rtl")
     else:
-        # اگر سرور قدیمی بود، دستی اصلاح می‌کنیم
         reshaped = arabic_reshaper.reshape(text)
         bidi_text = get_display(reshaped)
         draw.text(xy, bidi_text, font=font, fill=fill, anchor=anchor)
+
+def _draw_num(draw, xy, text, font, fill, anchor="ra"):
+    """رسم اعداد (اجبار به چپ‌به‌راست LTR) تا هرگز برعکس نشوند"""
+    if not text: return
+    text = str(text)
+    if HAS_RAQM:
+        # دستور صریح ltr به موتور رندر تا عدد را برعکس نکند
+        draw.text(xy, text, font=font, fill=fill, anchor=anchor, direction="ltr")
+    else:
+        draw.text(xy, text, font=font, fill=fill, anchor=anchor)
 
 async def generate_ai_health_card(
     name: str, age: str, weight: str, height: str, bmi: str, bmi_status: str, goal: str
@@ -57,7 +63,6 @@ async def generate_ai_health_card(
     
     await _ensure_font_exists()
     
-    # پس‌زمینه‌های شیک
     prompts = [
         "Abstract dark blue and teal gradient background, smooth glowing waves, professional, minimalistic, no text, no people, no objects, no faces, high resolution.",
         "Abstract dark emerald green and gold gradient background, smooth glowing curves, professional, minimalistic, no text, no people, no objects, high resolution.",
@@ -84,7 +89,6 @@ async def generate_ai_health_card(
     
     width, height = bg_img.size
 
-    # کادر شیشه‌ای
     glass_box = Image.new("RGBA", bg_img.size, (0, 0, 0, 0))
     glass_draw = ImageDraw.Draw(glass_box)
     glass_draw.rounded_rectangle([(40, 40), (width-40, height-40)], radius=40, fill=(255, 255, 255, 15), outline=(56, 189, 248, 100), width=2)
@@ -94,7 +98,7 @@ async def generate_ai_health_card(
     try:
         font_title = ImageFont.truetype(FONT_PATH, 42)
         font_name = ImageFont.truetype(FONT_PATH, 55)
-        font_num = ImageFont.truetype(FONT_PATH, 34)   
+        font_num = ImageFont.truetype(FONT_PATH, 36)   
         font_label = ImageFont.truetype(FONT_PATH, 24) 
         font_bmi = ImageFont.truetype(FONT_PATH, 85)
         font_small = ImageFont.truetype(FONT_PATH, 20)
@@ -109,18 +113,21 @@ async def generate_ai_health_card(
     # ۲. نام
     _draw_text(draw, (width - 90, 160), name, font_name, "#f8fafc", anchor="ra")
 
-    # ۳. اطلاعات
+    # ۳. اطلاعات (عدد و کلمه کاملاً جدا از هم رسم می‌شوند)
     start_y = 240
     gap = 75
     
     # سن
-    _draw_text(draw, (width - 90, start_y), f"{_clean_num(age)} سال", font_num, "#e2e8f0", anchor="ra")
+    _draw_num(draw, (width - 180, start_y), _clean_num(age), font_num, "#e2e8f0", anchor="ra")
+    _draw_text(draw, (width - 70, start_y), "سال", font_label, "#94a3b8", anchor="ra")
     
-    # قد (حل مشکل 640/607)
-    _draw_text(draw, (width - 90, start_y + gap), f"{_clean_num(height)} سانتی‌متر", font_num, "#e2e8f0", anchor="ra")
+    # قد
+    _draw_num(draw, (width - 200, start_y + gap), _clean_num(height), font_num, "#e2e8f0", anchor="ra")
+    _draw_text(draw, (width - 70, start_y + gap), "سانتی‌متر", font_label, "#94a3b8", anchor="ra")
     
     # وزن
-    _draw_text(draw, (width - 90, start_y + gap*2), f"{_clean_num(weight)} کیلوگرم", font_num, "#e2e8f0", anchor="ra")
+    _draw_num(draw, (width - 200, start_y + gap*2), _clean_num(weight), font_num, "#e2e8f0", anchor="ra")
+    _draw_text(draw, (width - 70, start_y + gap*2), "کیلوگرم", font_label, "#94a3b8", anchor="ra")
 
     # ۴. کادر BMI
     box_x1, box_y1 = 80, 190
@@ -133,18 +140,21 @@ async def generate_ai_health_card(
     draw.rounded_rectangle([box_x1, box_y1, box_x2, box_y2], radius=30, fill=(30, 41, 59, 240), outline=status_color, width=3)
     
     _draw_text(draw, ((box_x1+box_x2)//2, box_y1 + 60), "شاخص توده بدنی (BMI)", font_label, "#cbd5e1", anchor="mm")
-    _draw_text(draw, ((box_x1+box_x2)//2, box_y1 + 170), _clean_num(bmi), font_bmi, status_color, anchor="mm")
+    _draw_num(draw, ((box_x1+box_x2)//2, box_y1 + 170), _clean_num(bmi), font_bmi, status_color, anchor="mm")
     _draw_text(draw, ((box_x1+box_x2)//2, box_y1 + 250), bmi_status, font_num, status_color, anchor="mm")
 
-    # ۵. بخش پایین
-    draw.line([(90, 490), (width-90, 490)], fill="#334155", width=2)
+    # ۵. بخش پایین (مختصات بالاتر آمد تا بریده نشود)
+    draw.line([(90, 480), (width-90, 480)], fill="#334155", width=2)
 
-    _draw_text(draw, (width - 90, 515), "هدف فعلی:", font_label, "#94a3b8", anchor="ra")
+    # هدف
+    _draw_text(draw, (width - 90, 510), "هدف فعلی:", font_label, "#94a3b8", anchor="ra")
     _draw_text(draw, (width - 90, 550), goal, font_num, "#38bdf8", anchor="ra")
 
-    _draw_text(draw, (90, 515), "زیر نظر متخصص تغذیه:", font_small, "#94a3b8", anchor="la")
+    # متخصص
+    _draw_text(draw, (90, 510), "زیر نظر متخصص تغذیه:", font_small, "#94a3b8", anchor="la")
     _draw_text(draw, (90, 550), "علی اکبر ابراهیم پور", font_num, "#f8fafc", anchor="la")
     
+    # آیدی
     _draw_text(draw, (width//2, 595), "@AliAkbaro0", font_small, "#64748b", anchor="mm")
 
     img_io = io.BytesIO()

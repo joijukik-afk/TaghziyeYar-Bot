@@ -34,6 +34,7 @@ from app.database import repository as repo
 from app.database.session import create_all, dispose_engine, init_engine
 from app.services.ai_service import get_ai_service
 from app.services.auto_content import broadcast_auto_content, post_auto_content
+from app.services.card_generator import generate_profile_card # 👈 اضافه شد
 from app.services.image_generator import generate_group_cover
 from app.services.news_service import get_global_magazine_news
 from app.utils.message_formatter import with_signature
@@ -93,12 +94,10 @@ def rate_limited(func):
 #  🤖 Auto-post Job (تایمر ضد اسپم)
 # ---------------------------------------------------------------------------
 async def _auto_post_job(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """اجرای خودکار پست با چک کردن زمان دیتابیس"""
     try:
         last_time = await repo.get_last_post_time()
         now = time.time()
         
-        # اگر هرگز پستی فرستاده نشده بود، صبر نکن
         if last_time > 0 and (now - last_time < 28800):
             logger.info("⏳ هنوز ۸ ساعت از پست قبلی نگذشته. زمان باقی‌مانده: %.1f ساعت", (28800 - (now - last_time)) / 3600)
             return
@@ -117,11 +116,11 @@ async def _auto_post_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         sent = await broadcast_auto_content(context.bot)
         if sent > 0: 
             await repo.set_last_post_time(time.time())
-            logger.info("✅ پست خودکار به %d گروه ارسال شد و زمان ثبت شد.", sent)
+            logger.info("✅ پست خودکار به %d گروه ارسال شد.", sent)
         else:
-            logger.warning("⚠️ تلاش برای ارسال پست انجام شد اما به هیچ گروهی ارسال نشد (شاید AI خطا داد یا گروهی در دیتابیس نیست).")
+            logger.warning("⚠️ پستی ارسال نشد (شاید AI خطا داد یا گروهی نیست).")
     except Exception as e:
-        logger.error("❌ خطای پیش‌بینی نشده در _auto_post_job: %s", e)
+        logger.error("❌ خطا در _auto_post_job: %s", e)
 
 # ---------------------------------------------------------------------------
 #  Helpers
@@ -209,6 +208,62 @@ async def cmd_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if profile.goal: lines.append(f"• هدف: {profile.goal}")
     lines.append("\n✏️ برای ویرایش، /setup رو بزن.")
     await update.message.reply_text(with_signature("\n".join(lines)))
+
+# 👇 دستور جدید کارت گرافیکی 👇
+@private_only
+@rate_limited
+async def cmd_mycard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await ensure_user_and_group(update)
+    user = update.effective_user
+    if not user or not update.message: return
+    
+    db_user = await repo.get_user_by_telegram_id(user.id)
+    if not db_user: return
+    
+    profile = await repo.get_profile(db_user.id)
+    if not profile or not profile.setup_complete:
+        return await update.message.reply_text("⚠️ اول باید با /setup اطلاعاتت رو کامل کنی.")
+    
+    status_msg = await update.message.reply_text("🎨 در حال طراحی کارت گرافیکی شما...")
+    
+    # محاسبه BMI
+    weight = profile.weight_kg or 0
+    height_m = (profile.height_cm or 1) / 100
+    bmi_val = round(weight / (height_m ** 2), 1) if height_m > 0 else 0
+    
+    if bmi_val < 18.5: bmi_status = "کمبود وزن"
+    elif bmi_val < 25: bmi_status = "نرمال ✅"
+    elif bmi_val < 30: bmi_status = "اضافه وزن"
+    else: bmi_status = "چاقی"
+    
+    goal_fa = {
+        "lose": "کاهش وزن ⬇️", "gain": "افزایش وزن ⬆️",
+        "muscle": "عضله‌سازی 💪", "maintain": "حفظ وزن ⚖️",
+        "quality": "تغذیه سالم 🥗", "sport": "هدف ورزشی 🏃"
+    }.get(profile.goal or "", "نامشخص")
+    
+    # ساخت کارت
+    try:
+        card_img = generate_profile_card(
+            name=user.first_name or "کاربر",
+            age=str(profile.age or "-"),
+            weight=str(weight),
+            height=str(profile.height_cm or "-"),
+            bmi=str(bmi_val),
+            bmi_status=bmi_status,
+            goal=goal_fa
+        )
+        
+        await update.message.reply_photo(
+            photo=card_img,
+            caption="📸 <b>کارت تغذیه اختصاصی شما</b>\n\nاین عکس رو می‌تونی تو استوری یا گروه‌ها به اشتراک بذاری! 🚀",
+            parse_mode="HTML"
+        )
+        await status_msg.delete()
+    except Exception as e:
+        logger.error("Error generating card: %s", e)
+        await status_msg.edit_text("❌ متأسفانه در ساخت کارت خطایی پیش آمد.")
+# 👆 پایان دستور کارت 👆
 
 @private_only
 @rate_limited
@@ -442,9 +497,6 @@ async def cmd_unban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await repo.unban_user(target_id)
     await update.message.reply_text(f"✅ مسدودی `{target_id}` برداشته شد.", parse_mode="Markdown")
 
-# ---------------------------------------------------------------------------
-#  🚀 FORCE POST (دستور جدید برای ارسال فوری پست)
-# ---------------------------------------------------------------------------
 async def cmd_forcepost(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     if not user or not get_settings().is_admin(user.id): return
@@ -453,11 +505,10 @@ async def cmd_forcepost(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     try:
         sent = await broadcast_auto_content(context.bot)
         if sent > 0:
-            # ریست کردن زمان پست در دیتابیس تا اسپم نشه
             await repo.set_last_post_time(time.time())
             await status.edit_text(f"✅ پست فوری با موفقیت به {sent} گروه ارسال شد و تایمر ۸ ساعته ریست شد.")
         else:
-            await status.edit_text("⚠️ متأسفانه پست ساخته نشد یا هیچ گروه فعالی پیدا نشد. لاگ‌های رندر را چک کنید.")
+            await status.edit_text("⚠️ متأسفانه پست ساخته نشد یا هیچ گروه فعالی پیدا نشد.")
     except Exception as e:
         await status.edit_text(f"❌ خطای فنی: {e}")
 
@@ -482,15 +533,9 @@ async def post_init(application: Application) -> None:
         await setup_commands(application.bot)
     except: pass
     
-    # ⏱️ زمان‌بندی پست خودکار
     if application.job_queue is not None:
-        try: interval = int(os.environ.get("AUTO_POST_INTERVAL_HOURS", "8")) * 3600
-        except: interval = 8 * 3600
-        
         try: first = int(os.environ.get("AUTO_POST_FIRST_DELAY", "600")) 
         except: first = 600
-        
-        # هر 10 دقیقه چک میکنه ببینه 8 ساعت گذشته یا نه
         application.job_queue.run_repeating(_auto_post_job, interval=600, first=first, name="auto_nutrition_post")
 
 async def post_shutdown(application: Application) -> None: await dispose_engine()
@@ -503,7 +548,9 @@ def build_application() -> Application:
 
     app.add_handler(CommandHandler("start", cmd_start)); app.add_handler(CommandHandler("help", cmd_help)); app.add_handler(CommandHandler("menu", cmd_menu))
     app.add_handler(CommandHandler("about", cmd_about)); app.add_handler(CommandHandler("privacy", cmd_privacy)); app.add_handler(CommandHandler("settings", cmd_settings))
-    app.add_handler(CommandHandler("profile", cmd_profile)); app.add_handler(CommandHandler("setup", cmd_setup)); app.add_handler(CommandHandler("cancel", cmd_cancel))
+    app.add_handler(CommandHandler("profile", cmd_profile)); app.add_handler(CommandHandler("mycard", cmd_mycard)) # 👈 دستور کارت اینجاست
+    app.add_handler(CommandHandler("setup", cmd_setup)); app.add_handler(CommandHandler("cancel", cmd_cancel))
+    
     app.add_handler(CommandHandler("bmi", cmd_bmi)); app.add_handler(CommandHandler("calories", cmd_calories)); app.add_handler(CommandHandler("weight", cmd_weight))
     app.add_handler(CommandHandler("progress", cmd_progress)); app.add_handler(CommandHandler("macros", cmd_macros)); app.add_handler(CommandHandler("protein", cmd_protein))
     app.add_handler(CommandHandler("ideal", cmd_ideal)); app.add_handler(CommandHandler("bodyfat", cmd_bodyfat)); app.add_handler(CommandHandler("bmr", cmd_bmr))
@@ -519,8 +566,6 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("setgroup", gmanager.cmd_setgroup)); app.add_handler(CommandHandler("groups", gmanager.cmd_groups)); app.add_handler(CommandHandler("unsetgroup", gmanager.cmd_unsetgroup))
     app.add_handler(CommandHandler("broadcast_covers", cmd_broadcast_covers)); app.add_handler(CommandHandler("leave", cmd_leave_group)); app.add_handler(CommandHandler("leavegroup", cmd_leave_group))
     app.add_handler(CommandHandler("sendto", cmd_send_to_group)); app.add_handler(CommandHandler("globalnews", cmd_global_news)); app.add_handler(CommandHandler("ban", cmd_ban)); app.add_handler(CommandHandler("unban", cmd_unban))
-    
-    # 🚀 دستور اجباری پست
     app.add_handler(CommandHandler("forcepost", cmd_forcepost))
     
     app.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.ALL, gmanager.on_group_message), group=1)

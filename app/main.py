@@ -98,7 +98,6 @@ async def _auto_post_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         last_time = await repo.get_last_post_time()
         now = time.time()
         
-        # اگر کمتر از ۸ ساعت گذشته، پست نفرست
         if last_time > 0 and (now - last_time < 28800):
             logger.info("⏳ هنوز ۸ ساعت از پست قبلی نگذشته. زمان باقی‌مانده: %.1f ساعت", (28800 - (now - last_time)) / 3600)
             return
@@ -210,7 +209,7 @@ async def cmd_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     lines.append("\n✏️ برای ویرایش، /setup رو بزن.")
     await update.message.reply_text(with_signature("\n".join(lines)))
 
-# 👇 دستور جدید کارت گرافیکی 👇
+# 👇 دستور کارت گرافیکی (با await اصلاح شد) 👇
 @private_only
 @rate_limited
 async def cmd_mycard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -225,9 +224,8 @@ async def cmd_mycard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if not profile or not profile.setup_complete:
         return await update.message.reply_text("⚠️ اول باید با /setup اطلاعاتت رو کامل کنی.")
     
-    status_msg = await update.message.reply_text("🎨 در حال طراحی کارت دیجیتال شما...")
+    status_msg = await update.message.reply_text("🎨 در حال طراحی پاسپورت سلامت شما...")
     
-    # محاسبه BMI
     weight = profile.weight_kg or 0
     height_m = (profile.height_cm or 1) / 100
     bmi_val = round(weight / (height_m ** 2), 1) if height_m > 0 else 0
@@ -243,9 +241,8 @@ async def cmd_mycard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         "quality": "تغذیه سالم 🥗", "sport": "هدف ورزشی 🏃"
     }.get(profile.goal or "", "نامشخص")
     
-    # ساخت کارت
     try:
-        card_img = generate_profile_card(
+        card_img = await generate_profile_card(
             name=user.first_name or "کاربر",
             age=str(profile.age or "-"),
             weight=str(weight),
@@ -257,7 +254,7 @@ async def cmd_mycard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         
         await update.message.reply_photo(
             photo=card_img,
-            caption="🪪 <b>کارت دیجیتال تغذیه شما</b>\n\nاین کارت رو می‌تونی ذخیره کنی یا تو استوری به اشتراک بذاری! 🚀",
+            caption="🪪 <b>پاسپورت سلامت شما</b>\n\nاین کارت رو می‌تونی ذخیره کنی یا تو استوری به اشتراک بذاری! 🚀",
             parse_mode="HTML"
         )
         await status_msg.delete()
@@ -525,9 +522,21 @@ async def post_init(application: Application) -> None:
     logger.info("Bot started as @%s", me.username)
     
     try:
-        await application.bot.set_my_description(description="🌱 دستیار هوشمند تغذیه\n\n👨‍⚕️ زیر نظر متخصص: علی اکبر ابراهیم پور\n📞 پشتیبانی: @AliAkbaro0")
-        await application.bot.set_my_short_description(short_description="زیر نظر متخصص علی اکبر ابراهیم پور | @AliAkbaro0")
-    except: pass
+        short_desc = "زیر نظر متخصص تغذیه علی اکبر ابراهیم پور | پشتیبانی: @AliAkbaro0"
+        await application.bot.set_my_short_description(short_description=short_desc)
+        
+        full_desc = (
+            "🌱 دستیار هوشمند تغذیه و سلامت\n\n"
+            "👨‍⚕️ زیر نظر کارشناس و متخصص تغذیه: علی اکبر ابراهیم پور\n"
+            "📞 پشتیبانی: @AliAkbaro0\n\n"
+            "📊 محاسبه BMI و کالری\n"
+            "🍽 ساخت برنامه غذایی با هوش مصنوعی\n"
+            "🎮 کوییز و بازی‌های گروهی"
+        )
+        await application.bot.set_my_description(description=full_desc)
+        logger.info("✅ Bio and description updated successfully.")
+    except Exception as e:
+        logger.warning("خطا در تنظیم بیو: %s", e)
     
     try:
         from app.bot.commands_setup import setup_commands
@@ -551,7 +560,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("about", cmd_about)); app.add_handler(CommandHandler("privacy", cmd_privacy)); app.add_handler(CommandHandler("settings", cmd_settings))
     
     app.add_handler(CommandHandler("profile", cmd_profile))
-    app.add_handler(CommandHandler("mycard", cmd_mycard)) # 👈 دستور کارت اینجاست
+    app.add_handler(CommandHandler("mycard", cmd_mycard)) # 👈 دستور کارت
     app.add_handler(CommandHandler("setup", cmd_setup)); app.add_handler(CommandHandler("cancel", cmd_cancel))
     
     app.add_handler(CommandHandler("bmi", cmd_bmi)); app.add_handler(CommandHandler("calories", cmd_calories)); app.add_handler(CommandHandler("weight", cmd_weight))

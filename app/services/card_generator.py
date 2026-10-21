@@ -1,8 +1,9 @@
-"""ساخت کارت‌های گرافیکی شیک برای پروفایل کاربران"""
+"""ساخت کارت گرافیکی فوق حرفه‌ای (Digital ID) برای کاربران"""
 
 import io
+import os
 import logging
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
 import arabic_reshaper
 from bidi.algorithm import get_display
 
@@ -10,109 +11,121 @@ logger = logging.getLogger(__name__)
 
 FONT_PATH = "Vazirmatn-Bold.ttf"
 
-def _reshape_text(text: str) -> str:
+def _shape_text(text: str) -> str:
     if not text: return ""
     reshaped = arabic_reshaper.reshape(str(text))
     return get_display(reshaped)
 
-def generate_profile_card(
-    name: str, 
-    age: str, 
-    weight: str, 
-    height: str, 
-    bmi: str, 
-    bmi_status: str, 
-    goal: str
-) -> io.BytesIO:
-    """ساخت عکس کارت پروفایل"""
+def _draw_rounded_rect_with_glow(img, xy, radius, color, glow_color):
+    """کشیدن مستطیل با گوشه گرد و افکت درخشش"""
+    # لایه شفاف برای افکت درخشش
+    glow = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    glow_draw = ImageDraw.Draw(glow)
     
-    # ابعاد کارت (مناسب استوری)
-    width, height = 800, 1000
-    img = Image.new("RGB", (width, height), "#1a1a2e")
+    # رسم مستطیل بزرگتر برای درخشش
+    x1, y1, x2, y2 = xy
+    glow_draw.rounded_rectangle([x1-5, y1-5, x2+5, y2+5], radius=radius+5, fill=glow_color)
+    glow = glow.filter(ImageFilter.GaussianBlur(15))
+    img.alpha_composite(glow)
+    
+    # رسم مستطیل اصلی
     draw = ImageDraw.Draw(img)
+    draw.rounded_rectangle(xy, radius=radius, fill=color)
 
-    # ۱. کشیدن پس‌زمینه گرادیانت (تیره و شیک)
+def generate_profile_card(
+    name: str, age: str, weight: str, height: str, bmi: str, bmi_status: str, goal: str
+) -> io.BytesIO:
+    
+    # ابعاد کارت (مثل کارت شناسایی)
+    width, height = 1000, 600
+    radius = 40
+    
+    # ۱. ساخت پس‌زمینه گرادیانت تیره و شیک
+    img = Image.new("RGBA", (width, height), "#0f172a")
+    draw = ImageDraw.Draw(img)
     for y in range(height):
-        r = int(26 + (15 - 26) * (y / height))
-        g = int(26 + (52 - 26) * (y / height))
-        b = int(46 + (96 - 46) * (y / height))
-        draw.line([(0, y), (width, y)], fill=(r, g, b))
+        r = int(15 + (30 - 15) * (y / height))
+        g = int(23 + (41 - 23) * (y / height))
+        b = int(42 + (59 - 42) * (y / height))
+        draw.line([(0, y), (width, y)], fill=(r, g, b, 255))
 
-    # ۲. کشیدن هدر (نوار بالایی)
-    draw.rectangle([0, 0, width, 120], fill="#16213e")
-    
-    # بارگذاری فونت‌ها
+    # ۲. بارگذاری فونت‌ها
     try:
-        font_huge = ImageFont.truetype(FONT_PATH, 60)
-        font_large = ImageFont.truetype(FONT_PATH, 45)
-        font_med = ImageFont.truetype(FONT_PATH, 35)
-        font_small = ImageFont.truetype(FONT_PATH, 25)
+        font_title = ImageFont.truetype(FONT_PATH, 40)
+        font_name = ImageFont.truetype(FONT_PATH, 65)
+        font_value = ImageFont.truetype(FONT_PATH, 45)
+        font_label = ImageFont.truetype(FONT_PATH, 25)
+        font_small = ImageFont.truetype(FONT_PATH, 20)
+        font_bmi_val = ImageFont.truetype(FONT_PATH, 80)
     except Exception:
-        font_huge = font_large = font_med = font_small = ImageFont.load_default()
+        logger.warning("فونت وزیرمتن یافت نشد، از فونت پیش‌فرض استفاده می‌شود.")
+        font_title = font_name = font_value = font_label = font_small = font_bmi_val = ImageFont.load_default()
 
-    # ۳. نوشتن عنوان بالای کارت
-    title = _reshape_text("کارت تغذیه")
-    draw.text((width//2, 60), title, font=font_large, fill="#e94560", anchor="mm")
+    # ۳. کشیدن هدر بالای کارت
+    draw.rectangle([(0, 0), (width, 80)], fill="#1e293b")
+    title = _shape_text("کارت دیجیتال تغذیه")
+    draw.text((width//2, 40), title, font=font_title, fill="#38bdf8", anchor="mm")
 
-    # ۴. نوشتن اسم کاربر
-    safe_name = _reshape_text(name)
-    draw.text((width//2, 180), safe_name, font=font_huge, fill="white", anchor="mm")
-
-    # ۵. کشیدن خط جداکننده
-    draw.line([(100, 230), (width-100, 230)], fill="#e94560", width=4)
-
-    # ۶. اطلاعات (سن، قد، وزن)
-    info_y = 300
-    spacing = 80
+    # ۴. نام کاربر
+    safe_name = _shape_text(name)
+    draw.text((width - 80, 160), safe_name, font=font_name, fill="#f8fafc", anchor="ra")
     
+    # ۵. اطلاعات شخصی (سمت راست)
     # سن
-    age_txt = _reshape_text(f"سن: {age} سال")
-    draw.text((width-100, info_y), age_txt, font=font_med, fill="#a9a9a9", anchor="ra")
+    draw.text((width - 80, 260), _shape_text("سن"), font=font_label, fill="#94a3b8", anchor="ra")
+    draw.text((width - 180, 260), _shape_text(f"{age} سال"), font=font_value, fill="#e2e8f0", anchor="ra")
     
     # قد
-    height_txt = _reshape_text(f"قد: {height} سانتی‌متر")
-    draw.text((width-100, info_y + spacing), height_txt, font=font_med, fill="#a9a9a9", anchor="ra")
+    draw.text((width - 80, 340), _shape_text("قد"), font=font_label, fill="#94a3b8", anchor="ra")
+    draw.text((width - 180, 340), _shape_text(f"{height} سانتی‌متر"), font=font_value, fill="#e2e8f0", anchor="ra")
     
     # وزن
-    weight_txt = _reshape_text(f"وزن: {weight} کیلوگرم")
-    draw.text((width-100, info_y + spacing*2), weight_txt, font=font_med, fill="#a9a9a9", anchor="ra")
+    draw.text((width - 80, 420), _shape_text("وزن"), font=font_label, fill="#94a3b8", anchor="ra")
+    draw.text((width - 180, 420), _shape_text(f"{weight} کیلوگرم"), font=font_value, fill="#e2e8f0", anchor="ra")
 
-    # ۷. کشیدن باکس BMI (وسط چپ)
-    box_x1, box_y1 = 100, 280
-    box_x2, box_y2 = 350, 500
-    draw.rounded_rectangle([box_x1, box_y1, box_x2, box_y2], radius=20, fill="#0f3460", outline="#e94560", width=3)
+    # ۶. باکس BMI (سمت چپ) با افکت شیشه‌ای
+    bmi_box_x1, bmi_box_y1 = 80, 180
+    bmi_box_x2, bmi_box_y2 = 420, 460
     
-    bmi_title = _reshape_text("شاخص BMI")
-    draw.text(((box_x1+box_x2)//2, box_y1 + 50), bmi_title, font=font_small, fill="#a9a9a9", anchor="mm")
+    # رنگ بر اساس وضعیت
+    if "نرمال" in bmi_status: status_color = "#10b981" # سبز
+    elif "اضافه" in bmi_status or "چاقی" in bmi_status: status_color = "#ef4444" # قرمز
+    else: status_color = "#f59e0b" # نارنجی
     
-    bmi_val = _reshape_text(bmi)
-    draw.text(((box_x1+box_x2)//2, box_y1 + 120), bmi_val, font=font_huge, fill="white", anchor="mm")
+    # رسم باکس شیشه‌ای
+    _draw_rounded_rect_with_glow(img, [bmi_box_x1, bmi_box_y1, bmi_box_x2, bmi_box_y2], 30, (30, 41, 59, 200), status_color + "40")
     
-    bmi_stat = _reshape_text(bmi_status)
-    stat_color = "#2ed573" if "نرمال" in bmi_status else "#ff4757"
-    draw.text(((box_x1+box_x2)//2, box_y1 + 190), bmi_stat, font=font_med, fill=stat_color, anchor="mm")
+    # نوشتن داخل باکس BMI
+    draw.text(((bmi_box_x1+bmi_box_x2)//2, bmi_box_y1 + 50), _shape_text("شاخص توده بدنی (BMI)"), font=font_label, fill="#cbd5e1", anchor="mm")
+    draw.text(((bmi_box_x1+bmi_box_x2)//2, bmi_box_y1 + 140), _shape_text(bmi), font=font_bmi_val, fill=status_color, anchor="mm")
+    draw.text(((bmi_box_x1+bmi_box_x2)//2, bmi_box_y1 + 230), _shape_text(bmi_status), font=font_value, fill=status_color, anchor="mm")
 
-    # ۸. کشیدن بخش هدف
-    goal_y = 600
-    goal_title = _reshape_text("🎯 هدف فعلی")
-    draw.text((width//2, goal_y), goal_title, font=font_med, fill="#a9a9a9", anchor="mm")
-    
-    goal_val = _reshape_text(goal)
-    draw.text((width//2, goal_y + 60), goal_val, font=font_large, fill="#e94560", anchor="mm")
+    # ۷. هدف (پایین سمت راست)
+    draw.text((width - 80, 500), _shape_text("🎯 هدف فعلی"), font=font_label, fill="#94a3b8", anchor="ra")
+    draw.text((width - 80, 550), _shape_text(goal), font=font_value, fill="#38bdf8", anchor="ra")
 
-    # ۹. فوتر (امضای متخصص)
-    footer_y = 850
-    draw.line([(100, footer_y-30), (width-100, footer_y-30)], fill="#16213e", width=2)
-    
-    footer_txt = _reshape_text("🥗 زیر نظر متخصص علی اکبر ابراهیم پور")
-    draw.text((width//2, footer_y), footer_txt, font=font_small, fill="#a9a9a9", anchor="mm")
-    
-    footer_id = "@AliAkbaro0"
-    draw.text((width//2, footer_y + 40), footer_id, font=font_small, fill="#e94560", anchor="mm")
+    # ۸. امضا (پایین سمت چپ)
+    draw.text((80, 520), _shape_text("زیر نظر متخصص:"), font=font_small, fill="#94a3b8", anchor="la")
+    draw.text((80, 550), _shape_text("علی اکبر ابراهیم پور"), font=font_value, fill="#f8fafc", anchor="la")
+    draw.text((80, 585), "@AliAkbaro0", font=font_small, fill="#38bdf8", anchor="la")
 
-    # خروجی
+    # ۹. خط جداکننده
+    draw.line([(500, 100), (500, 500)], fill="#334155", width=2)
+
+    # ۱۰. گرد کردن گوشه‌های کل عکس
+    mask = Image.new("L", (width, height), 0)
+    mask_draw = ImageDraw.Draw(mask)
+    mask_draw.rounded_rectangle([(0, 0), (width, height)], radius=radius, fill=255)
+    
+    output = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    output.paste(img, (0, 0), mask)
+    
+    # خروجی به صورت JPEG (برای کاهش حجم)
+    final_img = Image.new("RGB", (width, height), "#0f172a")
+    final_img.paste(output, (0, 0), output)
+    
     img_io = io.BytesIO()
-    img.save(img_io, format="JPEG", quality=95)
+    final_img.save(img_io, format="JPEG", quality=95)
     img_io.seek(0)
-    img_io.name = 'profile_card.jpg'
+    img_io.name = 'digital_id_card.jpg'
     return img_io

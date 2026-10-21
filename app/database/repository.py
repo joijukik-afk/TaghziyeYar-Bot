@@ -3,7 +3,7 @@
 from datetime import date, timedelta, datetime, timezone
 from sqlalchemy import desc, func, select, delete
 from app.database.models import (
-    AuditLog, BannedUser, Group, Profile, SentImage, User, WeightLog, QuizHistory
+    AuditLog, BannedUser, Group, Profile, SentImage, User, WeightLog, QuizHistory, SystemState, GeneratedCard
 )
 from app.database.quiz_models import QuizLeaderboard, QuizLog
 from app.database.session import session_scope
@@ -189,22 +189,14 @@ async def is_user_banned(telegram_id: int) -> bool:
         result = await session.execute(select(BannedUser).where(BannedUser.telegram_id == telegram_id))
         return result.scalar_one_or_none() is not None
 
-# ================================================================
-#  🧠 QUIZ HISTORY (تاریخچه سوالات کوییز در Neon)
-# ================================================================
-
 async def get_recent_quiz_questions(limit: int = 30) -> list[str]:
-    """دریافت سوالات اخیر برای جلوگیری از تکرار"""
     async with session_scope() as session:
         result = await session.execute(
-            select(QuizHistory.question_text)
-            .order_by(QuizHistory.id.desc())
-            .limit(limit)
+            select(QuizHistory.question_text).order_by(QuizHistory.id.desc()).limit(limit)
         )
         return [row[0] for row in result.fetchall()]
 
 async def save_quiz_question(question_text: str) -> None:
-    """ذخیره سوال جدید در تاریخچه"""
     async with session_scope() as session:
         result = await session.execute(
             select(QuizHistory).where(QuizHistory.question_text == question_text[:500])
@@ -212,3 +204,31 @@ async def save_quiz_question(question_text: str) -> None:
         if result.scalar_one_or_none() is None:
             session.add(QuizHistory(question_text=question_text[:500]))
             await session.flush()
+
+async def get_last_post_time() -> float:
+    async with session_scope() as session:
+        result = await session.execute(select(SystemState).where(SystemState.key == "last_post_time"))
+        state = result.scalar_one_or_none()
+        return float(state.value) if state else 0.0
+
+async def set_last_post_time(timestamp: float) -> None:
+    async with session_scope() as session:
+        result = await session.execute(select(SystemState).where(SystemState.key == "last_post_time"))
+        state = result.scalar_one_or_none()
+        if state:
+            state.value = str(timestamp)
+        else:
+            session.add(SystemState(key="last_post_time", value=str(timestamp)))
+        await session.flush()
+
+async def check_and_mark_card_generated(telegram_id: int) -> bool:
+    async with session_scope() as session:
+        result = await session.execute(
+            select(GeneratedCard).where(GeneratedCard.telegram_id == telegram_id)
+        )
+        existing = result.scalar_one_or_none()
+        if existing:
+            return False  
+        session.add(GeneratedCard(telegram_id=telegram_id))
+        await session.flush()
+        return True 

@@ -168,7 +168,26 @@ async def _send_html_safe(bot, chat_id: int, text: str, reply_to: int | None = N
 @rate_limited
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
-    if update.message: await update.message.reply_text(with_signature(msg.WELCOME), reply_markup=main_menu_keyboard())
+    user = update.effective_user
+    if not update.message or not user: return
+    
+    # بررسی لینک هوشمند (تبلیغات)
+    if context.args and context.args[0] == "mycard":
+        db_user = await repo.get_user_by_telegram_id(user.id)
+        profile = await repo.get_profile(db_user.id) if db_user else None
+        
+        if not profile or not profile.setup_complete:
+            await update.message.reply_text(
+                with_signature("👋 خوش آمدید!\n\nبرای دریافت **کارت دیجیتال سلامت**، ابتدا باید اطلاعات پروفایل خود را تکمیل کنید.\n\n👇 لطفاً دستور /setup را بزنید."),
+                parse_mode="Markdown"
+            )
+        else:
+            await update.message.reply_text(
+                with_signature("👋 خوش آمدید!\n\nشما اطلاعات پروفایل خود را تکمیل کرده‌اید. برای دریافت کارت خود، روی دستور /mycard کلیک کنید."),
+            )
+        return
+
+    await update.message.reply_text(with_signature(msg.WELCOME), reply_markup=main_menu_keyboard())
 
 @rate_limited
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -217,10 +236,8 @@ async def cmd_mycard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     user = update.effective_user
     if not user or not update.message: return
     
-    # بررسی ادمین بودن (صاحب ربات)
     is_admin = get_settings().is_admin(user.id)
     
-    # اگر ادمین نبود، محدودیت یک‌بار اعمال می‌شود
     if not is_admin:
         can_generate = await repo.check_and_mark_card_generated(user.id)
         if not can_generate:
@@ -275,7 +292,6 @@ async def cmd_mycard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await status_msg.delete()
     except Exception as e:
         logger.error("Error generating card for user %s: %s", user.id, e, exc_info=True)
-        # نمایش خطای دقیق برای دیباگ
         await status_msg.edit_text(f"❌ متأسفانه در ساخت کارت خطایی پیش آمد.\n\nخطا: `{e}`", parse_mode="Markdown")
 # 👆 پایان دستور کارت 👆
 
@@ -395,6 +411,54 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
 # ---------------------------------------------------------------------------
 #  Admin Commands
 # ---------------------------------------------------------------------------
+async def cmd_advertise(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """ارسال کمپین تبلیغاتی به همه گروه‌ها"""
+    user = update.effective_user
+    if not user or not get_settings().is_admin(user.id): return
+    
+    groups = await repo.list_all_groups()
+    if not groups:
+        return await update.message.reply_text("⚠️ ربات در هیچ گروهی عضو نیست.")
+        
+    status_msg = await update.message.reply_text(f"⏳ در حال ارسال تبلیغ به {len(groups)} گروه...")
+    
+    # متن تبلیغاتی حرفه‌ای
+    ad_text = (
+        "🌟 <b>تغذیه‌یار | دستیار هوشمند سلامتی شما</b> 🌟\n\n"
+        "آیا از وضعیت سلامتی و تناسب اندام خود خبر دارید؟ 🤔\n"
+        "با ربات <b>تغذیه‌یار</b>، یک کارت دیجیتال اختصاصی و حرفه‌ای از وضعیت بدن خود دریافت کنید! 🪪\n\n"
+        "📊 <b>این کارت چه چیزهایی را نشان می‌دهد؟</b>\n"
+        "🔹 شاخص توده بدنی (BMI) و وضعیت سلامت (نرمال، اضافه وزن و...)\n"
+        "🔹 سن، قد و وزن دقیق شما\n"
+        "🔹 هدف فعلی شما در مسیر سلامتی\n\n"
+        "🩺 <i>زیر نظر متخصص تغذیه: علی اکبر ابراهیم پور</i>\n"
+        "📞 پشتیبانی: @AliAkbaro0\n\n"
+        "👇 همین حالا روی دکمه زیر کلیک کنید و کارت اختصاصی خود را بسازید:"
+    )
+    
+    keyboard = [[InlineKeyboardButton("🪪 دریافت کارت سلامت من", url=f"https://t.me/{context.bot.username}?start=mycard")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    success, fail = 0, 0
+    for g in groups:
+        try:
+            await context.bot.send_message(
+                chat_id=g.chat_id, 
+                text=ad_text, 
+                parse_mode="HTML", 
+                reply_markup=reply_markup
+            )
+            success += 1
+            await asyncio.sleep(1) # جلوگیری از بلاک شدن
+        except Forbidden:
+            await repo.deactivate_group(chat_id=g.chat_id)
+            fail += 1
+        except Exception as e:
+            logger.error(f"خطا در ارسال تبلیغ به گروه {g.chat_id}: {e}")
+            fail += 1
+            
+    await status_msg.edit_text(f"✅ تبلیغ به {success} گروه ارسال شد.\n❌ {fail} گروه ناموفق.")
+
 async def cmd_broadcast_covers(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     if not user or not get_settings().is_admin(user.id): return
@@ -576,7 +640,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("about", cmd_about)); app.add_handler(CommandHandler("privacy", cmd_privacy)); app.add_handler(CommandHandler("settings", cmd_settings))
     
     app.add_handler(CommandHandler("profile", cmd_profile))
-    app.add_handler(CommandHandler("mycard", cmd_mycard)) # 👈 دستور کارت
+    app.add_handler(CommandHandler("mycard", cmd_mycard))
     app.add_handler(CommandHandler("setup", cmd_setup)); app.add_handler(CommandHandler("cancel", cmd_cancel))
     
     app.add_handler(CommandHandler("bmi", cmd_bmi)); app.add_handler(CommandHandler("calories", cmd_calories)); app.add_handler(CommandHandler("weight", cmd_weight))
@@ -595,6 +659,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("broadcast_covers", cmd_broadcast_covers)); app.add_handler(CommandHandler("leave", cmd_leave_group)); app.add_handler(CommandHandler("leavegroup", cmd_leave_group))
     app.add_handler(CommandHandler("sendto", cmd_send_to_group)); app.add_handler(CommandHandler("globalnews", cmd_global_news)); app.add_handler(CommandHandler("ban", cmd_ban)); app.add_handler(CommandHandler("unban", cmd_unban))
     app.add_handler(CommandHandler("forcepost", cmd_forcepost))
+    app.add_handler(CommandHandler("advertise", cmd_advertise)) # 👈 دستور جدید تبلیغات
     
     app.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.ALL, gmanager.on_group_message), group=1)
     

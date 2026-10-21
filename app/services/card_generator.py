@@ -6,7 +6,7 @@ import logging
 import urllib.parse
 import httpx
 import random
-from PIL import Image, ImageDraw, ImageFont, ImageFilter, features
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
 import arabic_reshaper
 from bidi.algorithm import get_display
 
@@ -14,10 +14,6 @@ logger = logging.getLogger(__name__)
 
 FONT_PATH = "Vazirmatn-Bold.ttf"
 FONT_URL = "https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/fonts/ttf/Vazirmatn-Bold.ttf"
-
-# --- بررسی هوشمند: آیا سرور از Raqm (پردازش خودکار RTL) پشتیبانی می‌کند؟ ---
-HAS_RAQM = features.check("raqm")
-logger.info(f"Pillow Raqm Support (Auto RTL): {HAS_RAQM}")
 
 async def _ensure_font_exists():
     if not os.path.exists(FONT_PATH):
@@ -30,21 +26,17 @@ async def _ensure_font_exists():
         except Exception as e:
             logger.warning("خطا در دانلود فونت: %s", e)
 
-def _process_text(text: str) -> str:
-    """پردازش هوشمند متن: اگر Raqm باشد، متن خام برمی‌گردد تا دوبار برعکس نشود"""
+# تابعی برای آماده‌سازی کلمات فارسی
+def _shape_text(text: str) -> str:
     if not text: return ""
-    if HAS_RAQM:
-        return str(text).strip() # Pillow خودش پردازش می‌کند
-    else:
-        reshaped = arabic_reshaper.reshape(str(text).strip())
-        return get_display(reshaped)
+    reshaped = arabic_reshaper.reshape(str(text).strip())
+    return get_display(reshaped)
 
-def _format_num(val: str) -> str:
-    """اعداد را با کاراکتر مخفی LTR برمی‌گرداند تا هرگز برعکس نشوند"""
+# تابعی برای آماده‌سازی اعداد (بدون هیچ تغییری)
+def _clean_num(val: str) -> str:
     try:
         num = float(val)
-        s = str(int(num)) if num.is_integer() else str(num)
-        return f"\u202A{s}\u202C" # U+202A: از چپ به راست خوانده شود
+        return str(int(num)) if num.is_integer() else str(num)
     except:
         return str(val)
 
@@ -54,11 +46,11 @@ async def generate_ai_health_card(
     
     await _ensure_font_exists()
     
+    # پس‌زمینه شیک
     prompts = [
         "Abstract dark blue and teal gradient background, smooth glowing waves, professional, minimalistic, no text, no people, no objects, no faces, high resolution.",
         "Abstract dark emerald green and gold gradient background, smooth glowing curves, professional, minimalistic, no text, no people, no objects, high resolution.",
-        "Abstract dark purple and cyan gradient background, smooth glowing lines, professional, minimalistic, no text, no people, no objects, high resolution.",
-        "Abstract dark slate and neon blue gradient background, smooth glowing particles, professional, minimalistic, no text, no people, no objects, high resolution."
+        "Abstract dark purple and cyan gradient background, smooth glowing lines, professional, minimalistic, no text, no people, no objects, high resolution."
     ]
     prompt = random.choice(prompts)
     encoded_prompt = urllib.parse.quote(prompt)
@@ -74,6 +66,7 @@ async def generate_ai_health_card(
         logger.error(f"خطا در دریافت پس‌زمینه AI: {e}")
         bg_img = Image.new("RGBA", (1024, 640), "#0f172a")
 
+    # لایه تاریک برای خوانایی بهتر
     overlay = Image.new("RGBA", bg_img.size, (0, 0, 0, 0))
     draw_overlay = ImageDraw.Draw(overlay)
     draw_overlay.rectangle([(0, 0), bg_img.size], fill=(15, 23, 42, 200)) 
@@ -81,6 +74,7 @@ async def generate_ai_health_card(
     
     width, height = bg_img.size
 
+    # کادر شیشه‌ای
     glass_box = Image.new("RGBA", bg_img.size, (0, 0, 0, 0))
     glass_draw = ImageDraw.Draw(glass_box)
     glass_draw.rounded_rectangle([(40, 40), (width-40, height-40)], radius=40, fill=(255, 255, 255, 15), outline=(56, 189, 248, 100), width=2)
@@ -90,8 +84,8 @@ async def generate_ai_health_card(
     try:
         font_title = ImageFont.truetype(FONT_PATH, 42)
         font_name = ImageFont.truetype(FONT_PATH, 55)
-        font_num = ImageFont.truetype(FONT_PATH, 36)
-        font_label = ImageFont.truetype(FONT_PATH, 24)
+        font_num = ImageFont.truetype(FONT_PATH, 36)   # فونت اعداد
+        font_label = ImageFont.truetype(FONT_PATH, 24) # فونت کلمات
         font_bmi = ImageFont.truetype(FONT_PATH, 85)
         font_small = ImageFont.truetype(FONT_PATH, 20)
     except Exception as e:
@@ -99,38 +93,55 @@ async def generate_ai_health_card(
         return io.BytesIO()
 
     # ۱. هدر
-    draw.text((width//2, 85), _process_text("پاسپورت سلامت تغذیه‌یار"), font=font_title, fill="#38bdf8", anchor="mm")
+    draw.text((width//2, 85), _shape_text("پاسپورت سلامت تغذیه‌یار"), font=font_title, fill="#38bdf8", anchor="mm")
     draw.line([(300, 125), (width-300, 125)], fill="#38bdf8", width=2)
     
     # ۲. نام
-    draw.text((width - 90, 160), _process_text(name), font=font_name, fill="#f8fafc", anchor="ra")
+    draw.text((width - 90, 160), _shape_text(name), font=font_name, fill="#f8fafc", anchor="ra")
 
-    # ۳. اطلاعات (عدد و کلمه با هم ترکیب و پردازش می‌شوند)
+    # ۳. اطلاعات (اعداد و کلمات کاملاً جدا از هم رسم می‌شوند)
     start_y = 240
     gap = 80
-    draw.text((width - 90, start_y), _process_text(f"{_format_num(age)} سال"), font=font_num, fill="#e2e8f0", anchor="ra")
-    draw.text((width - 90, start_y + gap), _process_text(f"{_format_num(height)} سانتی‌متر"), font=font_num, fill="#e2e8f0", anchor="ra")
-    draw.text((width - 90, start_y + gap*2), _process_text(f"{_format_num(weight)} کیلوگرم"), font=font_num, fill="#e2e8f0", anchor="ra")
+    
+    # سن
+    draw.text((width - 200, start_y), _clean_num(age), font=font_num, fill="#e2e8f0", anchor="ra")
+    draw.text((width - 80, start_y), _shape_text("سال"), font=font_label, fill="#94a3b8", anchor="ra")
+    
+    # قد
+    draw.text((width - 280, start_y + gap), _clean_num(height), font=font_num, fill="#e2e8f0", anchor="ra")
+    draw.text((width - 80, start_y + gap), _shape_text("سانتی‌متر"), font=font_label, fill="#94a3b8", anchor="ra")
+    
+    # وزن
+    draw.text((width - 280, start_y + gap*2), _clean_num(weight), font=font_num, fill="#e2e8f0", anchor="ra")
+    draw.text((width - 80, start_y + gap*2), _shape_text("کیلوگرم"), font=font_label, fill="#94a3b8", anchor="ra")
 
     # ۴. کادر BMI
     box_x1, box_y1 = 80, 200
     box_x2, box_y2 = 450, 480
+    
     if "نرمال" in bmi_status: status_color = "#10b981" 
     elif "اضافه" in bmi_status or "چاقی" in bmi_status: status_color = "#ef4444" 
     else: status_color = "#f59e0b" 
     
     draw.rounded_rectangle([box_x1, box_y1, box_x2, box_y2], radius=30, fill=(30, 41, 59, 240), outline=status_color, width=3)
-    draw.text(((box_x1+box_x2)//2, box_y1 + 60), _process_text("شاخص توده بدنی (BMI)"), font=font_label, fill="#cbd5e1", anchor="mm")
-    draw.text(((box_x1+box_x2)//2, box_y1 + 180), _format_num(bmi), font=font_bmi, fill=status_color, anchor="mm")
-    draw.text(((box_x1+box_x2)//2, box_y1 + 260), _process_text(bmi_status), font=font_num, fill=status_color, anchor="mm")
+    
+    draw.text(((box_x1+box_x2)//2, box_y1 + 60), _shape_text("شاخص توده بدنی (BMI)"), font=font_label, fill="#cbd5e1", anchor="mm")
+    draw.text(((box_x1+box_x2)//2, box_y1 + 180), _clean_num(bmi), font=font_bmi, fill=status_color, anchor="mm")
+    draw.text(((box_x1+box_x2)//2, box_y1 + 260), _shape_text(bmi_status), font=font_num, fill=status_color, anchor="mm")
 
     # ۵. بخش پایین
     draw.line([(90, 500), (width-90, 500)], fill="#334155", width=2)
-    draw.text((width - 90, 525), _process_text("هدف فعلی:"), font=font_label, fill="#94a3b8", anchor="ra")
-    draw.text((width - 90, 565), _process_text(goal), font=font_num, fill="#38bdf8", anchor="ra")
-    draw.text((90, 525), _process_text("زیر نظر متخصص تغذیه:"), font=font_small, fill="#94a3b8", anchor="la")
-    draw.text((90, 565), _process_text("علی اکبر ابراهیم پور"), font=font_num, fill="#f8fafc", anchor="la")
-    draw.text((width//2, 615), _process_text("@AliAkbaro0"), font=font_small, fill="#64748b", anchor="mm")
+
+    # هدف
+    draw.text((width - 90, 525), _shape_text("هدف فعلی:"), font=font_label, fill="#94a3b8", anchor="ra")
+    draw.text((width - 90, 565), _shape_text(goal), font=font_num, fill="#38bdf8", anchor="ra")
+
+    # متخصص
+    draw.text((90, 525), _shape_text("زیر نظر متخصص تغذیه:"), font=font_small, fill="#94a3b8", anchor="la")
+    draw.text((90, 565), _shape_text("علی اکبر ابراهیم پور"), font=font_num, fill="#f8fafc", anchor="la")
+    
+    # آیدی
+    draw.text((width//2, 615), _shape_text("@AliAkbaro0"), font=font_small, fill="#64748b", anchor="mm")
 
     img_io = io.BytesIO()
     bg_img.convert("RGB").save(img_io, format="JPEG", quality=95)

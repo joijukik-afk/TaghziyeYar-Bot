@@ -1,8 +1,11 @@
+"""تولید کارت گرافیکی با ترکیب هوش مصنوعی (پس‌زمینه) و متن واضح فارسی"""
+
 import io
 import os
 import logging
 import urllib.parse
 import httpx
+import re
 import random
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
@@ -11,12 +14,12 @@ logger = logging.getLogger(__name__)
 FONT_PATH = "Vazirmatn-Bold.ttf"
 FONT_URL = "https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/fonts/ttf/Vazirmatn-Bold.ttf"
 
-# بررسی پشتیبانی از RTL در Pillow
+# بررسی پشتیبانی از libraqm برای رندر صحیح RTL
 HAS_RAQM = False
 try:
     from PIL import features
     HAS_RAQM = features.check("raqm")
-except ImportError:
+except Exception:
     pass
 logger.info(f"Pillow Raqm Support (RTL): {HAS_RAQM}")
 
@@ -32,14 +35,39 @@ async def _ensure_font_exists():
             logger.warning("خطا در دانلود فونت: %s", e)
 
 def _clean_num(val: str) -> str:
-    """فقط برای اعداد - بدون هیچ تغییری برمی‌گرداند"""
+    """تبدیل مقدار به عدد صحیح (حذف اعشار) برای نمایش صحیح."""
     try:
         num = float(val)
-        if num.is_integer(): 
+        if num.is_integer():
             return str(int(num))
         return str(num)
-    except:
+    except Exception:
         return str(val)
+
+def _render_value(draw, xy, value: str, unit: str, font_num, font_label, fill_num, fill_unit, anchor="ra"):
+    """رسم اعداد و واحدها به‌صورت جداگانه برای جلوگیری از برعکس شدن ارقام."""
+    x, y = xy
+    # ۱. رسم واحد (سمت راست‌ترین بخش)
+    if HAS_RAQM:
+        draw.text((x, y), unit, font=font_label, fill=fill_unit, anchor=anchor, direction="rtl")
+        # محاسبه عرض واحد برای قرار دادن عدد در سمت چپ آن
+        unit_bbox = draw.textbbox((x, y), unit, font=font_label, anchor=anchor, direction="rtl")
+        unit_width = unit_bbox[2] - unit_bbox[0]
+    else:
+        # روش جایگزین بدون Raqm (استفاده از bidi برای واحد)
+        import arabic_reshaper
+        from bidi.algorithm import get_display
+        reshaped_unit = get_display(arabic_reshaper.reshape(unit))
+        draw.text((x, y), reshaped_unit, font=font_label, fill=fill_unit, anchor=anchor)
+        unit_bbox = draw.textbbox((x, y), reshaped_unit, font=font_label, anchor=anchor)
+        unit_width = unit_bbox[2] - unit_bbox[0]
+
+    # ۲. رسم عدد در سمت چپ واحد با جهت LTR
+    num_x = x - unit_width - 10  # ۱۰ پیکسل فاصله بین عدد و واحد
+    if HAS_RAQM:
+        draw.text((num_x, y), value, font=font_num, fill=fill_num, anchor=anchor, direction="ltr")
+    else:
+        draw.text((num_x, y), value, font=font_num, fill=fill_num, anchor=anchor)
 
 async def generate_ai_health_card(
     name: str, age: str, weight: str, height: str, bmi: str, bmi_status: str, goal: str
@@ -68,6 +96,7 @@ async def generate_ai_health_card(
         logger.error(f"خطا در دریافت پس‌زمینه AI: {e}")
         bg_img = Image.new("RGBA", (1024, 640), "#0f172a")
 
+    # لایه تاریک برای خوانایی بهتر
     overlay = Image.new("RGBA", bg_img.size, (0, 0, 0, 0))
     draw_overlay = ImageDraw.Draw(overlay)
     draw_overlay.rectangle([(0, 0), bg_img.size], fill=(15, 23, 42, 190)) 
@@ -75,6 +104,7 @@ async def generate_ai_health_card(
     
     width, height = bg_img.size
 
+    # کادر شیشه‌ای (Glassmorphism)
     glass_box = Image.new("RGBA", bg_img.size, (0, 0, 0, 0))
     glass_draw = ImageDraw.Draw(glass_box)
     glass_draw.rounded_rectangle([(40, 40), (width-40, height-40)], radius=40, fill=(255, 255, 255, 15), outline=(56, 189, 248, 100), width=2)
@@ -92,28 +122,36 @@ async def generate_ai_health_card(
         logger.error("فونت لود نشد: %s", e)
         return io.BytesIO()
 
-    # تنظیمات راست‌چین (در صورت پشتیبانی)
-    text_kwargs = {"direction": "rtl"} if HAS_RAQM else {}
-
     # ۱. هدر کارت
-    draw.text((width//2, 85), "پاسپورت سلامت تغذیه‌یار", font=font_title, fill="#38bdf8", anchor="mm", **text_kwargs)
+    if HAS_RAQM:
+        draw.text((width//2, 85), "پاسپورت سلامت تغذیه‌یار", font=font_title, fill="#38bdf8", anchor="mm", direction="rtl")
+    else:
+        import arabic_reshaper
+        from bidi.algorithm import get_display
+        title_text = get_display(arabic_reshaper.reshape("پاسپورت سلامت تغذیه‌یار"))
+        draw.text((width//2, 85), title_text, font=font_title, fill="#38bdf8", anchor="mm")
+    
     draw.line([(300, 125), (width-300, 125)], fill="#38bdf8", width=2)
     
     # ۲. نام کاربر
-    draw.text((width - 90, 160), name, font=font_name, fill="#f8fafc", anchor="ra", **text_kwargs)
+    if HAS_RAQM:
+        draw.text((width - 90, 160), name, font=font_name, fill="#f8fafc", anchor="ra", direction="rtl")
+    else:
+        name_text = get_display(arabic_reshaper.reshape(name))
+        draw.text((width - 90, 160), name_text, font=font_name, fill="#f8fafc", anchor="ra")
 
-    # ۳. اطلاعات (ترکیب عدد و کلمه)
+    # ۳. اطلاعات (استفاده از تابع کمکی برای جداسازی عدد و واحد)
     start_y = 240
     gap = 80
     
     # سن
-    draw.text((width - 90, start_y), f"{_clean_num(age)} سال", font=font_num, fill="#e2e8f0", anchor="ra", **text_kwargs)
+    _render_value(draw, (width - 90, start_y), _clean_num(age), "سال", font_num, font_label, "#e2e8f0", "#94a3b8")
     
-    # قد
-    draw.text((width - 90, start_y + gap), f"{_clean_num(height)} سانتی‌متر", font=font_num, fill="#e2e8f0", anchor="ra", **text_kwargs)
+    # قد (حل قطعی مشکل 607)
+    _render_value(draw, (width - 90, start_y + gap), _clean_num(height), "سانتی‌متر", font_num, font_label, "#e2e8f0", "#94a3b8")
     
     # وزن
-    draw.text((width - 90, start_y + gap*2), f"{_clean_num(weight)} کیلوگرم", font=font_num, fill="#e2e8f0", anchor="ra", **text_kwargs)
+    _render_value(draw, (width - 90, start_y + gap*2), _clean_num(weight), "کیلوگرم", font_num, font_label, "#e2e8f0", "#94a3b8")
 
     # ۴. کادر BMI
     box_x1, box_y1 = 80, 200
@@ -125,20 +163,45 @@ async def generate_ai_health_card(
     
     draw.rounded_rectangle([box_x1, box_y1, box_x2, box_y2], radius=30, fill=(30, 41, 59, 240), outline=status_color, width=3)
     
-    draw.text(((box_x1+box_x2)//2, box_y1 + 60), "شاخص توده بدنی (BMI)", font=font_label, fill="#cbd5e1", anchor="mm", **text_kwargs)
+    # متن "شاخص توده بدنی (BMI)"
+    if HAS_RAQM:
+        draw.text(((box_x1+box_x2)//2, box_y1 + 60), "شاخص توده بدنی (BMI)", font=font_label, fill="#cbd5e1", anchor="mm", direction="rtl")
+    else:
+        bmi_title = get_display(arabic_reshaper.reshape("شاخص توده بدنی (BMI)"))
+        draw.text(((box_x1+box_x2)//2, box_y1 + 60), bmi_title, font=font_label, fill="#cbd5e1", anchor="mm")
+
+    # عدد BMI (فقط عدد، بدون واحد)
     draw.text(((box_x1+box_x2)//2, box_y1 + 180), _clean_num(bmi), font=font_bmi, fill=status_color, anchor="mm")
-    draw.text(((box_x1+box_x2)//2, box_y1 + 260), bmi_status, font=font_num, fill=status_color, anchor="mm", **text_kwargs)
+
+    # وضعیت BMI (نرمال، اضافه وزن و...)
+    if HAS_RAQM:
+        draw.text(((box_x1+box_x2)//2, box_y1 + 260), bmi_status, font=font_num, fill=status_color, anchor="mm", direction="rtl")
+    else:
+        bmi_status_text = get_display(arabic_reshaper.reshape(bmi_status))
+        draw.text(((box_x1+box_x2)//2, box_y1 + 260), bmi_status_text, font=font_num, fill=status_color, anchor="mm")
 
     # ۵. بخش پایین
     draw.line([(90, 500), (width-90, 500)], fill="#334155", width=2)
 
-    # هدف
-    draw.text((width - 90, 525), "هدف فعلی:", font=font_label, fill="#94a3b8", anchor="ra", **text_kwargs)
-    draw.text((width - 90, 560), goal, font=font_num, fill="#38bdf8", anchor="ra", **text_kwargs)
+    # هدف فعلی
+    if HAS_RAQM:
+        draw.text((width - 90, 525), "هدف فعلی:", font=font_label, fill="#94a3b8", anchor="ra", direction="rtl")
+        draw.text((width - 90, 560), goal, font=font_num, fill="#38bdf8", anchor="ra", direction="rtl")
+    else:
+        goal_title = get_display(arabic_reshaper.reshape("هدف فعلی:"))
+        draw.text((width - 90, 525), goal_title, font=font_label, fill="#94a3b8", anchor="ra")
+        goal_text = get_display(arabic_reshaper.reshape(goal))
+        draw.text((width - 90, 560), goal_text, font=font_num, fill="#38bdf8", anchor="ra")
 
-    # متخصص
-    draw.text((90, 525), "زیر نظر متخصص تغذیه:", font=font_small, fill="#94a3b8", anchor="la", **text_kwargs)
-    draw.text((90, 560), "علی اکبر ابراهیم پور", font=font_num, fill="#f8fafc", anchor="la", **text_kwargs)
+    # نام متخصص
+    if HAS_RAQM:
+        draw.text((90, 525), "زیر نظر متخصص تغذیه:", font=font_small, fill="#94a3b8", anchor="la", direction="rtl")
+        draw.text((90, 560), "علی اکبر ابراهیم پور", font=font_num, fill="#f8fafc", anchor="la", direction="rtl")
+    else:
+        expert_title = get_display(arabic_reshaper.reshape("زیر نظر متخصص تغذیه:"))
+        draw.text((90, 525), expert_title, font=font_small, fill="#94a3b8", anchor="la")
+        expert_name = get_display(arabic_reshaper.reshape("علی اکبر ابراهیم پور"))
+        draw.text((90, 560), expert_name, font=font_num, fill="#f8fafc", anchor="la")
     
     # آیدی تلگرام
     draw.text((width//2, 610), "@AliAkbaro0", font=font_small, fill="#64748b", anchor="mm")

@@ -6,6 +6,7 @@ import logging
 import urllib.parse
 import httpx
 import random
+import re
 from PIL import Image, ImageDraw, ImageFont, ImageFilter, features
 import arabic_reshaper
 from bidi.algorithm import get_display
@@ -30,14 +31,21 @@ async def _ensure_font_exists():
             logger.warning("خطا در دانلود فونت: %s", e)
 
 def _clean_num(val: str) -> str:
+    """پاکسازی کامل اعداد از هر کاراکتر مزاحم و اجبار به چپ‌به‌راست"""
     try:
-        num = float(val)
-        return str(int(num)) if num.is_integer() else str(num)
+        # ۱. حذف هر چیزی غیر از عدد و نقطه
+        clean_val = re.sub(r'[^\d.]', '', str(val))
+        # ۲. تبدیل به عدد (مثلاً 160.0)
+        num = float(clean_val)
+        # ۳. حذف اعشار (160.0 میشه 160)
+        s = str(int(num)) if num.is_integer() else str(num)
+        # ۴. اضافه کردن کاراکتر نامرئی LTR برای جلوگیری از برعکس شدن
+        return f"\u200E{s}" 
     except:
         return str(val)
 
 def _draw_text(draw, xy, text, font, fill, anchor="ra"):
-    """رسم متن‌های فارسی (RTL)"""
+    """رسم متن‌های فارسی"""
     if not text: return
     text = str(text)
     if HAS_RAQM:
@@ -48,11 +56,10 @@ def _draw_text(draw, xy, text, font, fill, anchor="ra"):
         draw.text(xy, bidi_text, font=font, fill=fill, anchor=anchor)
 
 def _draw_num(draw, xy, text, font, fill, anchor="ra"):
-    """رسم اعداد (اجبار به چپ‌به‌راست LTR) تا هرگز برعکس نشوند"""
+    """رسم اعداد با اجبار به چپ‌به‌راست"""
     if not text: return
     text = str(text)
     if HAS_RAQM:
-        # دستور صریح ltr به موتور رندر تا عدد را برعکس نکند
         draw.text(xy, text, font=font, fill=fill, anchor=anchor, direction="ltr")
     else:
         draw.text(xy, text, font=font, fill=fill, anchor=anchor)
@@ -87,11 +94,11 @@ async def generate_ai_health_card(
     draw_overlay.rectangle([(0, 0), bg_img.size], fill=(15, 23, 42, 200)) 
     bg_img = Image.alpha_composite(bg_img, overlay)
     
-    width, height = bg_img.size
+    width, height_img = bg_img.size
 
     glass_box = Image.new("RGBA", bg_img.size, (0, 0, 0, 0))
     glass_draw = ImageDraw.Draw(glass_box)
-    glass_draw.rounded_rectangle([(40, 40), (width-40, height-40)], radius=40, fill=(255, 255, 255, 15), outline=(56, 189, 248, 100), width=2)
+    glass_draw.rounded_rectangle([(40, 40), (width-40, height_img-40)], radius=40, fill=(255, 255, 255, 15), outline=(56, 189, 248, 100), width=2)
     bg_img = Image.alpha_composite(bg_img, glass_box)
     draw = ImageDraw.Draw(bg_img)
 
@@ -113,7 +120,7 @@ async def generate_ai_health_card(
     # ۲. نام
     _draw_text(draw, (width - 90, 160), name, font_name, "#f8fafc", anchor="ra")
 
-    # ۳. اطلاعات (عدد و کلمه کاملاً جدا از هم رسم می‌شوند)
+    # ۳. اطلاعات (عدد و کلمه جدا)
     start_y = 240
     gap = 75
     
@@ -121,7 +128,7 @@ async def generate_ai_health_card(
     _draw_num(draw, (width - 180, start_y), _clean_num(age), font_num, "#e2e8f0", anchor="ra")
     _draw_text(draw, (width - 70, start_y), "سال", font_label, "#94a3b8", anchor="ra")
     
-    # قد
+    # قد (با پاکسازی کامل)
     _draw_num(draw, (width - 200, start_y + gap), _clean_num(height), font_num, "#e2e8f0", anchor="ra")
     _draw_text(draw, (width - 70, start_y + gap), "سانتی‌متر", font_label, "#94a3b8", anchor="ra")
     
@@ -143,19 +150,19 @@ async def generate_ai_health_card(
     _draw_num(draw, ((box_x1+box_x2)//2, box_y1 + 170), _clean_num(bmi), font_bmi, status_color, anchor="mm")
     _draw_text(draw, ((box_x1+box_x2)//2, box_y1 + 250), bmi_status, font_num, status_color, anchor="mm")
 
-    # ۵. بخش پایین (مختصات بالاتر آمد تا بریده نشود)
-    draw.line([(90, 480), (width-90, 480)], fill="#334155", width=2)
+    # ۵. بخش پایین (مختصات بالاتر تا گم نشود)
+    draw.line([(90, 460), (width-90, 460)], fill="#334155", width=2)
 
     # هدف
-    _draw_text(draw, (width - 90, 510), "هدف فعلی:", font_label, "#94a3b8", anchor="ra")
-    _draw_text(draw, (width - 90, 550), goal, font_num, "#38bdf8", anchor="ra")
+    _draw_text(draw, (width - 90, 490), "هدف فعلی:", font_label, "#94a3b8", anchor="ra")
+    _draw_text(draw, (width - 90, 525), goal, font_num, "#38bdf8", anchor="ra")
 
     # متخصص
-    _draw_text(draw, (90, 510), "زیر نظر متخصص تغذیه:", font_small, "#94a3b8", anchor="la")
-    _draw_text(draw, (90, 550), "علی اکبر ابراهیم پور", font_num, "#f8fafc", anchor="la")
+    _draw_text(draw, (90, 490), "زیر نظر متخصص تغذیه:", font_small, "#94a3b8", anchor="la")
+    _draw_text(draw, (90, 525), "علی اکبر ابراهیم پور", font_num, "#f8fafc", anchor="la")
     
     # آیدی
-    _draw_text(draw, (width//2, 595), "@AliAkbaro0", font_small, "#64748b", anchor="mm")
+    _draw_text(draw, (width//2, 570), "@AliAkbaro0", font_small, "#64748b", anchor="mm")
 
     img_io = io.BytesIO()
     bg_img.convert("RGB").save(img_io, format="JPEG", quality=95)

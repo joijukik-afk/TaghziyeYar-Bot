@@ -121,3 +121,14 @@ class QuizHistory(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     question_text: Mapped[str] = mapped_column(String(500), unique=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+class SystemState(Base):
+    __tablename__ = "system_state"
+    key: Mapped[str] = mapped_column(String(50), primary_key=True)
+    value: Mapped[str] = mapped_column(String(255))
+
+class GeneratedCard(Base):
+    __tablename__ = "generated_cards"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    telegram_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True) 
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

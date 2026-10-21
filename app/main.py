@@ -274,8 +274,9 @@ async def cmd_mycard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         )
         await status_msg.delete()
     except Exception as e:
-        logger.error("Error generating card: %s", e)
-        await status_msg.edit_text("❌ متأسفانه در ساخت کارت خطایی پیش آمد.")
+        logger.error("Error generating card for user %s: %s", user.id, e, exc_info=True)
+        # نمایش خطای دقیق برای دیباگ
+        await status_msg.edit_text(f"❌ متأسفانه در ساخت کارت خطایی پیش آمد.\n\nخطا: `{e}`", parse_mode="Markdown")
 # 👆 پایان دستور کارت 👆
 
 @private_only

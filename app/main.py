@@ -171,7 +171,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     if not update.message or not user: return
     
-    # بررسی لینک هوشمند (تبلیغات)
     if context.args and context.args[0] == "mycard":
         db_user = await repo.get_user_by_telegram_id(user.id)
         profile = await repo.get_profile(db_user.id) if db_user else None
@@ -271,11 +270,12 @@ async def cmd_mycard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     }.get(profile.goal or "", "نامشخص")
     
     try:
+        # 👇 اعداد دقیقاً اینجا به عدد صحیح تبدیل می‌شوند تا هیچ نقطه اعشاری به عکس‌ساز نره
         card_img = await generate_ai_health_card(
             name=user.first_name or "کاربر",
-            age=str(profile.age or "-"),
-            weight=str(weight),
-            height=str(profile.height_cm or "-"),
+            age=str(int(profile.age)) if profile.age else "-",
+            weight=str(int(weight)) if float(weight).is_integer() else str(weight),
+            height=str(int(profile.height_cm)) if profile.height_cm else "-",
             bmi=str(bmi_val),
             bmi_status=bmi_status,
             goal=goal_fa
@@ -412,7 +412,6 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
 #  Admin Commands
 # ---------------------------------------------------------------------------
 async def cmd_advertise(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """ارسال کمپین تبلیغاتی به همه گروه‌ها"""
     user = update.effective_user
     if not user or not get_settings().is_admin(user.id): return
     
@@ -422,7 +421,6 @@ async def cmd_advertise(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         
     status_msg = await update.message.reply_text(f"⏳ در حال ارسال تبلیغ به {len(groups)} گروه...")
     
-    # متن تبلیغاتی حرفه‌ای
     ad_text = (
         "🌟 <b>تغذیه‌یار | دستیار هوشمند سلامتی شما</b> 🌟\n\n"
         "آیا از وضعیت سلامتی و تناسب اندام خود خبر دارید؟ 🤔\n"
@@ -449,7 +447,7 @@ async def cmd_advertise(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 reply_markup=reply_markup
             )
             success += 1
-            await asyncio.sleep(1) # جلوگیری از بلاک شدن
+            await asyncio.sleep(1) 
         except Forbidden:
             await repo.deactivate_group(chat_id=g.chat_id)
             fail += 1
@@ -659,7 +657,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("broadcast_covers", cmd_broadcast_covers)); app.add_handler(CommandHandler("leave", cmd_leave_group)); app.add_handler(CommandHandler("leavegroup", cmd_leave_group))
     app.add_handler(CommandHandler("sendto", cmd_send_to_group)); app.add_handler(CommandHandler("globalnews", cmd_global_news)); app.add_handler(CommandHandler("ban", cmd_ban)); app.add_handler(CommandHandler("unban", cmd_unban))
     app.add_handler(CommandHandler("forcepost", cmd_forcepost))
-    app.add_handler(CommandHandler("advertise", cmd_advertise)) # 👈 دستور جدید تبلیغات
+    app.add_handler(CommandHandler("advertise", cmd_advertise))
     
     app.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.ALL, gmanager.on_group_message), group=1)
     

@@ -1,4 +1,4 @@
-"""بازی مار و پله - نسخه نهایی و پایدار (بدون کرش، بدون باگ، فوق سریع)"""
+"""بازی مار و پله - نسخه نهایی و ضد کرش (بدون باگ، فوق سریع)"""
 
 import random
 import logging
@@ -19,20 +19,22 @@ LUCK = {10: 5, 35: 10, 60: 15, 85: 10}
 MISFORTUNE = {30: -5, 50: -10, 75: -5, 97: -10}
 
 MAX_POS = 100
-TURN_TIMEOUT = 40  # ثانیه
+TURN_TIMEOUT = 45  # زمان نوبت (ثانیه)
 PLAYER_ICONS = ["🦊", "🐼", "🦁", "🐸"]
 BUMP_COOLDOWN = 5
 
 ACTIVE_GAMES = {}
 GAME_LOCKS = {}
 
+def p_num(n: int) -> str:
+    """تبدیل اعداد به فارسی برای خوانایی بهتر در متن"""
+    return str(n).translate(str.maketrans('0123456789', '۰۱۲۳۴۵۶۷۸۹'))
+
 def _get_safe_name(user) -> str:
-    """امن‌سازی نام برای جلوگیری از خطای HTML"""
-    name = user.first_name or "کاربر"
-    return html.escape(name)
+    return html.escape(user.first_name or "کاربر")
 
 def _draw_board(players: list) -> str:
-    """رسم نقشه ۱۰۰ خانه"""
+    """رسم نقشه با اجبار به چپ‌به‌راست (LTR)"""
     cells = {}
     for pos in LADDERS: cells[pos] = "🪜"
     for pos in SNAKES: cells[pos] = "🐍"
@@ -56,7 +58,8 @@ def _draw_board(players: list) -> str:
             else: 
                 line += f"{pos:^4}" if pos < 100 else " 100"
         lines.append(line)
-    return f"<pre>{chr(10).join(lines)}</pre>"
+    # دستور dir="ltr" از به‌هم‌ریختگی نقشه توسط تلگرام جلوگیری می‌کند
+    return f"<pre dir=\"ltr\">{chr(10).join(lines)}</pre>"
 
 def _get_ui(game: dict) -> str:
     if game["status"] == "lobby":
@@ -72,15 +75,16 @@ def _get_ui(game: dict) -> str:
         header = "🤖 <b>نوبت ربات است...</b>"
     else:
         mention = f"<a href='tg://user?id={current['id']}'>{current['name']}</a>"
-        dice = f" | 🎲 {game['last_dice']}" if game.get('last_dice') else ""
-        header = f"🔔 <b>نوبت:</b> {current['icon']} {mention}{dice}"
+        dice_str = f" | 🎲 {p_num(game['last_dice'])}" if game.get('last_dice') else ""
+        # استفاده از کاراکتر جهت‌دار برای جلوگیری از برعکس شدن
+        header = f"🔔 <b>نوبت:</b> {current['icon']} {mention}{dice_str}"
 
     map_text = f"\n🗺 <b>نقشه:</b>\n{_draw_board(game['players'])}\n"
 
     stats = "\n📊 <b>آمار:</b>\n"
     for idx, p in enumerate(game["players"]):
         circle = "🟢" if idx == game["turn_index"] else "⚪"
-        pos_text = "⏳ منتظر ۶" if p["pos"] == 0 else ("🏆 برنده" if p["pos"] == MAX_POS else f"خانه {p['pos']:02d}")
+        pos_text = "⏳ منتظر ۶" if p["pos"] == 0 else ("🏆 برنده" if p["pos"] == MAX_POS else f"خانه {p_num(p['pos'])}")
         stats += f"{circle} {p['icon']} {p['name']}: {pos_text}\n"
         
     events = f"\n📢 <i>{game.get('last_action', '')}</i>"
@@ -94,6 +98,7 @@ def _get_lobby_kb(game: dict) -> InlineKeyboardMarkup:
     ]
     if len(game["players"]) >= 2: 
         kb.insert(1, [InlineKeyboardButton("🚀 شروع بازی", callback_data="snake_start")])
+    kb.append([InlineKeyboardButton("🛑 بستن لابی", callback_data="snake_force_stop")])
     return InlineKeyboardMarkup(kb)
 
 def _get_game_kb(game: dict, is_rolling: bool = False) -> InlineKeyboardMarkup:
@@ -105,7 +110,9 @@ def _get_game_kb(game: dict, is_rolling: bool = False) -> InlineKeyboardMarkup:
         kb.append([InlineKeyboardButton("🎲 پرتاب تاس", callback_data="snake_roll")])
         kb.append([InlineKeyboardButton("⬇️ آوردن به پایین", callback_data="snake_bump")])
         kb.append([InlineKeyboardButton("📜 قوانین", callback_data="snake_rules")])
-        kb.append([InlineKeyboardButton("❌ انصراف", callback_data="snake_surrender")])
+        kb.append([InlineKeyboardButton("❌ انصراف از بازی", callback_data="snake_surrender")])
+        # دکمه اضطراری برای وقتی که بازی به هر دلیلی گیر کرد
+        kb.append([InlineKeyboardButton("🛑 بستن اجباری بازی", callback_data="snake_force_stop")])
     return InlineKeyboardMarkup(kb) if kb else None
 
 async def _safe_edit(context: ContextTypes.DEFAULT_TYPE, chat_id: int, msg_id: int, text: str, kb=None):
@@ -123,7 +130,7 @@ async def _safe_edit(context: ContextTypes.DEFAULT_TYPE, chat_id: int, msg_id: i
         logger.error(f"Edit error: {e}")
 
 def _cleanup(chat_id: int):
-    """پاکسازی کامل بازی و تایمرها"""
+    """پاکسازی کامل و آزادسازی قفل"""
     if chat_id in ACTIVE_GAMES:
         game = ACTIVE_GAMES[chat_id]
         if game.get("timer_task"): game["timer_task"].cancel()
@@ -170,7 +177,7 @@ def _schedule_bot(context, chat_id: int, game: dict):
     game["bot_task"] = asyncio.create_task(_bot_turn())
 
 async def _execute_roll(context: ContextTypes.DEFAULT_TYPE, chat_id: int, game: dict, user_id: int):
-    """هسته اصلی بازی - همیشه باید داخل Lock اجرا شود"""
+    """هسته اصلی بازی - با محافظ ضد کرش (try/finally)"""
     if not game or game["status"] != "playing" or game.get("is_rolling"): return
     if game["turn_index"] >= len(game["players"]): return
     
@@ -191,14 +198,14 @@ async def _execute_roll(context: ContextTypes.DEFAULT_TYPE, chat_id: int, game: 
         old_pos = current["pos"]
         
         if old_pos == 0 and dice != 6:
-            game["last_action"] = f"🔒 {current['name']} برای ورود باید ۶ بیاورد! (تاس: {dice})"
+            game["last_action"] = f"🔒 {current['name']} برای ورود باید ۶ بیاورد! (تاس: {p_num(dice)})"
         else:
             target_pos = old_pos + dice if old_pos != 0 else dice
             if target_pos > MAX_POS:
                 target_pos = MAX_POS - (target_pos - MAX_POS)
-                game["last_action"] = f"🔄 {current['name']} تاس {dice} آورد، از ۱۰۰ رد شد و برگشت به {target_pos}."
+                game["last_action"] = f"🔄 {current['name']} تاس {p_num(dice)} آورد، از ۱۰۰ رد شد و برگشت به {p_num(target_pos)}."
             else:
-                game["last_action"] = f"➡️ {current['name']} تاس {dice} آورد و به خانه {target_pos} رفت."
+                game["last_action"] = f"➡️ {current['name']} تاس {p_num(dice)} آورد و به خانه {p_num(target_pos)} رفت."
             
             current["pos"] = target_pos
 
@@ -209,24 +216,21 @@ async def _execute_roll(context: ContextTypes.DEFAULT_TYPE, chat_id: int, game: 
 
             if target_pos in LADDERS:
                 current["pos"] = LADDERS[target_pos]
-                game["last_action"] += f"\n🪜 پله رفت به {current['pos']}."
+                game["last_action"] += f"\n🪜 پله رفت به {p_num(current['pos'])}."
             elif target_pos in SNAKES:
                 current["pos"] = SNAKES[target_pos]
-                game["last_action"] += f"\n🐍 مار خورد به {current['pos']}."
+                game["last_action"] += f"\n🐍 مار خورد به {p_num(current['pos'])}."
             elif target_pos in DRAGONS:
                 current["pos"] = DRAGONS[target_pos]
-                game["last_action"] += f"\n🐉 اژدها خورد به {current['pos']}."
+                game["last_action"] += f"\n🐉 اژدها خورد به {p_num(current['pos'])}."
             elif target_pos in LUCK:
                 current["pos"] = min(MAX_POS, target_pos + LUCK[target_pos])
-                game["last_action"] += f"\n🎁 شانس آورد! {LUCK[target_pos]} خانه جلو رفت."
+                game["last_action"] += f"\n🎁 شانس آورد! {p_num(LUCK[target_pos])} خانه جلو رفت."
             elif target_pos in MISFORTUNE:
                 current["pos"] = max(0, target_pos + MISFORTUNE[target_pos])
-                game["last_action"] += f"\n⚡️ صاعقه خورد! {abs(MISFORTUNE[target_pos])} خانه عقب افتاد."
+                game["last_action"] += f"\n⚡️ صاعقه خورد! {p_num(abs(MISFORTUNE[target_pos]))} خانه عقب افتاد."
 
-        game["is_rolling"] = False
-        
-        # یک تاخیر کوتاه برای اینکه کاربر ببیند چه شد
-        await asyncio.sleep(0.5) 
+        await asyncio.sleep(0.8) # مکث کوتاه برای خوانایی
         
         if current["pos"] == MAX_POS:
             game["status"] = "finished"
@@ -242,20 +246,24 @@ async def _execute_roll(context: ContextTypes.DEFAULT_TYPE, chat_id: int, game: 
 
         next_p = game["players"][game["turn_index"]]
         await _safe_edit(context, chat_id, msg_id, _get_ui(game), _get_game_kb(game, False))
-
-        if next_p["id"] == -1:
-            _schedule_bot(context, chat_id, game)
-        else:
-            _schedule_timer(context, chat_id, game, next_p["id"])
-            
+        
     except Exception as e:
         logger.error(f"Roll error: {e}", exc_info=True)
+        game["last_action"] = "⚠️ خطایی رخ داد، نوبت رد شد."
+    finally:
+        # 👇 این بخش حیاتی است: در هر شرایطی قفل بازی را باز می‌کند
         game["is_rolling"] = False
+        if chat_id in ACTIVE_GAMES and game["status"] == "playing":
+            next_p = game["players"][game["turn_index"]]
+            if next_p["id"] == -1:
+                _schedule_bot(context, chat_id, game)
+            else:
+                _schedule_timer(context, chat_id, game, next_p["id"])
 
 async def cmd_snake(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
     if chat_id in ACTIVE_GAMES: 
-        return await update.message.reply_text("⚠️ یک بازی در جریان است!")
+        return await update.message.reply_text("⚠️ یک بازی در جریان است! اگر بازی گیر کرده، دکمه «🛑 بستن اجباری» را در پیام بازی بزنید.")
     
     name = _get_safe_name(update.effective_user)
     ACTIVE_GAMES[chat_id] = {
@@ -298,16 +306,24 @@ async def handle_snake(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             return await query.answer("صبر کنید...", show_alert=False)
 
         if query.data == "snake_rules":
-            # متن کوتاه تا ارور تلگرام نده
             rules = (
                 "📜 قوانین:\n"
-                "1. برای شروع 6 بیارید.\n"
-                "2. با 6 دوباره بندازید.\n"
-                "3. روی حریف بیفتید، به خانه 1 میره.\n"
-                "4. مار و اژدها عقب میبرن.\n"
-                "5. اولین نفر به 100 برنده است."
+                "۱. برای شروع ۶ بیارید.\n"
+                "۲. با ۶ دوباره بندازید.\n"
+                "۳. روی حریف بیفتید، به خانه ۱ میره.\n"
+                "۴. مار و اژدها عقب میبرن.\n"
+                "۵. اولین نفر به ۱۰۰ برنده است."
             )
             return await query.answer(rules, show_alert=True)
+
+        if query.data == "snake_force_stop":
+            # دکمه نجات اضطراری
+            if game["status"] == "playing" and user.id != game["host_id"]:
+                return await query.answer("فقط سازنده بازی میتواند بازی را اجباری ببندد!", show_alert=True)
+            
+            _cleanup(chat_id)
+            await _safe_edit(context, chat_id, msg_id, "🛑 بازی توسط سازنده به طور کامل بسته شد.", None)
+            return await query.answer("بازی بسته شد.", show_alert=True)
 
         if query.data == "snake_bump":
             if not any(p["id"] == user.id for p in game["players"]): 

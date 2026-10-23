@@ -28,7 +28,7 @@ from app.bot import messages as msg
 from app.bot import profile_commands as pcmd
 from app.bot import setup_wizard as wizard
 from app.bot import snake_game
-from app.bot import koma_commands as kcmd  # 👈 اضافه شد
+from app.bot import koma_commands as kcmd  # 👈 ایمپورت موزیک
 from app.bot.content import get_fact, get_myth, get_tip
 from app.config import get_settings
 from app.database import repository as repo
@@ -48,13 +48,11 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 #  Helper: Dynamic Admin Check & Monitoring
 # ---------------------------------------------------------------------------
 async def is_admin_user(user_id: int) -> bool:
-    """چک کردن ادمین بودن (هم صاحب ربات، هم ادمین‌های داینامیک)"""
     if get_settings().is_admin(user_id): return True
     dyn_admins = await repo.get_dynamic_admins()
     return user_id in dyn_admins
 
 async def notify_owner(context: ContextTypes.DEFAULT_TYPE, actor: User, action: str):
-    """ارسال گزارش لحظه‌ای به پی‌وی صاحب ربات"""
     settings = get_settings()
     owner_id = None
     if hasattr(settings, 'admin_ids') and settings.admin_ids:
@@ -62,8 +60,7 @@ async def notify_owner(context: ContextTypes.DEFAULT_TYPE, actor: User, action: 
     elif hasattr(settings, 'admin_id'):
         owner_id = settings.admin_id
         
-    if not owner_id or actor.id == owner_id: 
-        return  
+    if not owner_id or actor.id == owner_id: return  
     
     text = (
         f"🔔 <b>گزارش لحظه‌ای مدیریت:</b>\n\n"
@@ -326,7 +323,6 @@ async def cmd_mycard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     except Exception as e:
         logger.error("Error generating card for user %s: %s", user.id, e, exc_info=True)
         await status_msg.edit_text(f"❌ متأسفانه در ساخت کارت خطایی پیش آمد.\n\nخطا: `{e}`", parse_mode="Markdown")
-# 👆 پایان دستور کارت 👆
 
 @private_only
 @rate_limited
@@ -699,7 +695,7 @@ async def post_init(application: Application) -> None:
     init_engine()
     import app.database.models
     import app.database.quiz_models 
-    import app.database.music_models  # 👈 اضافه شد
+    import app.database.music_models  # 👈 ایمپورت جدول موزیک
     await create_all()
     me = await application.bot.get_me()
     logger.info("Bot started as @%s", me.username)
@@ -756,7 +752,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("snake", snake_game.cmd_snake))
     app.add_handler(CallbackQueryHandler(snake_game.handle_snake, pattern=r"^snake_"))
     
-    # 👇 هندلر جدید موزیک اضافه شد
+    # 👇 هندلر موزیک
     app.add_handler(CommandHandler("koma", kcmd.cmd_koma))
     
     app.add_handler(ChatMemberHandler(gmanager.on_bot_added, ChatMemberHandler.MY_CHAT_MEMBER))

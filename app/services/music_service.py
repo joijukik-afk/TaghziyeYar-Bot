@@ -1,4 +1,4 @@
-"""موتور جستجوی چندمنبعی KOMA (فقط SoundCloud, Bandcamp, Archive.org)"""
+"""موتور جستجوی چندمنبعی KOMA (SoundCloud, Bandcamp, Archive.org)"""
 
 import os
 import random
@@ -19,20 +19,36 @@ from app.database.session import session_scope
 
 logger = logging.getLogger(__name__)
 
-# 👇 کوئری‌های دقیق برای سبک‌های KOMA
+# 👇 لیست دقیق سبک‌ها و هنرمندان درخواستی شما
 SEARCH_QUERIES = [
-    "Øneheart snowfall slowed reverb",
-    "dreamcore playlist",
-    "dark ambient music",
-    "the last of us ambient guitar",
-    "liminal space music",
-    "ethereal ambient",
-    "sad ambient music",
-    "slowed and reverb",
-    "weirdcore playlist",
-    "melancholic ambient",
-    "post apocalyptic ambient",
-    "acoustic ambient guitar",
+    # هنرمندان معروف و درخواستی
+    "Øneheart slowed reverb",
+    "reidenshi slowed reverb",
+    "my head is empty slowed reverb",
+    "daniel.mp3 slowed reverb",
+    "analog_mannequin slowed reverb",
+    "TileKid slowed reverb",
+    "Bonjr slowed reverb",
+    ".diedlonely slowed reverb",
+    "Lloyd Vaan slowed reverb",
+    
+    # سبک‌های خاص درخواستی
+    "dark dreamy slowed reverb",
+    "coma vibe slowed reverb",
+    "dreamcore slowed reverb",
+    "ethereal wave slowed reverb",
+    "liminal dreamcore slowed reverb",
+    "dreamcore ambient slowed reverb",
+    
+    # آهنگ‌های غمگین و ایرانی
+    "sad slowed reverb playlist",
+    "melancholic ambient slowed reverb",
+    "غمگین ایرانی slowed reverb",
+    "dark snowy night slowed reverb",
+    
+    # نسخه‌های طولانی و ریمیکس
+    "snowfall extended slowed reverb",
+    "dreamcore slowed reverb remix"
 ]
 
 ARCHIVE_SEARCH_URL = "https://archive.org/advancedsearch.php"
@@ -41,7 +57,6 @@ ARCHIVE_DOWNLOAD_URL = "https://archive.org/download/{identifier}/{filename}"
 
 MAX_SIZE = 45 * 1024 * 1024
 MIN_SIZE = 1024 * 1024
-COOKIE_FILE = os.getenv("YTDLP_COOKIE_FILE", "cookies.txt")
 
 async def _is_used(video_id: str) -> bool:
     async with session_scope() as session:
@@ -77,7 +92,7 @@ async def _record_track(data: dict, file_id: str) -> None:
         await session.flush()
 
 def _download_with_ytdlp(url: str, output_template: str) -> Optional[dict]:
-    """دانلود از SoundCloud یا Bandcamp با yt-dlp"""
+    """دانلود از SoundCloud یا Bandcamp"""
     ydl_opts = {
         'format': 'bestaudio/best',
         'postprocessors': [{
@@ -89,10 +104,6 @@ def _download_with_ytdlp(url: str, output_template: str) -> Optional[dict]:
         'quiet': True,
         'no_warnings': True,
     }
-    
-    # اگر فایل کوکی وجود داشت (برای دور زدن احتمالی محدودیت‌های ساندکلود)
-    if os.path.exists(COOKIE_FILE):
-        ydl_opts['cookiefile'] = COOKIE_FILE
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -119,7 +130,6 @@ def _download_with_ytdlp(url: str, output_template: str) -> Optional[dict]:
         logger.error(f"yt-dlp download error for {url}: {e}")
     return None
 
-# ---------- ۱. جستجو در SoundCloud ----------
 def _search_soundcloud(query: str, max_results: int = 5) -> List[Dict]:
     ydl_opts = {'quiet': True, 'no_warnings': True, 'extract_flat': True}
     try:
@@ -136,7 +146,6 @@ def _search_soundcloud(query: str, max_results: int = 5) -> List[Dict]:
         logger.warning(f"SoundCloud search failed: {e}")
         return []
 
-# ---------- ۲. جستجو در Bandcamp ----------
 def _search_bandcamp(query: str, max_results: int = 5) -> List[Dict]:
     ydl_opts = {'quiet': True, 'no_warnings': True, 'extract_flat': True}
     try:
@@ -153,9 +162,8 @@ def _search_bandcamp(query: str, max_results: int = 5) -> List[Dict]:
         logger.warning(f"Bandcamp search failed: {e}")
         return []
 
-# ---------- ۳. جستجو در Archive.org ----------
 async def _search_archive(query: str, max_results: int = 5) -> List[Dict]:
-    q = f'mediatype:audio AND format:MP3 AND ({query}) AND length:[180 TO 600]'
+    q = f'mediatype:audio AND format:MP3 AND ({query}) AND length:[180 TO 7200]'
     params = {
         "q": q,
         "fl[]": ["identifier", "title", "creator"],
@@ -197,19 +205,20 @@ async def _download_from_archive(identifier: str) -> Optional[dict]:
         url = ARCHIVE_DOWNLOAD_URL.format(identifier=identifier, filename=mp3["name"])
         local_path = os.path.join(tempfile.gettempdir(), f"koma_{identifier}.mp3")
 
-        async with client.stream("GET", url, timeout=60.0, follow_redirects=True) as resp:
-            resp.raise_for_status()
-            sha = hashlib.sha256()
-            total = 0
-            with open(local_path, "wb") as f:
-                async for chunk in resp.aiter_bytes(8192):
-                    total += len(chunk)
-                    if total > MAX_SIZE:
-                        f.close()
-                        os.remove(local_path)
-                        return None
-                    f.write(chunk)
-                    sha.update(chunk)
+        async with httpx.AsyncClient() as client:
+            async with client.stream("GET", url, timeout=60.0, follow_redirects=True) as resp:
+                resp.raise_for_status()
+                sha = hashlib.sha256()
+                total = 0
+                with open(local_path, "wb") as f:
+                    async for chunk in resp.aiter_bytes(8192):
+                        total += len(chunk)
+                        if total > MAX_SIZE:
+                            f.close()
+                            os.remove(local_path)
+                            return None
+                        f.write(chunk)
+                        sha.update(chunk)
 
         if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
             return {"path": local_path, "hash": sha.hexdigest(), "size": total}
@@ -220,12 +229,10 @@ async def _download_from_archive(identifier: str) -> Optional[dict]:
             except: pass
     return None
 
-# ---------- تابع اصلی ----------
 async def fetch_and_send_music(bot: Bot, chat_id: int) -> bool:
     query = random.choice(SEARCH_QUERIES)
     logger.info(f"Searching all sources for: {query}")
 
-    # جستجوی موازی در ساندکلود، بندکمپ و آرشیو
     sc_task = asyncio.to_thread(_search_soundcloud, query, 5)
     bc_task = asyncio.to_thread(_search_bandcamp, query, 5)
     ar_task = _search_archive(query, 5)

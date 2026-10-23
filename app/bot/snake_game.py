@@ -1,10 +1,9 @@
-"""بازی مار و پله - نسخه نهایی، فوق سریع، متصل به هوش مصنوعی و بدون کرش"""
+"""بازی مار و پله - نسخه استاندارد تلگرام (بدون کرش، بدون اسپم، تک‌رفرش)"""
 
 import random
 import logging
 import html
 import asyncio
-import time
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from telegram.error import BadRequest, RetryAfter
@@ -16,7 +15,7 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-# --- تنظیمات بازی ---
+# تنظیمات بازی
 LADDERS = {1: 38, 4: 14, 9: 31, 21: 42, 28: 84, 36: 44, 51: 67, 71: 91, 80: 100}
 SNAKES = {16: 6, 47: 26, 49: 11, 56: 53, 62: 19, 64: 60, 87: 24, 93: 73, 95: 75, 98: 78}
 DRAGONS = {20: 5, 40: 15, 70: 35, 90: 55}
@@ -24,7 +23,7 @@ LUCK = {10: 5, 35: 10, 60: 15, 85: 10}
 MISFORTUNE = {30: -5, 50: -10, 75: -5, 97: -10}
 
 MAX_POS = 100
-TURN_TIMEOUT = 35  # ثانیه
+TURN_TIMEOUT = 40
 PLAYER_ICONS = ["🦊", "🐼", "🦁", "🐸"]
 BOT_ICON = "🤖"
 ACTIVE_GAMES = {}
@@ -118,6 +117,7 @@ def _get_game_kb(game: dict, is_rolling: bool = False) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(kb) if kb else None
 
 async def _safe_edit(context: ContextTypes.DEFAULT_TYPE, chat_id: int, msg_id: int, text: str, kb=None):
+    """ویرایش امن پیام با مدیریت کامل خطاهای تلگرام"""
     try:
         await context.bot.edit_message_text(
             chat_id=chat_id, message_id=msg_id, text=text,
@@ -133,6 +133,8 @@ async def _safe_edit(context: ContextTypes.DEFAULT_TYPE, chat_id: int, msg_id: i
             else:
                 logger.warning(f"Edit failed: {e}")
     except RetryAfter as e:
+        # اگر تلگرام محدودیت گذاشت، صبر میکنیم (بدون کرش)
+        logger.warning(f"Flood control: waiting {e.retry_after}s")
         await asyncio.sleep(e.retry_after)
     except Exception as e:
         logger.error(f"Edit error: {e}")
@@ -156,12 +158,12 @@ def _schedule_next(context: ContextTypes.DEFAULT_TYPE, chat_id: int, game: dict)
             if g["status"] == "playing" and not g.get("is_rolling"):
                 if g["players"][g["turn_index"]]["id"] == next_p["id"]:
                     if next_p["id"] != -1:
-                        g["last_action"] = f"⏰ زمان {next_p['name']} تمام شد! ربات براش تاس انداخت."
+                        g["last_action"] = f"⏰ زمان {next_p['name']} تمام شد!"
                     await _do_roll(ctx, chat_id, g, next_p["id"])
 
     if next_p["id"] == -1:
-        # هوش مصنوعی ۲.۵ ثانیه فکر میکنه (برای تولید متن)
-        game["bot_job"] = context.job_queue.run_once(_timer_callback, when=2.5, chat_id=chat_id)
+        # تاخیر برای AI
+        game["bot_job"] = context.job_queue.run_once(_timer_callback, when=2.0, chat_id=chat_id)
     else:
         game["timer_job"] = context.job_queue.run_once(_timer_callback, when=TURN_TIMEOUT, chat_id=chat_id)
 
@@ -171,10 +173,11 @@ async def _get_ai_taunt(event: str) -> str:
     prompt = f"تو در بازی مار و پله هستی. رویداد: {event}. یک جمله کوتاه (حداکثر ۸ کلمه)، باحال و رقابتی بگو. بدون ایموجی."
     try:
         ai = get_ai_service()
-        res, _ = await asyncio.wait_for(ai.ask(user_message=prompt, user_name="AI", user_profile_summary="", user_id=-1), timeout=6.0)
+        # تایم اوت ۵ ثانیه‌ای تا بازی گیر نکنه
+        res, _ = await asyncio.wait_for(ai.ask(user_message=prompt, user_name="AI", user_profile_summary="", user_id=-1), timeout=5.0)
         return res.strip().replace("\n", " ") if res else ""
     except Exception:
-        return "" # اگر AI جواب نداد، بازی کرش نمیکنه
+        return ""
 
 async def _do_roll(context: ContextTypes.DEFAULT_TYPE, chat_id: int, game: dict, user_id: int):
     if game.get("is_rolling"): return
@@ -190,9 +193,6 @@ async def _do_roll(context: ContextTypes.DEFAULT_TYPE, chat_id: int, game: dict,
     _safe_remove_job(game.get("bot_job"))
 
     try:
-        # قفل کردن دکمه‌ها
-        await _safe_edit(context, chat_id, msg_id, _get_ui(game), _get_game_kb(game, True))
-
         dice = random.randint(1, 6)
         game["last_dice"] = dice
         old_pos = current["pos"]
@@ -275,6 +275,7 @@ async def _do_roll(context: ContextTypes.DEFAULT_TYPE, chat_id: int, game: dict,
     finally:
         game["is_rolling"] = False
         if chat_id in ACTIVE_GAMES and game["status"] == "playing":
+            # 👇 فقط یک بار آپدیت میکنیم (بهترین حالت استاندارد)
             await _safe_edit(context, chat_id, msg_id, _get_ui(game), _get_game_kb(game, False))
             _schedule_next(context, chat_id, game)
 

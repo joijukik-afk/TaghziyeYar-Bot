@@ -1,14 +1,14 @@
-"""بازی مار و پله - نسخه نهایی با حریف هوش مصنوعی واقعی (AI)"""
+"""بازی مار و پله - نسخه نهایی، فوق سریع، متصل به هوش مصنوعی و بدون کرش"""
 
 import random
 import logging
 import html
 import asyncio
+import time
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
-from telegram.error import BadRequest
+from telegram.error import BadRequest, RetryAfter
 
-# ایمپورت سرویس هوش مصنوعی پروژه
 try:
     from app.services.ai_service import get_ai_service
 except ImportError:
@@ -16,7 +16,7 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-# تنظیمات بازی
+# --- تنظیمات بازی ---
 LADDERS = {1: 38, 4: 14, 9: 31, 21: 42, 28: 84, 36: 44, 51: 67, 71: 91, 80: 100}
 SNAKES = {16: 6, 47: 26, 49: 11, 56: 53, 62: 19, 64: 60, 87: 24, 93: 73, 95: 75, 98: 78}
 DRAGONS = {20: 5, 40: 15, 70: 35, 90: 55}
@@ -24,10 +24,9 @@ LUCK = {10: 5, 35: 10, 60: 15, 85: 10}
 MISFORTUNE = {30: -5, 50: -10, 75: -5, 97: -10}
 
 MAX_POS = 100
-TURN_TIMEOUT = 40  # ثانیه
+TURN_TIMEOUT = 35  # ثانیه
 PLAYER_ICONS = ["🦊", "🐼", "🦁", "🐸"]
 BOT_ICON = "🤖"
-
 ACTIVE_GAMES = {}
 
 def p_num(n: int) -> str:
@@ -41,10 +40,8 @@ def _get_safe_name(user) -> str:
 
 def _safe_remove_job(job):
     if job:
-        try:
-            job.schedule_removal()
-        except Exception:
-            pass
+        try: job.schedule_removal()
+        except Exception: pass
 
 def _draw_board(players: list) -> str:
     cells = {}
@@ -115,7 +112,7 @@ def _get_game_kb(game: dict, is_rolling: bool = False) -> InlineKeyboardMarkup:
     if game["status"] == "playing":
         kb.append([InlineKeyboardButton("🎲 پرتاب تاس", callback_data="snake_roll")])
         kb.append([InlineKeyboardButton("⬇️ آوردن به پایین", callback_data="snake_bump")])
-        kb.append([InlineKeyboardButton("📜 قوانین بازی", callback_data="snake_rules")])
+        kb.append([InlineKeyboardButton("📜 قوانین", callback_data="snake_rules")])
         kb.append([InlineKeyboardButton("❌ انصراف", callback_data="snake_surrender")])
         kb.append([InlineKeyboardButton("🛑 بستن اجباری", callback_data="snake_stop")])
     return InlineKeyboardMarkup(kb) if kb else None
@@ -135,6 +132,8 @@ async def _safe_edit(context: ContextTypes.DEFAULT_TYPE, chat_id: int, msg_id: i
                     ACTIVE_GAMES[chat_id]["message_id"] = msg.message_id
             else:
                 logger.warning(f"Edit failed: {e}")
+    except RetryAfter as e:
+        await asyncio.sleep(e.retry_after)
     except Exception as e:
         logger.error(f"Edit error: {e}")
 
@@ -157,37 +156,25 @@ def _schedule_next(context: ContextTypes.DEFAULT_TYPE, chat_id: int, game: dict)
             if g["status"] == "playing" and not g.get("is_rolling"):
                 if g["players"][g["turn_index"]]["id"] == next_p["id"]:
                     if next_p["id"] != -1:
-                        g["last_action"] = f"⏰ زمان {next_p['name']} تمام شد!"
+                        g["last_action"] = f"⏰ زمان {next_p['name']} تمام شد! ربات براش تاس انداخت."
                     await _do_roll(ctx, chat_id, g, next_p["id"])
 
-    # زمان‌بندی برای ربات (AI)
     if next_p["id"] == -1:
-        # زمان کمی بیشتر میدیم چون AI باید متن بسازه
+        # هوش مصنوعی ۲.۵ ثانیه فکر میکنه (برای تولید متن)
         game["bot_job"] = context.job_queue.run_once(_timer_callback, when=2.5, chat_id=chat_id)
     else:
         game["timer_job"] = context.job_queue.run_once(_timer_callback, when=TURN_TIMEOUT, chat_id=chat_id)
 
-async def _get_ai_response(dice: int, old_pos: int, new_pos: int, event: str) -> str:
-    """تولید پاسخ متنی با استفاده از هوش مصنوعی پروژه"""
-    if not get_ai_service:
-        return ""
-    
-    prompt = (
-        f"تو در حال بازی مار و پله با کاربر هستی. تاس {dice} آوردی. "
-        f"از خانه {old_pos} به خانه {new_pos} رفتی. رویداد: {event}. "
-        "یک جمله خیلی کوتاه (حداکثر ۱۰ کلمه)، باحال، رقابتی و کمی شیطنت‌آمیز به زبان فارسی بنویس. "
-        "از ایموجی استفاده نکن. مستقیم جواب بده."
-    )
-    
+async def _get_ai_taunt(event: str) -> str:
+    """گرفتن متن از هوش مصنوعی با تایم اوت (بدون کرش)"""
+    if not get_ai_service: return ""
+    prompt = f"تو در بازی مار و پله هستی. رویداد: {event}. یک جمله کوتاه (حداکثر ۸ کلمه)، باحال و رقابتی بگو. بدون ایموجی."
     try:
         ai = get_ai_service()
-        # استفاده از تایم اوت برای اینکه بازی کند نشود
-        res, _ = await asyncio.wait_for(ai.ask(user_message=prompt, user_name="AI", user_profile_summary="", user_id=-1), timeout=8.0)
-        if res:
-            return res.strip().replace("\n", " ")
-    except Exception as e:
-        logger.error(f"AI response error: {e}")
-    return ""
+        res, _ = await asyncio.wait_for(ai.ask(user_message=prompt, user_name="AI", user_profile_summary="", user_id=-1), timeout=6.0)
+        return res.strip().replace("\n", " ") if res else ""
+    except Exception:
+        return "" # اگر AI جواب نداد، بازی کرش نمیکنه
 
 async def _do_roll(context: ContextTypes.DEFAULT_TYPE, chat_id: int, game: dict, user_id: int):
     if game.get("is_rolling"): return
@@ -203,6 +190,7 @@ async def _do_roll(context: ContextTypes.DEFAULT_TYPE, chat_id: int, game: dict,
     _safe_remove_job(game.get("bot_job"))
 
     try:
+        # قفل کردن دکمه‌ها
         await _safe_edit(context, chat_id, msg_id, _get_ui(game), _get_game_kb(game, True))
 
         dice = random.randint(1, 6)
@@ -210,63 +198,72 @@ async def _do_roll(context: ContextTypes.DEFAULT_TYPE, chat_id: int, game: dict,
         old_pos = current["pos"]
         is_ai = (current["id"] == -1)
         
-        # متغیرهایی برای ساخت پرامپت هوش مصنوعی
         event_desc = ""
-        
+        msg_parts = []
+
+        # منطق حرکت
         if old_pos == 0 and dice != 6:
-            game["last_action"] = f"🔒 {current['name']} برای شروع باید ۶ بیاورد! (تاس: {fix_dir(p_num(dice))})"
-            event_desc = "نتوانستی ۶ بیاوری و هنوز وارد بازی نشدی."
+            msg_parts.append(f"🔒 {current['name']} برای شروع باید ۶ بیاورد! (تاس: {fix_dir(p_num(dice))})")
+            event_desc = "نتوانستم ۶ بیارم و هنوز وارد بازی نشدم."
         else:
             target = old_pos + dice if old_pos != 0 else dice
+            
             if target > MAX_POS:
                 target = MAX_POS - (target - MAX_POS)
-                game["last_action"] = f"🔄 {current['name']} از ۱۰۰ رد شد و برگشت به {fix_dir(p_num(target))}."
-                event_desc = "از خانه ۱۰۰ رد شدی و برگشتی عقب."
+                msg_parts.append(f"🔄 {current['name']} از ۱۰۰ رد شد و برگشت به {fix_dir(p_num(target))}.")
+                event_desc = "از ۱۰۰ رد شدم و برگشتم عقب."
             else:
-                game["last_action"] = f"➡️ {current['name']} تاس {fix_dir(p_num(dice))} آورد و به {fix_dir(p_num(target))} رفت."
-                event_desc = "حرکت عادی داشتی."
+                msg_parts.append(f"➡️ {current['name']} تاس {fix_dir(p_num(dice))} آورد و به {fix_dir(p_num(target))} رفت.")
+                event_desc = "حرکت عادی داشتم."
             
             current["pos"] = target
+            
+            # برخورد با حریف
             for p in game["players"]:
                 if p["id"] != current["id"] and p["pos"] == target:
                     p["pos"] = 0
-                    game["last_action"] += f"\n💥 {p['name']} به خانه ۱ پرت شد!"
-                    event_desc = f"کاربر {p['name']} را پرت کردی به خانه ۱."
+                    msg_parts.append(f"💥 {p['name']} به خانه ۱ پرت شد!")
+                    event_desc = f"حریفم {p['name']} را به خانه ۱ پرت کردم."
 
+            # مار، پله، شانس و بلا
             if target in LADDERS:
                 current["pos"] = LADDERS[target]
-                game["last_action"] += f"\n🪜 پله رفت به {fix_dir(p_num(current['pos']))}."
-                event_desc = "شانس آوردی و از پله بالا رفتی."
+                msg_parts.append(f"🪜 پله رفت به {fix_dir(p_num(current['pos']))}.")
+                event_desc = "شانس آوردم و از پله بالا رفتم."
             elif target in SNAKES:
                 current["pos"] = SNAKES[target]
-                game["last_action"] += f"\n🐍 مار خورد به {fix_dir(p_num(current['pos']))}."
-                event_desc = "مار خوردی و به عقب برگشتی."
+                msg_parts.append(f"🐍 مار خورد به {fix_dir(p_num(current['pos']))}.")
+                event_desc = "مار خوردم و به عقب برگشتم."
             elif target in DRAGONS:
                 current["pos"] = DRAGONS[target]
-                game["last_action"] += f"\n🐉 اژدها خورد به {fix_dir(p_num(current['pos']))}."
-                event_desc = "اژدها خوردی و عقب افتادی."
+                msg_parts.append(f"🐉 اژدها خورد به {fix_dir(p_num(current['pos']))}.")
+                event_desc = "اژدها خوردم و عقب افتادم."
             elif target in LUCK:
                 current["pos"] = min(MAX_POS, target + LUCK[target])
-                game["last_action"] += f"\n🎁 شانس آورد! {fix_dir(p_num(LUCK[target]))} خانه جلو رفت."
-                event_desc = "جعبه شانس پیدا کردی و جلو رفتی."
+                msg_parts.append(f"🎁 شانس آورد! {fix_dir(p_num(LUCK[target]))} خانه جلو رفت.")
+                event_desc = "شانس آوردم و جلو رفتم."
             elif target in MISFORTUNE:
                 current["pos"] = max(0, target + MISFORTUNE[target])
-                game["last_action"] += f"\n⚡️ صاعقه خورد! {fix_dir(p_num(abs(MISFORTUNE[target])))} خانه عقب افتاد."
-                event_desc = "صاعقه خوردی و عقب افتادی."
+                msg_parts.append(f"⚡️ صاعقه خورد! {fix_dir(p_num(abs(MISFORTUNE[target])))} خانه عقب افتاد.")
+                event_desc = "صاعقه خوردم و عقب افتادم."
 
-        # اگر نوبت هوش مصنوعی بود، ازش می‌خوایم یه متنی بگه
-        if is_ai and current["pos"] != MAX_POS:
-            ai_text = await _get_ai_response(dice, old_pos, current["pos"], event_desc)
-            if ai_text:
-                game["last_action"] += f"\n🤖 <b>AI:</b> <i>«{ai_text}»</i>"
+        # درخواست از هوش مصنوعی (فقط اگر نوبت ربات است)
+        if is_ai and event_desc:
+            taunt = await _get_ai_taunt(event_desc)
+            if taunt:
+                msg_parts.append(f"\n🤖 <b>AI:</b> <i>«{taunt}»</i>")
 
+        game["last_action"] = "\n".join(msg_parts)
+
+        # برنده شدن
         if current["pos"] == MAX_POS:
             game["status"] = "finished"
-            game["last_action"] = f"🏆🎉 <b>تبریک به {current['name']}!</b>\n👑 با رسیدن به ۱۰۰ قهرمان شد!"
+            game["last_action"] = f"🏆🎉 <b>تبریک به {current['name']}!</b>\n👑 قهرمان شد!"
             await _safe_edit(context, chat_id, msg_id, _get_ui(game), None)
             _stop_game(chat_id)
             return
 
+        # نوبت بعدی
         if dice != 6: 
             game["turn_index"] = (game["turn_index"] + 1) % len(game["players"])
         else: 
@@ -274,7 +271,7 @@ async def _do_roll(context: ContextTypes.DEFAULT_TYPE, chat_id: int, game: dict,
 
     except Exception as e:
         logger.error(f"Roll error: {e}", exc_info=True)
-        game["last_action"] = "⚠️ خطایی رخ داد، نوبت رد شد."
+        game["last_action"] = "⚠️ خطایی رخ داد."
     finally:
         game["is_rolling"] = False
         if chat_id in ACTIVE_GAMES and game["status"] == "playing":

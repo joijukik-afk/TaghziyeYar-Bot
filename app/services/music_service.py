@@ -1,4 +1,4 @@
-"""سرویس دریافت آهنگ از یوتیوب با yt-dlp"""
+"""سرویس دریافت آهنگ از یوتیوب با yt-dlp (مقاوم‌سازی شده در برابر مسدودسازی)"""
 
 import os
 import random
@@ -18,7 +18,7 @@ from app.database.session import session_scope
 
 logger = logging.getLogger(__name__)
 
-# سبک‌های دقیق مد نظر شما (می‌تونی کلمات رو عوض کنی)
+# سبک‌های دقیق مد نظر شما
 YOUTUBE_QUERIES = [
     "Øneheart snowfall slowed reverb",
     "dreamcore playlist slowed reverb",
@@ -37,6 +37,9 @@ YOUTUBE_QUERIES = [
 MAX_SIZE = 45 * 1024 * 1024
 MIN_SIZE = 1024 * 1024
 
+# مسیر فایل کوکی (اگر وجود داشته باشد)
+COOKIE_FILE = os.getenv("YTDLP_COOKIE_FILE", "cookies.txt")
+
 async def _is_used(video_id: str) -> bool:
     """چک کن این آهنگ قبلاً ارسال شده یا نه"""
     async with session_scope() as session:
@@ -48,7 +51,9 @@ async def _is_used(video_id: str) -> bool:
         return res.scalar_one_or_none() is not None
 
 def _download_youtube_audio(url: str, output_template: str) -> Optional[dict]:
-    """دانلود فایل صوتی از یوتیوب (تابع مسدودکننده که در Thread اجرا میشه)"""
+    """دانلود فایل صوتی از یوتیوب با تنظیمات ضد مسدودسازی"""
+    
+    # تنظیمات پایه برای دانلود
     ydl_opts = {
         'format': 'bestaudio/best',
         'postprocessors': [{
@@ -59,9 +64,19 @@ def _download_youtube_audio(url: str, output_template: str) -> Optional[dict]:
         'outtmpl': output_template,
         'quiet': True,
         'no_warnings': True,
-        # 'cookiefile': 'cookies.txt', # اگر یوتیوب بلاک کرد، این رو آنکامنت کن
+        # 👇 کلاینت‌های جایگزین برای دور زدن مسدودسازی
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['tv', 'mweb'],
+            }
+        },
     }
     
+    # اگر فایل کوکی وجود داشت، از آن استفاده کن (مهم‌ترین راه‌حل)
+    if os.path.exists(COOKIE_FILE):
+        ydl_opts['cookiefile'] = COOKIE_FILE
+        logger.info(f"Using cookie file: {COOKIE_FILE}")
+
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
@@ -144,13 +159,11 @@ async def fetch_and_send_music(bot: Bot, chat_id: int, status_msg) -> bool:
         tmp_dir = tempfile.gettempdir()
         output_template = os.path.join(tmp_dir, f"koma_{video_id}")
         
-        # دانلود در Thread جداگانه تا ربات فریز نشه
         download_result = await asyncio.to_thread(_download_youtube_audio, url, output_template)
         
         if not download_result:
             continue
             
-        # ارسال به تلگرام
         try:
             with open(download_result['path'], 'rb') as audio:
                 sent = await bot.send_audio(
@@ -169,7 +182,6 @@ async def fetch_and_send_music(bot: Bot, chat_id: int, status_msg) -> bool:
             
             await _record_track(download_result, sent.audio.file_id)
             
-            # پاکسازی
             try: os.remove(download_result['path'])
             except: pass
             return True

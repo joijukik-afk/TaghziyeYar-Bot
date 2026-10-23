@@ -1,58 +1,108 @@
-"""موتور دریافت پروکسی MTProto (سریع، بدون تست و بدون دردسر)"""
+"""موتور دریافت و تست لحظه‌ای پروکسی MTProto (بهینه برای ایران)"""
 
 import asyncio
 import logging
-from typing import List, Dict
 import httpx
+import urllib.parse
+from typing import List, Dict
 
 logger = logging.getLogger(__name__)
 
-# بهترین و به‌روزترین منابع موجود که هر ۱ تا ۱۲ ساعت آپدیت میشن
+# بهترین و به‌روزترین منابع گیت‌هاب
 PROXY_SOURCES = [
-    "https://raw.githubusercontent.com/MTProto-Proxy/MTProto-Proxy/main/proxies.txt",
-    "https://raw.githubusercontent.com/SoliSpirit/mtproto/master/all_proxies.txt",
     "https://raw.githubusercontent.com/Grim1313/mtproto-for-telegram/master/all_proxies.txt",
+    "https://raw.githubusercontent.com/SoliSpirit/mtproto/master/all_proxies.txt",
+    "https://raw.githubusercontent.com/MTProto-Proxy/MTProto-Proxy/main/proxies.txt",
 ]
 
 async def _fetch_source(client: httpx.AsyncClient, url: str) -> List[str]:
     try:
         resp = await client.get(url, timeout=10.0)
         resp.raise_for_status()
-        lines = resp.text.strip().split("\n")
-        return [line.strip() for line in lines if line.strip() and ("tg://" in line or "t.me/proxy" in line)]
-    except Exception as e:
-        logger.warning(f"Failed to fetch {url}: {e}")
+        return [line.strip() for line in resp.text.split("\n") if line.strip() and "t.me/proxy" in line]
+    except Exception:
         return []
 
-async def get_best_proxies(limit: int = 30) -> List[Dict]:
-    logger.info("Fetching fresh MTProto proxies...")
+async def _test_proxy_alive(server: str, port: int) -> bool:
+    """تست فوق سریع برای زنده بودن پورت پروکسی"""
+    try:
+        # تست اتصال به سوکت سرور
+        _, writer = await asyncio.wait_for(
+            asyncio.open_connection(server, port), 
+            timeout=3.0
+        )
+        writer.close()
+        await writer.wait_closed()
+        return True
+    except Exception:
+        return False
+
+async def get_best_proxies(limit: int = 20) -> List[Dict]:
+    logger.info("Fetching and testing proxies...")
     all_links = []
     
     async with httpx.AsyncClient() as client:
         tasks = [_fetch_source(client, url) for url in PROXY_SOURCES]
         results = await asyncio.gather(*tasks, return_exceptions=True)
-        for res_list in results:
-            if isinstance(res_list, list):
-                all_links.extend(res_list)
+        for res in results:
+            if isinstance(res, list):
+                all_links.extend(res)
 
     if not all_links:
         return []
 
-    cleaned = set()
-    for p in all_links:
-        # تبدیل به فرمت کلیک‌پذیر
-        if p.startswith("tg://proxy?"):
-            p = p.replace("tg://proxy?", "https://t.me/proxy?")
+    # فیلتر کردن و استخراج اطلاعات
+    valid_proxies = []
+    seen = set()
+    
+    for link in all_links:
+        if link.startswith("tg://proxy?"):
+            link = link.replace("tg://proxy?", "https://t.me/proxy?")
         
-        # فیلتر کردن: فقط پروکسی‌هایی که برای ایران عالی‌اند (پورت 443 و FakeTLS)
-        if "t.me/proxy?" in p:
-            if "port=443" in p or "secret=ee" in p:
-                cleaned.add(p)
-            else:
-                # بقیه رو هم به عنوان گزینه پشتیبان اضافه میکنیم
-                cleaned.add(p)
+        if link in seen or "t.me/proxy?" not in link:
+            continue
+        seen.add(link)
 
-    # اولویت دادن به FakeTLS (secret=ee) و پورت 443
-    final_list = sorted(list(cleaned), key=lambda x: (0 if "secret=ee" in x and "port=443" in x else 1))
+        # پارس کردن لینک برای گرفتن سرور و پورت
+        parsed = urllib.parse.urlparse(link)
+        query = urllib.parse.parse_qs(parsed.query)
+        
+        server = query.get("server", [""])[0]
+        port_str = query.get("port", ["0"])[0]
+        secret = query.get("secret", [""])[0]
 
-    return [{"proxy": link} for link in final_list[:limit]]
+        if not server or not port_str.isdigit():
+            continue
+
+        port = int(port_str)
+        
+        # فقط پورت ۴۴۳ و FakeTLS رو اولویت بده (بهترین برای ایران)
+        if port == 443 or secret.startswith("ee"):
+            valid_proxies.append({
+                "link": link,
+                "server": server,
+                "port": port,
+                "is_faketls": secret.startswith("ee")
+            })
+
+    # مرتب‌سازی: پورت ۴۴۳ و FakeTLS اول باشن
+    valid_proxies.sort(key=lambda x: (not x["is_faketls"], x["port"] != 443))
+
+    # تست همزمان ۴۰ تا از بهترین‌ها
+    proxies_to_test = valid_proxies[:40]
+    
+    async def check_and_return(p):
+        is_alive = await _test_proxy_alive(p["server"], p["port"])
+        if is_alive:
+            return p
+        return None
+
+    logger.info(f"Testing {len(proxies_to_test)} proxies in parallel...")
+    tested_results = await asyncio.gather(*(check_and_return(p) for p in proxies_to_test))
+    
+    # جمع‌آوری پروکسی‌های زنده
+    alive_proxies = [p for p in tested_results if p is not None]
+    
+    logger.info(f"Found {len(alive_proxies)} alive proxies.")
+    
+    return [{"proxy": p["link"]} for p in alive_proxies[:limit]]

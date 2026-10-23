@@ -1,4 +1,4 @@
-"""بازی مار و پله - نسخه استاندارد تلگرام (بدون کرش، بدون اسپم، تک‌رفرش)"""
+"""بازی مار و پله - نسخه نهایی با قفل ضد اسپم (حل مشکل گیر کردن دکمه‌ها)"""
 
 import random
 import logging
@@ -27,6 +27,9 @@ TURN_TIMEOUT = 40
 PLAYER_ICONS = ["🦊", "🐼", "🦁", "🐸"]
 BOT_ICON = "🤖"
 ACTIVE_GAMES = {}
+
+# 👇 قفل اختصاصی برای هر گروه (حل مشکل کلیک همزمان)
+GAME_LOCKS = {}
 
 def p_num(n: int) -> str:
     return str(n).translate(str.maketrans('0123456789', '۰۱۲۳۴۵۶۷۸۹'))
@@ -117,7 +120,6 @@ def _get_game_kb(game: dict, is_rolling: bool = False) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(kb) if kb else None
 
 async def _safe_edit(context: ContextTypes.DEFAULT_TYPE, chat_id: int, msg_id: int, text: str, kb=None):
-    """ویرایش امن پیام با مدیریت کامل خطاهای تلگرام"""
     try:
         await context.bot.edit_message_text(
             chat_id=chat_id, message_id=msg_id, text=text,
@@ -133,7 +135,6 @@ async def _safe_edit(context: ContextTypes.DEFAULT_TYPE, chat_id: int, msg_id: i
             else:
                 logger.warning(f"Edit failed: {e}")
     except RetryAfter as e:
-        # اگر تلگرام محدودیت گذاشت، صبر میکنیم (بدون کرش)
         logger.warning(f"Flood control: waiting {e.retry_after}s")
         await asyncio.sleep(e.retry_after)
     except Exception as e:
@@ -145,6 +146,8 @@ def _stop_game(chat_id: int):
         _safe_remove_job(game.get("timer_job"))
         _safe_remove_job(game.get("bot_job"))
         del ACTIVE_GAMES[chat_id]
+    if chat_id in GAME_LOCKS:
+        del GAME_LOCKS[chat_id]
 
 def _schedule_next(context: ContextTypes.DEFAULT_TYPE, chat_id: int, game: dict):
     _safe_remove_job(game.get("timer_job"))
@@ -153,27 +156,27 @@ def _schedule_next(context: ContextTypes.DEFAULT_TYPE, chat_id: int, game: dict)
     next_p = game["players"][game["turn_index"]]
     
     async def _timer_callback(ctx: ContextTypes.DEFAULT_TYPE):
-        if chat_id in ACTIVE_GAMES:
-            g = ACTIVE_GAMES[chat_id]
-            if g["status"] == "playing" and not g.get("is_rolling"):
-                if g["players"][g["turn_index"]]["id"] == next_p["id"]:
-                    if next_p["id"] != -1:
-                        g["last_action"] = f"⏰ زمان {next_p['name']} تمام شد!"
-                    await _do_roll(ctx, chat_id, g, next_p["id"])
+        # 👇 چک کردن قفل قبل از اجرای نوبت خودکار
+        if chat_id not in GAME_LOCKS: return
+        async with GAME_LOCKS[chat_id]:
+            if chat_id in ACTIVE_GAMES:
+                g = ACTIVE_GAMES[chat_id]
+                if g["status"] == "playing" and not g.get("is_rolling"):
+                    if g["players"][g["turn_index"]]["id"] == next_p["id"]:
+                        if next_p["id"] != -1:
+                            g["last_action"] = f"⏰ زمان {next_p['name']} تمام شد!"
+                        await _do_roll(ctx, chat_id, g, next_p["id"])
 
     if next_p["id"] == -1:
-        # تاخیر برای AI
         game["bot_job"] = context.job_queue.run_once(_timer_callback, when=2.0, chat_id=chat_id)
     else:
         game["timer_job"] = context.job_queue.run_once(_timer_callback, when=TURN_TIMEOUT, chat_id=chat_id)
 
 async def _get_ai_taunt(event: str) -> str:
-    """گرفتن متن از هوش مصنوعی با تایم اوت (بدون کرش)"""
     if not get_ai_service: return ""
     prompt = f"تو در بازی مار و پله هستی. رویداد: {event}. یک جمله کوتاه (حداکثر ۸ کلمه)، باحال و رقابتی بگو. بدون ایموجی."
     try:
         ai = get_ai_service()
-        # تایم اوت ۵ ثانیه‌ای تا بازی گیر نکنه
         res, _ = await asyncio.wait_for(ai.ask(user_message=prompt, user_name="AI", user_profile_summary="", user_id=-1), timeout=5.0)
         return res.strip().replace("\n", " ") if res else ""
     except Exception:
@@ -201,7 +204,6 @@ async def _do_roll(context: ContextTypes.DEFAULT_TYPE, chat_id: int, game: dict,
         event_desc = ""
         msg_parts = []
 
-        # منطق حرکت
         if old_pos == 0 and dice != 6:
             msg_parts.append(f"🔒 {current['name']} برای شروع باید ۶ بیاورد! (تاس: {fix_dir(p_num(dice))})")
             event_desc = "نتوانستم ۶ بیارم و هنوز وارد بازی نشدم."
@@ -218,14 +220,12 @@ async def _do_roll(context: ContextTypes.DEFAULT_TYPE, chat_id: int, game: dict,
             
             current["pos"] = target
             
-            # برخورد با حریف
             for p in game["players"]:
                 if p["id"] != current["id"] and p["pos"] == target:
                     p["pos"] = 0
                     msg_parts.append(f"💥 {p['name']} به خانه ۱ پرت شد!")
                     event_desc = f"حریفم {p['name']} را به خانه ۱ پرت کردم."
 
-            # مار، پله، شانس و بلا
             if target in LADDERS:
                 current["pos"] = LADDERS[target]
                 msg_parts.append(f"🪜 پله رفت به {fix_dir(p_num(current['pos']))}.")
@@ -247,7 +247,6 @@ async def _do_roll(context: ContextTypes.DEFAULT_TYPE, chat_id: int, game: dict,
                 msg_parts.append(f"⚡️ صاعقه خورد! {fix_dir(p_num(abs(MISFORTUNE[target])))} خانه عقب افتاد.")
                 event_desc = "صاعقه خوردم و عقب افتادم."
 
-        # درخواست از هوش مصنوعی (فقط اگر نوبت ربات است)
         if is_ai and event_desc:
             taunt = await _get_ai_taunt(event_desc)
             if taunt:
@@ -255,7 +254,6 @@ async def _do_roll(context: ContextTypes.DEFAULT_TYPE, chat_id: int, game: dict,
 
         game["last_action"] = "\n".join(msg_parts)
 
-        # برنده شدن
         if current["pos"] == MAX_POS:
             game["status"] = "finished"
             game["last_action"] = f"🏆🎉 <b>تبریک به {current['name']}!</b>\n👑 قهرمان شد!"
@@ -263,7 +261,6 @@ async def _do_roll(context: ContextTypes.DEFAULT_TYPE, chat_id: int, game: dict,
             _stop_game(chat_id)
             return
 
-        # نوبت بعدی
         if dice != 6: 
             game["turn_index"] = (game["turn_index"] + 1) % len(game["players"])
         else: 
@@ -275,7 +272,6 @@ async def _do_roll(context: ContextTypes.DEFAULT_TYPE, chat_id: int, game: dict,
     finally:
         game["is_rolling"] = False
         if chat_id in ACTIVE_GAMES and game["status"] == "playing":
-            # 👇 فقط یک بار آپدیت میکنیم (بهترین حالت استاندارد)
             await _safe_edit(context, chat_id, msg_id, _get_ui(game), _get_game_kb(game, False))
             _schedule_next(context, chat_id, game)
 
@@ -291,6 +287,7 @@ async def cmd_snake(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "turn_index": 0, "last_action": "بازی ساخته شد.", "is_rolling": False, "last_dice": None, "message_id": None,
         "timer_job": None, "bot_job": None
     }
+    GAME_LOCKS[chat_id] = asyncio.Lock() # ساخت قفل جدید
     
     msg = await update.message.reply_text(
         _get_ui(ACTIVE_GAMES[chat_id]), 
@@ -303,18 +300,7 @@ async def handle_snake(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     query = update.callback_query
     if not query: return
     
-    if query.data == "snake_rules":
-        rules = (
-            "📜 قوانین مار و پله:\n"
-            "🎲 شروع با ۶.\n"
-            "🔄 با ۶ دوباره بنداز.\n"
-            "💥 روی حریف بیفتی، به خانه ۱ میره.\n"
-            "🪜 پله جلو، 🐍 مار و 🐉 اژدها عقب.\n"
-            "🎁 شانس جلو، ⚡️ صاعقه عقب.\n"
-            "🏆 اولین نفر به ۱۰۰ برنده است."
-        )
-        return await query.answer(rules, show_alert=True)
-
+    # پاسخ فوری به تلگرام تا لودینگ دکمه قطع بشه
     try: await query.answer()
     except Exception: pass
     
@@ -324,85 +310,103 @@ async def handle_snake(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if chat_id not in ACTIVE_GAMES: 
         return await query.answer("بازی تمام شده است. /snake را بزنید.", show_alert=True)
     
-    game = ACTIVE_GAMES[chat_id]
-    msg_id = game["message_id"]
+    if chat_id not in GAME_LOCKS:
+        GAME_LOCKS[chat_id] = asyncio.Lock()
 
-    if query.data == "snake_wait":
-        return await query.answer("لطفاً صبر کنید...", show_alert=False)
+    # 👇 قرار دادن تمام منطق داخل قفل (به ترتیب اجرا میشن، باگ همزمانی حل میشه)
+    async with GAME_LOCKS[chat_id]:
+        game = ACTIVE_GAMES.get(chat_id)
+        if not game: return
+        msg_id = game["message_id"]
 
-    if query.data == "snake_stop":
-        if game["status"] == "playing" and user.id != game["host_id"]:
-            return await query.answer("فقط سازنده می‌تواند ببندد!", show_alert=True)
-        _stop_game(chat_id)
-        await _safe_edit(context, chat_id, msg_id, "🛑 بازی بسته شد.", None)
-        return await query.answer("بازی بسته شد.", show_alert=True)
+        if query.data == "snake_rules":
+            rules = (
+                "📜 قوانین مار و پله:\n"
+                "🎲 شروع با ۶.\n"
+                "🔄 با ۶ دوباره بنداز.\n"
+                "💥 روی حریف بیفتی، به خانه ۱ میره.\n"
+                "🪜 پله جلو، 🐍 مار و 🐉 اژدها عقب.\n"
+                "🎁 شانس جلو، ⚡️ صاعقه عقب.\n"
+                "🏆 اولین نفر به ۱۰۰ برنده است."
+            )
+            return await query.answer(rules, show_alert=True)
 
-    if query.data == "snake_bump":
-        if not any(p["id"] == user.id for p in game["players"]): 
-            return await query.answer("فقط بازیکنان!", show_alert=True)
-        try: await context.bot.delete_message(chat_id=chat_id, message_id=msg_id)
-        except Exception: pass
-        kb = _get_lobby_kb(game) if game["status"] == "lobby" else _get_game_kb(game, game.get("is_rolling"))
-        new_msg = await context.bot.send_message(chat_id=chat_id, text=_get_ui(game), parse_mode="HTML", reply_markup=kb)
-        game["message_id"] = new_msg.message_id
-        return await query.answer("بازی پایین آمد! ⬇️", show_alert=False)
+        if query.data == "snake_wait":
+            return await query.answer("لطفاً صبر کنید...", show_alert=False)
 
-    if query.data == "snake_join":
-        if game.get("is_rolling"): return await query.answer("در حال حرکت!", show_alert=True)
-        if game["status"] != "lobby": return await query.answer("شروع شده!", show_alert=True)
-        if any(p["id"] == user.id for p in game["players"]): return await query.answer("وارد شدید.", show_alert=True)
-        if len(game["players"]) >= 4: return await query.answer("ظرفیت پر است.", show_alert=True)
-        
-        name = _get_safe_name(user)
-        game["players"].append({"id": user.id, "name": name, "pos": 0, "icon": PLAYER_ICONS[len(game["players"])]})
-        await _safe_edit(context, chat_id, msg_id, _get_ui(game), _get_lobby_kb(game))
-        return
+        if query.data == "snake_stop":
+            if game["status"] == "playing" and user.id != game["host_id"]:
+                return await query.answer("فقط سازنده می‌تواند ببندد!", show_alert=True)
+            _stop_game(chat_id)
+            await _safe_edit(context, chat_id, msg_id, "🛑 بازی بسته شد.", None)
+            return await query.answer("بازی بسته شد.", show_alert=True)
 
-    if query.data == "snake_play_bot":
-        if game["status"] != "lobby": return await query.answer("شروع شده!", show_alert=True)
-        game["players"].append({"id": -1, "name": "حریف هوش مصنوعی", "pos": 0, "icon": BOT_ICON})
-        game["status"] = "playing"
-        game["turn_index"] = 0
-        game["last_action"] = "بازی شروع شد! (منتظر ۶ باشید)"
-        
-        await _safe_edit(context, chat_id, msg_id, _get_ui(game), _get_game_kb(game))
-        _schedule_next(context, chat_id, game)
-        return
+        if query.data == "snake_bump":
+            if not any(p["id"] == user.id for p in game["players"]): 
+                return await query.answer("فقط بازیکنان!", show_alert=True)
+            try: await context.bot.delete_message(chat_id=chat_id, message_id=msg_id)
+            except Exception: pass
+            kb = _get_lobby_kb(game) if game["status"] == "lobby" else _get_game_kb(game, game.get("is_rolling"))
+            new_msg = await context.bot.send_message(chat_id=chat_id, text=_get_ui(game), parse_mode="HTML", reply_markup=kb)
+            game["message_id"] = new_msg.message_id
+            return await query.answer("بازی پایین آمد! ⬇️", show_alert=False)
 
-    if query.data == "snake_start":
-        if user.id != game["host_id"] or len(game["players"]) < 2: 
-            return await query.answer("حداقل ۲ نفر و فقط سازنده!", show_alert=True)
-        game["status"] = "playing"
-        game["turn_index"] = 0
-        game["last_action"] = "بازی شروع شد! (منتظر ۶ باشید)"
-        
-        await _safe_edit(context, chat_id, msg_id, _get_ui(game), _get_game_kb(game))
-        _schedule_next(context, chat_id, game)
-        return
-
-    if query.data == "snake_surrender":
-        if game.get("is_rolling"): return await query.answer("در حال حرکت!", show_alert=True)
-        p_idx = next((i for i, p in enumerate(game["players"]) if p["id"] == user.id), None)
-        
-        if p_idx is not None:
-            s_p = game["players"].pop(p_idx)
-            if len(game["players"]) < 2: 
-                _stop_game(chat_id)
-                await _safe_edit(context, chat_id, msg_id, f"🏳️ {s_p['name']} انصراف داد. بازی لغو شد.", None)
-                return
+        if query.data == "snake_join":
+            if game.get("is_rolling"): return await query.answer("در حال حرکت!", show_alert=True)
+            if game["status"] != "lobby": return await query.answer("شروع شده!", show_alert=True)
+            if any(p["id"] == user.id for p in game["players"]): return await query.answer("وارد شدید.", show_alert=True)
+            if len(game["players"]) >= 4: return await query.answer("ظرفیت پر است.", show_alert=True)
             
-            if p_idx < game["turn_index"]: game["turn_index"] -= 1
-            elif p_idx == game["turn_index"] and game["turn_index"] >= len(game["players"]): game["turn_index"] = 0
+            name = _get_safe_name(user)
+            game["players"].append({"id": user.id, "name": name, "pos": 0, "icon": PLAYER_ICONS[len(game["players"])]})
+            await _safe_edit(context, chat_id, msg_id, _get_ui(game), _get_lobby_kb(game))
+            return
+
+        if query.data == "snake_play_bot":
+            if game["status"] != "lobby": return await query.answer("شروع شده!", show_alert=True)
+            game["players"].append({"id": -1, "name": "حریف هوش مصنوعی", "pos": 0, "icon": BOT_ICON})
+            game["status"] = "playing"
+            game["turn_index"] = 0
+            game["last_action"] = "بازی شروع شد! (منتظر ۶ باشید)"
             
             await _safe_edit(context, chat_id, msg_id, _get_ui(game), _get_game_kb(game))
             _schedule_next(context, chat_id, game)
-        return
+            return
 
-    if query.data == "snake_roll":
-        if game.get("is_rolling"): return await query.answer("صبر کنید...", show_alert=True)
-        if game["status"] != "playing": return await query.answer("شروع نشده!", show_alert=True)
-        if user.id != game["players"][game["turn_index"]]["id"]: 
-            return await query.answer("نوبت شما نیست!", show_alert=True)
+        if query.data == "snake_start":
+            if user.id != game["host_id"] or len(game["players"]) < 2: 
+                return await query.answer("حداقل ۲ نفر و فقط سازنده!", show_alert=True)
+            game["status"] = "playing"
+            game["turn_index"] = 0
+            game["last_action"] = "بازی شروع شد! (منتظر ۶ باشید)"
             
-        await _do_roll(context, chat_id, game, user.id)
-        return
+            await _safe_edit(context, chat_id, msg_id, _get_ui(game), _get_game_kb(game))
+            _schedule_next(context, chat_id, game)
+            return
+
+        if query.data == "snake_surrender":
+            if game.get("is_rolling"): return await query.answer("در حال حرکت!", show_alert=True)
+            p_idx = next((i for i, p in enumerate(game["players"]) if p["id"] == user.id), None)
+            
+            if p_idx is not None:
+                s_p = game["players"].pop(p_idx)
+                if len(game["players"]) < 2: 
+                    _stop_game(chat_id)
+                    await _safe_edit(context, chat_id, msg_id, f"🏳️ {s_p['name']} انصراف داد. بازی لغو شد.", None)
+                    return
+                
+                if p_idx < game["turn_index"]: game["turn_index"] -= 1
+                elif p_idx == game["turn_index"] and game["turn_index"] >= len(game["players"]): game["turn_index"] = 0
+                
+                await _safe_edit(context, chat_id, msg_id, _get_ui(game), _get_game_kb(game))
+                _schedule_next(context, chat_id, game)
+            return
+
+        if query.data == "snake_roll":
+            if game.get("is_rolling"): return await query.answer("صبر کنید...", show_alert=True)
+            if game["status"] != "playing": return await query.answer("شروع نشده!", show_alert=True)
+            if user.id != game["players"][game["turn_index"]]["id"]: 
+                return await query.answer("نوبت شما نیست!", show_alert=True)
+                
+            await _do_roll(context, chat_id, game, user.id)
+            return

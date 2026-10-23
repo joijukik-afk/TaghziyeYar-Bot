@@ -17,7 +17,7 @@ async def cmd_koma(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     _chat_locks.add(chat_id)
-    status_msg = await update.message.reply_text("🎧 در حال جستجو در آرشیو KOMA (SoundCloud, Archive, Bandcamp)...")
+    status_msg = await update.message.reply_text("🎧 در حال جستجو در آرشیو KOMA (SoundCloud, Bandcamp, Archive)...")
 
     try:
         success = await fetch_and_send_music(context.bot, chat_id)

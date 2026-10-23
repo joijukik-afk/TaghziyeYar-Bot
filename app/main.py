@@ -26,6 +26,7 @@ from app.bot import group_quiz as gquiz
 from app.bot import meal_commands as mcmd
 from app.bot import messages as msg
 from app.bot import profile_commands as pcmd
+from app.bot import proxy_commands as prxcmd  # 👈 ایمپورت دستورات پروکسی
 from app.bot import setup_wizard as wizard
 from app.bot import snake_game
 from app.bot import koma_commands as kcmd
@@ -323,6 +324,7 @@ async def cmd_mycard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     except Exception as e:
         logger.error("Error generating card for user %s: %s", user.id, e, exc_info=True)
         await status_msg.edit_text(f"❌ متأسفانه در ساخت کارت خطایی پیش آمد.\n\nخطا: `{e}`", parse_mode="Markdown")
+# 👆 پایان دستور کارت 👆
 
 @private_only
 @rate_limited
@@ -753,6 +755,10 @@ def build_application() -> Application:
     app.add_handler(CallbackQueryHandler(snake_game.handle_snake, pattern=r"^snake_"))
     
     app.add_handler(CommandHandler("koma", kcmd.cmd_koma))
+    
+    # 👇 هندلرهای پروکسی
+    app.add_handler(CommandHandler("proxies", prxcmd.cmd_proxies))
+    app.add_handler(CallbackQueryHandler(prxcmd.handle_proxy_callback, pattern=r"^proxy_"))
     
     app.add_handler(ChatMemberHandler(gmanager.on_bot_added, ChatMemberHandler.MY_CHAT_MEMBER))
     app.add_handler(CommandHandler("setgroup", gmanager.cmd_setgroup)); app.add_handler(CommandHandler("groups", gmanager.cmd_groups)); app.add_handler(CommandHandler("unsetgroup", gmanager.cmd_unsetgroup))

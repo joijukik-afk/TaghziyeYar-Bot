@@ -28,6 +28,7 @@ from app.bot import messages as msg
 from app.bot import profile_commands as pcmd
 from app.bot import setup_wizard as wizard
 from app.bot import snake_game
+from app.bot import koma_commands as kcmd  # 👈 اضافه شد
 from app.bot.content import get_fact, get_myth, get_tip
 from app.config import get_settings
 from app.database import repository as repo
@@ -55,7 +56,6 @@ async def is_admin_user(user_id: int) -> bool:
 async def notify_owner(context: ContextTypes.DEFAULT_TYPE, actor: User, action: str):
     """ارسال گزارش لحظه‌ای به پی‌وی صاحب ربات"""
     settings = get_settings()
-    # پیدا کردن آیدی صاحب ربات (اولین آیدی موجود در لیست ادمین‌های اصلی)
     owner_id = None
     if hasattr(settings, 'admin_ids') and settings.admin_ids:
         owner_id = settings.admin_ids[0] if isinstance(settings.admin_ids, list) else int(str(settings.admin_ids).split(',')[0])
@@ -63,7 +63,7 @@ async def notify_owner(context: ContextTypes.DEFAULT_TYPE, actor: User, action: 
         owner_id = settings.admin_id
         
     if not owner_id or actor.id == owner_id: 
-        return  # اگر خود صاحب ربات بود، پیام نده
+        return  
     
     text = (
         f"🔔 <b>گزارش لحظه‌ای مدیریت:</b>\n\n"
@@ -277,7 +277,6 @@ async def cmd_mycard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
                 "طبق قوانین ربات، هر کاربر فقط یک بار می‌تواند این کارت اختصاصی را بسازد."
             )
     else:
-        # رصد لحظه‌ای برای ادمین
         await notify_owner(context, user, "درخواست ساخت کارت دیجیتال سلامت (دسترسی نامحدود)")
 
     db_user = await repo.get_user_by_telegram_id(user.id)
@@ -700,6 +699,7 @@ async def post_init(application: Application) -> None:
     init_engine()
     import app.database.models
     import app.database.quiz_models 
+    import app.database.music_models  # 👈 اضافه شد
     await create_all()
     me = await application.bot.get_me()
     logger.info("Bot started as @%s", me.username)
@@ -755,6 +755,9 @@ def build_application() -> Application:
     
     app.add_handler(CommandHandler("snake", snake_game.cmd_snake))
     app.add_handler(CallbackQueryHandler(snake_game.handle_snake, pattern=r"^snake_"))
+    
+    # 👇 هندلر جدید موزیک اضافه شد
+    app.add_handler(CommandHandler("koma", kcmd.cmd_koma))
     
     app.add_handler(ChatMemberHandler(gmanager.on_bot_added, ChatMemberHandler.MY_CHAT_MEMBER))
     app.add_handler(CommandHandler("setgroup", gmanager.cmd_setgroup)); app.add_handler(CommandHandler("groups", gmanager.cmd_groups)); app.add_handler(CommandHandler("unsetgroup", gmanager.cmd_unsetgroup))

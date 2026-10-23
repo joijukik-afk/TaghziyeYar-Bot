@@ -12,9 +12,15 @@ async def cmd_proxy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """دریافت لیست برترین پروکسی‌های سالم"""
     user = update.effective_user
     if not user or not get_settings().is_admin(user.id):
-        return await update.message.reply_text("⛔️ این دستور فقط برای صاحب ربات است.")
+        # استفاده از effective_message برای سازگاری با کال بک و کامند
+        if update.effective_message:
+            return await update.effective_message.reply_text("⛔️ این دستور فقط برای صاحب ربات است.")
+        return
 
-    status_msg = await update.message.reply_text("🔄 در حال جمع‌آوری و تست پروکسی‌ها از منابع مختلف...\n(این ممکن است ۱۰-۳۰ ثانیه طول بکشد)")
+    if not update.effective_message:
+        return
+
+    status_msg = await update.effective_message.reply_text("🔄 در حال جمع‌آوری و تست پروکسی‌ها از منابع مختلف...\n(این ممکن است ۱۰-۳۰ ثانیه طول بکشد)")
 
     try:
         best_proxies = await proxy_pool.get_best_proxies(limit=30)
@@ -47,14 +53,27 @@ async def cmd_proxy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def handle_proxy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """مدیریت دکمه‌های شیشه‌ای"""
     query = update.callback_query
+    if not query: return
     await query.answer()
+    
     data = query.data
 
     if data == "proxy_refresh":
-        await query.message.delete()
-        await cmd_proxy(update, context)
+        # پیام قدیمی رو حذف نمیکنیم، بلکه همون رو ادیت میکنیم که تمیزتر باشه
+        await query.message.edit_text("🔄 در حال به‌روزرسانی لیست...")
+        # برای رفرش، یک آپدیت مصنوعی میسازیم که message داره
+        # یا خیلی ساده‌تر، تابع اصلی رو با همون message صدا می‌زنیم
+        class FakeUpdate:
+            def __init__(self, query):
+                self.effective_user = query.from_user
+                self.effective_message = query.message
+                self.message = query.message
+        await cmd_proxy(FakeUpdate(query), context)
+        
     elif data == "proxy_close":
         await query.message.delete()
+        
     elif data.startswith("proxy_copy_"):
         proxy_url = data.replace("proxy_copy_", "")
-        await query.message.reply_text(f"`{proxy_url}`", parse_mode="Markdown")
+        # به جای ارسال پیام جدید، یک پاپ‌آپ (Alert) نشون میده که میتونی کپی کنی
+        await query.answer(f"پروکسی کپی شد:\n{proxy_url}", show_alert=True)

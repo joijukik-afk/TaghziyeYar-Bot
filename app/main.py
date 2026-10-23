@@ -29,6 +29,7 @@ from app.bot import profile_commands as pcmd
 from app.bot import setup_wizard as wizard
 from app.bot import snake_game
 from app.bot import koma_commands as kcmd
+from app.bot import proxy_commands as prox_cmd  # 👈 ایمپورت پروکسی
 from app.bot.content import get_fact, get_myth, get_tip
 from app.config import get_settings
 from app.database import repository as repo
@@ -256,7 +257,6 @@ async def cmd_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     lines.append("\n✏️ برای ویرایش، /setup رو بزن.")
     await update.message.reply_text(with_signature("\n".join(lines)))
 
-# 👇 دستور کارت گرافیکی 👇
 @private_only
 @rate_limited
 async def cmd_mycard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -731,18 +731,8 @@ async def post_shutdown(application: Application) -> None: await dispose_engine(
 def build_application() -> Application:
     settings = get_settings()
     
-    # 👇 تنظیمات پروکسی از Environment (اگر تنظیم شده باشد)
-    proxy_url = os.environ.get("BOT_PROXY_URL", "").strip()
-    
-    builder = ApplicationBuilder().token(settings.telegram_bot_token).post_init(post_init).post_shutdown(post_shutdown)
-    
-    if proxy_url:
-        logger.info(f"Connecting to Telegram via proxy: {proxy_url}")
-        builder = builder.proxy(proxy_url).get_updates_proxy(proxy_url)
-    else:
-        logger.info("Connecting to Telegram without proxy.")
-        
-    app = builder.build()
+    # ساخت اپلیکیشن (بدون هیچ پروکسی اجباری برای خود ربات)
+    app = (ApplicationBuilder().token(settings.telegram_bot_token).post_init(post_init).post_shutdown(post_shutdown).build())
     
     app.add_handler(TypeHandler(Update, check_user_ban), group=-1)
 
@@ -765,6 +755,11 @@ def build_application() -> Application:
     app.add_handler(CallbackQueryHandler(snake_game.handle_snake, pattern=r"^snake_"))
     
     app.add_handler(CommandHandler("koma", kcmd.cmd_koma))
+    
+    # 👇👇 اضافه شدن دستورات پروکسی 👇👇
+    app.add_handler(CommandHandler("proxy", prox_cmd.cmd_proxy))
+    app.add_handler(CallbackQueryHandler(prox_cmd.handle_proxy_callback, pattern=r"^proxy_"))
+    # 👆👆 ------------------------- 👆👆
     
     app.add_handler(ChatMemberHandler(gmanager.on_bot_added, ChatMemberHandler.MY_CHAT_MEMBER))
     app.add_handler(CommandHandler("setgroup", gmanager.cmd_setgroup)); app.add_handler(CommandHandler("groups", gmanager.cmd_groups)); app.add_handler(CommandHandler("unsetgroup", gmanager.cmd_unsetgroup))

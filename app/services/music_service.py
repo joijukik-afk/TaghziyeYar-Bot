@@ -1,4 +1,4 @@
-"""موتور جستجوی چندمنبعی KOMA (SoundCloud, Archive.org, Bandcamp)"""
+"""موتور جستجوی چندمنبعی KOMA (فقط SoundCloud, Bandcamp, Archive.org)"""
 
 import os
 import random
@@ -35,7 +35,6 @@ SEARCH_QUERIES = [
     "acoustic ambient guitar",
 ]
 
-# منابع جستجو
 ARCHIVE_SEARCH_URL = "https://archive.org/advancedsearch.php"
 ARCHIVE_META_URL = "https://archive.org/metadata/{identifier}"
 ARCHIVE_DOWNLOAD_URL = "https://archive.org/download/{identifier}/{filename}"
@@ -43,8 +42,6 @@ ARCHIVE_DOWNLOAD_URL = "https://archive.org/download/{identifier}/{filename}"
 MAX_SIZE = 45 * 1024 * 1024
 MIN_SIZE = 1024 * 1024
 COOKIE_FILE = os.getenv("YTDLP_COOKIE_FILE", "cookies.txt")
-
-# ---------- توابع کمکی عمومی ----------
 
 async def _is_used(video_id: str) -> bool:
     async with session_scope() as session:
@@ -91,10 +88,9 @@ def _download_with_ytdlp(url: str, output_template: str) -> Optional[dict]:
         'outtmpl': output_template,
         'quiet': True,
         'no_warnings': True,
-        'extractor_args': {
-            'youtube': {'player_client': ['tv', 'mweb']},
-        },
     }
+    
+    # اگر فایل کوکی وجود داشت (برای دور زدن احتمالی محدودیت‌های ساندکلود)
     if os.path.exists(COOKIE_FILE):
         ydl_opts['cookiefile'] = COOKIE_FILE
 
@@ -124,11 +120,8 @@ def _download_with_ytdlp(url: str, output_template: str) -> Optional[dict]:
     return None
 
 # ---------- ۱. جستجو در SoundCloud ----------
-
-def _search_soundcloud(query: str, max_results: int = 3) -> List[Dict]:
+def _search_soundcloud(query: str, max_results: int = 5) -> List[Dict]:
     ydl_opts = {'quiet': True, 'no_warnings': True, 'extract_flat': True}
-    if os.path.exists(COOKIE_FILE):
-        ydl_opts['cookiefile'] = COOKIE_FILE
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(f"scsearch{max_results}:{query}", download=False)
@@ -144,8 +137,7 @@ def _search_soundcloud(query: str, max_results: int = 3) -> List[Dict]:
         return []
 
 # ---------- ۲. جستجو در Bandcamp ----------
-
-def _search_bandcamp(query: str, max_results: int = 3) -> List[Dict]:
+def _search_bandcamp(query: str, max_results: int = 5) -> List[Dict]:
     ydl_opts = {'quiet': True, 'no_warnings': True, 'extract_flat': True}
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -162,9 +154,7 @@ def _search_bandcamp(query: str, max_results: int = 3) -> List[Dict]:
         return []
 
 # ---------- ۳. جستجو در Archive.org ----------
-
-async def _search_archive(query: str, max_results: int = 3) -> List[Dict]:
-    # فیلتر: فقط MP3، بین ۳ تا ۱۰ دقیقه
+async def _search_archive(query: str, max_results: int = 5) -> List[Dict]:
     q = f'mediatype:audio AND format:MP3 AND ({query}) AND length:[180 TO 600]'
     params = {
         "q": q,
@@ -181,7 +171,7 @@ async def _search_archive(query: str, max_results: int = 3) -> List[Dict]:
                 "id": d.get("identifier"),
                 "title": d.get("title", "Unknown"),
                 "uploader": d.get("creator", "Unknown Artist"),
-                "url": None,  # لینک مستقیم در مرحله دانلود ساخته می‌شود
+                "url": None,
                 "source": "Archive.org",
             } for d in docs]
     except Exception as e:
@@ -231,15 +221,14 @@ async def _download_from_archive(identifier: str) -> Optional[dict]:
     return None
 
 # ---------- تابع اصلی ----------
-
 async def fetch_and_send_music(bot: Bot, chat_id: int) -> bool:
     query = random.choice(SEARCH_QUERIES)
     logger.info(f"Searching all sources for: {query}")
 
-    # اجرای موازی جستجو در سه منبع
-    sc_task = asyncio.to_thread(_search_soundcloud, query, 3)
-    bc_task = asyncio.to_thread(_search_bandcamp, query, 3)
-    ar_task = _search_archive(query, 3)
+    # جستجوی موازی در ساندکلود، بندکمپ و آرشیو
+    sc_task = asyncio.to_thread(_search_soundcloud, query, 5)
+    bc_task = asyncio.to_thread(_search_bandcamp, query, 5)
+    ar_task = _search_archive(query, 5)
 
     sc_results, bc_results, ar_results = await asyncio.gather(sc_task, bc_task, ar_task)
 
@@ -265,25 +254,19 @@ async def fetch_and_send_music(bot: Bot, chat_id: int) -> bool:
 
         if item["source"] == "Archive.org":
             dl = await _download_from_archive(identifier)
-            if not dl:
-                continue
+            if not dl: continue
             title = item["title"]
             artist = item["uploader"]
         else:
-            # SoundCloud / Bandcamp
             url = item.get("url")
-            if not url:
-                continue
+            if not url: continue
             output_template = os.path.join(tempfile.gettempdir(), f"koma_{identifier}")
             dl = await asyncio.to_thread(_download_with_ytdlp, url, output_template)
-            if not dl:
-                continue
+            if not dl: continue
             title = dl["title"]
             artist = dl["artist"]
-            dl["video_id"] = identifier
 
-        if not dl:
-            continue
+        if not dl: continue
 
         try:
             with open(dl["path"], "rb") as audio:

@@ -1,4 +1,4 @@
-"""سرویس دریافت آهنگ واقعی از Internet Archive (مجوز Creative Commons)"""
+"""سرویس دریافت آهنگ واقعی از Internet Archive (با تمرکز روی سبک‌های KOMA)"""
 
 import os
 import random
@@ -21,17 +21,20 @@ SEARCH_URL = "https://archive.org/advancedsearch.php"
 META_URL = "https://archive.org/metadata/{identifier}"
 DOWNLOAD_URL = "https://archive.org/download/{identifier}/{filename}"
 
-# سبک‌های هدف (Ambient, Dreamcore, Liminal Space و ...)
+# 👇 کوئری‌های دقیق برای پیدا کردن حال‌وهوای مورد نظر شما (Dreamcore, Slowed, Dark Ambient)
 QUERIES = [
-    'collection:opensource_audio AND (subject:ambient OR subject:"dark ambient")',
-    'collection:opensource_audio AND (subject:dreamcore OR subject:"liminal space")',
-    'collection:opensource_audio AND (subject:"electronic ambient" OR subject:ethereal)',
+    'collection:opensource_audio AND (subject:dreamcore OR subject:"liminal space" OR subject:weirdcore)',
+    'collection:opensource_audio AND (subject:"dark ambient" OR subject:"dark ambient music")',
     'mediatype:audio AND subject:"slowed reverb" AND licenseurl:*creativecommons*',
-    'collection:opensource_audio AND subject:drone',
+    'collection:opensource_audio AND (subject:"ethereal" OR subject:"ethereal wave" OR subject:"dream pop")',
+    'collection:opensource_audio AND (subject:"cinematic ambient" OR subject:"emotional ambient")',
+    'collection:opensource_audio AND (subject:"post apocalyptic" OR subject:"melancholic" OR subject:"sad ambient")',
+    'collection:opensource_audio AND (subject:"acoustic ambient" OR subject:"ambient guitar")'
 ]
 
-MAX_SIZE = 45 * 1024 * 1024   # 45MB (حد تلگرام 50MB)
-MIN_SIZE = 400 * 1024         # 400KB
+# سایزها رو تنظیم کردیم که فقط فایل‌های موسیقی واقعی (بین 1MB تا 45MB) رو قبول کنه
+MAX_SIZE = 45 * 1024 * 1024   # 45MB
+MIN_SIZE = 1024 * 1024        # 1MB
 MAX_DOWNLOAD_ATTEMPTS = 4
 
 
@@ -72,7 +75,6 @@ async def _find_mp3(client: httpx.AsyncClient, identifier: str) -> Optional[dict
     if not candidates:
         return None
 
-    # کوچک‌ترین فایل رو انتخاب میکنیم تا سریعتر دانلود شه
     candidates.sort(key=lambda c: c["size"])
     return candidates[0]
 
@@ -207,7 +209,7 @@ async def fetch_and_send_music(bot: Bot, chat_id: int, status_msg) -> bool:
                             caption=(
                                 f"🎵 <b>{data['title']}</b>\n"
                                 f"🎤 {data['artist']}\n"
-                                f"📦 منبع: Internet Archive (Creative Commons)\n"
+                                f"🌌 منبع: Internet Archive (Creative Commons)\n"
                                 f"🔗 <a href='https://archive.org/details/{ident}'>صفحه آهنگ</a>"
                             ),
                             parse_mode=ParseMode.HTML,

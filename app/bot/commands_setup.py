@@ -13,9 +13,10 @@ BOT_COMMANDS = [
     BotCommand("help", "📖 راهنمای کامل"),
     BotCommand("menu", "🏠 منوی اصلی"),
 
-    # بازی
+    # بازی و سرگرمی
     BotCommand("quiz", "🎮 کوییز زنده"),
     BotCommand("snake", "🐍 بازی مار و پله زنده"),
+    BotCommand("koma", "🎧 دریافت آهنگ جدید"),
     BotCommand("leaderboard", "🏆 جدول قهرمانان"),
     BotCommand("mystats", "📊 آمار من"),
 

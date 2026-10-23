@@ -1,9 +1,8 @@
-"""بازی مار و پله - نسخه نهایی، فوق سریع، با پاپ‌آپ قوانین تلگرام"""
+"""بازی مار و پله - نسخه نهایی (رفع کامل فریز شدن ربات و اصلاح متن‌ها)"""
 
 import random
 import logging
 import html
-import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from telegram.error import BadRequest
@@ -20,12 +19,16 @@ MISFORTUNE = {30: -5, 50: -10, 75: -5, 97: -10}
 MAX_POS = 100
 TURN_TIMEOUT = 40  # ثانیه
 PLAYER_ICONS = ["🦊", "🐼", "🦁", "🐸"]
+BOT_ICON = "🤖"
 
-# دیکشنری برای نگه داشتن وضعیت بازی‌ها (بدون قفل برای جلوگیری از کرش)
 ACTIVE_GAMES = {}
 
 def p_num(n: int) -> str:
     return str(n).translate(str.maketrans('0123456789', '۰۱۲۳۴۵۶۷۸۹'))
+
+def fix_dir(text: str) -> str:
+    """اصلاح جهت متن برای جلوگیری از برعکس شدن اعداد و پرانتزها"""
+    return f"\u2066{text}\u2069"
 
 def _get_safe_name(user) -> str:
     return html.escape(user.first_name or "کاربر")
@@ -63,10 +66,10 @@ def _get_ui(game: dict) -> str:
     
     current = game["players"][game["turn_index"]]
     if current["id"] == -1: 
-        header = "🤖 <b>نوبت ربات است...</b>"
+        header = f"{BOT_ICON} <b>نوبت حریف هوش مصنوعی است...</b>"
     else:
         mention = f"<a href='tg://user?id={current['id']}'>{current['name']}</a>"
-        dice_str = f" | 🎲 {p_num(game['last_dice'])}" if game.get('last_dice') else ""
+        dice_str = f" | 🎲 {fix_dir(p_num(game['last_dice']))}" if game.get('last_dice') else ""
         header = f"🔔 <b>نوبت:</b> {current['icon']} {mention}{dice_str}"
 
     map_text = f"\n🗺 <b>نقشه:</b>\n{_draw_board(game['players'])}\n"
@@ -74,7 +77,7 @@ def _get_ui(game: dict) -> str:
     stats = "\n📊 <b>آمار:</b>\n"
     for idx, p in enumerate(game["players"]):
         circle = "🟢" if idx == game["turn_index"] else "⚪"
-        pos_text = "⏳ منتظر ۶" if p["pos"] == 0 else ("🏆 برنده" if p["pos"] == MAX_POS else f"خانه {p_num(p['pos'])}")
+        pos_text = "⏳ منتظر ۶" if p["pos"] == 0 else ("🏆 برنده" if p["pos"] == MAX_POS else f"خانه {fix_dir(p_num(p['pos']))}")
         stats += f"{circle} {p['icon']} {p['name']}: {pos_text}\n"
         
     events = f"\n📢 <i>{game.get('last_action', '')}</i>"
@@ -82,7 +85,7 @@ def _get_ui(game: dict) -> str:
 
 def _get_lobby_kb(game: dict) -> InlineKeyboardMarkup:
     kb = [
-        [InlineKeyboardButton(f"🎮 ورود ({p_num(len(game['players']))}/۴)", callback_data="snake_join")],
+        [InlineKeyboardButton(f"🎮 ورود ({fix_dir(p_num(len(game['players'])))}/۴)", callback_data="snake_join")],
         [InlineKeyboardButton("🤖 بازی با ربات", callback_data="snake_play_bot")],
         [InlineKeyboardButton("📜 قوانین بازی", callback_data="snake_rules")]
     ]
@@ -125,44 +128,44 @@ async def _safe_edit(context: ContextTypes.DEFAULT_TYPE, chat_id: int, msg_id: i
 def _stop_game(chat_id: int):
     if chat_id in ACTIVE_GAMES:
         game = ACTIVE_GAMES[chat_id]
-        if game.get("timer_task"): game["timer_task"].cancel()
-        if game.get("bot_task"): game["bot_task"].cancel()
+        if game.get("timer_job"): game["timer_job"].schedule_removal()
+        if game.get("bot_job"): game["bot_job"].schedule_removal()
         del ACTIVE_GAMES[chat_id]
 
 def _schedule_next(context: ContextTypes.DEFAULT_TYPE, chat_id: int, game: dict):
-    if game.get("timer_task"): game["timer_task"].cancel()
-    if game.get("bot_task"): game["bot_task"].cancel()
+    # حذف جاب‌های قبلی
+    if game.get("timer_job"): game["timer_job"].schedule_removal()
+    if game.get("bot_job"): game["bot_job"].schedule_removal()
 
     next_p = game["players"][game["turn_index"]]
     
-    async def _timer_callback():
-        try:
-            await asyncio.sleep(0.5 if next_p["id"] == -1 else TURN_TIMEOUT)
-            if chat_id in ACTIVE_GAMES:
-                g = ACTIVE_GAMES[chat_id]
-                if g["status"] == "playing" and not g.get("is_rolling"):
-                    if g["players"][g["turn_index"]]["id"] == next_p["id"]:
-                        if next_p["id"] != -1:
-                            g["last_action"] = f"⏰ زمان {next_p['name']} تمام شد!"
-                        await _do_roll(context, chat_id, g, next_p["id"])
-        except asyncio.CancelledError:
-            pass
+    async def _timer_callback(ctx: ContextTypes.DEFAULT_TYPE):
+        if chat_id in ACTIVE_GAMES:
+            g = ACTIVE_GAMES[chat_id]
+            if g["status"] == "playing" and not g.get("is_rolling"):
+                if g["players"][g["turn_index"]]["id"] == next_p["id"]:
+                    if next_p["id"] != -1:
+                        g["last_action"] = f"⏰ زمان {next_p['name']} تمام شد!"
+                    await _do_roll(ctx, chat_id, g, next_p["id"])
 
+    # استفاده از JobQueue استاندارد (بدون کرش و فریز شدن)
     if next_p["id"] == -1:
-        game["bot_task"] = asyncio.create_task(_timer_callback())
+        game["bot_job"] = context.job_queue.run_once(_timer_callback, when=1.0, chat_id=chat_id)
     else:
-        game["timer_task"] = asyncio.create_task(_timer_callback())
+        game["timer_job"] = context.job_queue.run_once(_timer_callback, when=TURN_TIMEOUT, chat_id=chat_id)
 
 async def _do_roll(context: ContextTypes.DEFAULT_TYPE, chat_id: int, game: dict, user_id: int):
     if game.get("is_rolling"): return
+    if game["turn_index"] >= len(game["players"]): return
+    
     current = game["players"][game["turn_index"]]
     if current["id"] != user_id: return
     
     game["is_rolling"] = True
     msg_id = game["message_id"]
     
-    if game.get("timer_task"): game["timer_task"].cancel()
-    if game.get("bot_task"): game["bot_task"].cancel()
+    if game.get("timer_job"): game["timer_job"].schedule_removal()
+    if game.get("bot_job"): game["bot_job"].schedule_removal()
 
     try:
         await _safe_edit(context, chat_id, msg_id, _get_ui(game), _get_game_kb(game, True))
@@ -172,14 +175,14 @@ async def _do_roll(context: ContextTypes.DEFAULT_TYPE, chat_id: int, game: dict,
         old_pos = current["pos"]
         
         if old_pos == 0 and dice != 6:
-            game["last_action"] = f"🔒 {current['name']} باید ۶ بیاورد! (تاس: {p_num(dice)})"
+            game["last_action"] = f"🔒 {current['name']} برای شروع باید ۶ بیاورد! (تاس: {fix_dir(p_num(dice))})"
         else:
             target = old_pos + dice if old_pos != 0 else dice
             if target > MAX_POS:
                 target = MAX_POS - (target - MAX_POS)
-                game["last_action"] = f"🔄 {current['name']} از ۱۰۰ رد شد و برگشت به {p_num(target)}."
+                game["last_action"] = f"🔄 {current['name']} از ۱۰۰ رد شد و برگشت به {fix_dir(p_num(target))}."
             else:
-                game["last_action"] = f"➡️ {current['name']} تاس {p_num(dice)} آورد و به {p_num(target)} رفت."
+                game["last_action"] = f"➡️ {current['name']} تاس {fix_dir(p_num(dice))} آورد و به {fix_dir(p_num(target))} رفت."
             
             current["pos"] = target
             for p in game["players"]:
@@ -189,19 +192,19 @@ async def _do_roll(context: ContextTypes.DEFAULT_TYPE, chat_id: int, game: dict,
 
             if target in LADDERS:
                 current["pos"] = LADDERS[target]
-                game["last_action"] += f"\n🪜 پله رفت به {p_num(current['pos'])}."
+                game["last_action"] += f"\n🪜 پله رفت به {fix_dir(p_num(current['pos']))}."
             elif target in SNAKES:
                 current["pos"] = SNAKES[target]
-                game["last_action"] += f"\n🐍 مار خورد به {p_num(current['pos'])}."
+                game["last_action"] += f"\n🐍 مار خورد به {fix_dir(p_num(current['pos']))}."
             elif target in DRAGONS:
                 current["pos"] = DRAGONS[target]
-                game["last_action"] += f"\n🐉 اژدها خورد به {p_num(current['pos'])}."
+                game["last_action"] += f"\n🐉 اژدها خورد به {fix_dir(p_num(current['pos']))}."
             elif target in LUCK:
                 current["pos"] = min(MAX_POS, target + LUCK[target])
-                game["last_action"] += f"\n🎁 شانس آورد! {p_num(LUCK[target])} خانه جلو رفت."
+                game["last_action"] += f"\n🎁 شانس آورد! {fix_dir(p_num(LUCK[target]))} خانه جلو رفت."
             elif target in MISFORTUNE:
                 current["pos"] = max(0, target + MISFORTUNE[target])
-                game["last_action"] += f"\n⚡️ صاعقه خورد! {p_num(abs(MISFORTUNE[target]))} خانه عقب افتاد."
+                game["last_action"] += f"\n⚡️ صاعقه خورد! {fix_dir(p_num(abs(MISFORTUNE[target])))} خانه عقب افتاد."
 
         if current["pos"] == MAX_POS:
             game["status"] = "finished"
@@ -217,6 +220,7 @@ async def _do_roll(context: ContextTypes.DEFAULT_TYPE, chat_id: int, game: dict,
 
     except Exception as e:
         logger.error(f"Roll error: {e}", exc_info=True)
+        game["last_action"] = "⚠️ خطایی رخ داد، نوبت رد شد."
     finally:
         game["is_rolling"] = False
         if chat_id in ACTIVE_GAMES and game["status"] == "playing":
@@ -226,14 +230,14 @@ async def _do_roll(context: ContextTypes.DEFAULT_TYPE, chat_id: int, game: dict,
 async def cmd_snake(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
     if chat_id in ACTIVE_GAMES: 
-        return await update.message.reply_text("⚠️ یک بازی در جریان است!")
+        return await update.message.reply_text("⚠️ یک بازی در جریان است! اگر گیر کرده، دکمه «🛑 بستن اجباری» را بزنید.")
     
     name = _get_safe_name(update.effective_user)
     ACTIVE_GAMES[chat_id] = {
         "status": "lobby", "host_id": update.effective_user.id, 
         "players": [{"id": update.effective_user.id, "name": name, "pos": 0, "icon": PLAYER_ICONS[0]}],
         "turn_index": 0, "last_action": "بازی ساخته شد.", "is_rolling": False, "last_dice": None, "message_id": None,
-        "timer_task": None, "bot_task": None
+        "timer_job": None, "bot_job": None
     }
     
     msg = await update.message.reply_text(
@@ -247,9 +251,7 @@ async def handle_snake(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     query = update.callback_query
     if not query: return
     
-    # این بخش برای پاپ‌آپ قوانین تلگرام است
     if query.data == "snake_rules":
-        # متن دقیقاً زیر ۲۰۰ کاراکتر است تا تلگرام ارور نده
         rules = (
             "📜 قوانین مار و پله:\n"
             "🎲 شروع با ۶.\n"
@@ -261,7 +263,6 @@ async def handle_snake(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
         return await query.answer(rules, show_alert=True)
 
-    # بقیه دکمه‌ها
     try: await query.answer()
     except Exception: pass
     
@@ -307,7 +308,7 @@ async def handle_snake(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     if query.data == "snake_play_bot":
         if game["status"] != "lobby": return await query.answer("شروع شده!", show_alert=True)
-        game["players"].append({"id": -1, "name": "🤖 ربات", "pos": 0, "icon": "🤖"})
+        game["players"].append({"id": -1, "name": "حریف هوش مصنوعی", "pos": 0, "icon": BOT_ICON})
         game["status"] = "playing"
         game["turn_index"] = 0
         game["last_action"] = "بازی شروع شد! (منتظر ۶ باشید)"

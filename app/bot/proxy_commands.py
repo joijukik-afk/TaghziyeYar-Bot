@@ -1,4 +1,4 @@
-"""دستورات مدیریت پروکسی (فقط دکمه‌ها)"""
+"""دستور پروکسی (بدون متن اضافه، فقط دکمه‌های اتصال)"""
 
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -13,25 +13,24 @@ async def cmd_proxy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not user or not get_settings().is_admin(user.id):
         return await update.message.reply_text("⛔️ این دستور فقط برای صاحب ربات است.")
 
-    status_msg = await update.message.reply_text("🔄 در حال دریافت پروکسی‌های جدید...")
+    status_msg = await update.message.reply_text("🔄 در حال دریافت جدیدترین پروکسی‌ها...")
 
     try:
-        best_proxies = await get_best_proxies(limit=30)
+        proxies = await get_best_proxies(limit=30)
 
-        if not best_proxies:
-            return await status_msg.edit_text("❌ پروکسی سالمی پیدا نشد. لطفاً بعداً تلاش کنید.")
+        if not proxies:
+            return await status_msg.edit_text("❌ فعلاً پروکسی پیدا نشد. کمی بعد دوباره امتحان کنید.")
 
         keyboard = []
-        for i, p in enumerate(best_proxies, 1):
-            # دکمه برای اتصال مستقیم به پروکسی
-            keyboard.append([InlineKeyboardButton(f"🔗 پروکسی {i}", url=p['proxy'])])
+        # ساخت ۳۰ دکمه شیشه‌ای
+        for i, p in enumerate(proxies, 1):
+            keyboard.append([InlineKeyboardButton(f"🔗 اتصال به پروکسی {i}", url=p["proxy"])])
 
-        keyboard.append([InlineKeyboardButton("🔄 به‌روزرسانی لیست", callback_data="proxy_refresh")])
+        keyboard.append([InlineKeyboardButton("🔄 دریافت مجدد", callback_data="proxy_refresh")])
         keyboard.append([InlineKeyboardButton("❌ بستن", callback_data="proxy_close")])
 
         await status_msg.edit_text(
-            "🔗 **لیست پروکسی‌های MTProto (روی دکمه بزنید):**",
-            parse_mode="Markdown",
+            "👇 روی هر دکمه بزنید تا مستقیم در تلگرام باز شود:",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
 

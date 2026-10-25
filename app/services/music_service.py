@@ -18,7 +18,6 @@ from app.database.session import session_scope
 
 logger = logging.getLogger(__name__)
 
-# 👇 لیست جستجوها
 SEARCH_QUERIES = [
     "Øneheart slowed reverb",
     "reidenshi slowed reverb",
@@ -34,13 +33,9 @@ SEARCH_QUERIES = [
 ]
 
 ARCHIVE_SEARCH_URL = "https://archive.org/advancedsearch.php"
-ARCHIVE_META_URL = "https://archive.org/metadata/{identifier}"
-ARCHIVE_DOWNLOAD_URL = "https://archive.org/download/{identifier}/{filename}"
-
 MAX_SIZE = 45 * 1024 * 1024
 MIN_SIZE = 1024 * 1024
 
-# ==================== توابع دیتابیس ====================
 async def _is_used(identifier: str, title: str, artist: str) -> bool:
     async with session_scope() as session:
         res = await session.execute(
@@ -79,7 +74,7 @@ async def _record_track(data: dict, file_id: str) -> None:
             ))
         await session.flush()
 
-# ==================== ۱. Audius API (بدون بلاک) ====================
+# ==================== ۱. Audius API ====================
 async def _search_audius(query: str) -> List[Dict]:
     url = "https://discoveryprovider.audius.co/v1/tracks/search"
     params = {"query": query, "app_name": "KOMA"}
@@ -89,7 +84,7 @@ async def _search_audius(query: str) -> List[Dict]:
             if resp.status_code == 200:
                 data = resp.json()
                 tracks = data.get("data", [])
-                logger.info(f"Audius: {len(tracks)} results")
+                logger.info(f"Audius: {len(tracks)} results for '{query}'")
                 return [{
                     "id": f"audius_{t.get('id')}",
                     "title": t.get("title", "Unknown"),
@@ -101,7 +96,7 @@ async def _search_audius(query: str) -> List[Dict]:
         logger.warning(f"Audius search failed: {e}")
     return []
 
-# ==================== ۲. جستجوی yt-dlp (YouTube, SoundCloud, Bandcamp) ====================
+# ==================== ۲. yt-dlp (YouTube, SoundCloud, Bandcamp) ====================
 def _search_with_ytdlp(query: str, source_prefix: str) -> List[Dict]:
     ydl_opts = {
         'quiet': True, 'no_warnings': True, 'extract_flat': True, 'noplaylist': True,
@@ -120,15 +115,15 @@ def _search_with_ytdlp(query: str, source_prefix: str) -> List[Dict]:
                         "title": e.get('title', 'Unknown'),
                         "artist": e.get('uploader', 'Unknown Artist'),
                         "url": url,
-                        "source": source_prefix.replace("search", "").capitalize() # ytsearch -> Youtube
+                        "source": source_prefix.replace("search", "").capitalize()
                     })
-            logger.info(f"{source_prefix}: {len(res)} results")
+            logger.info(f"{source_prefix}: {len(res)} results for '{query}'")
             return res
     except Exception as e:
         logger.warning(f"{source_prefix} search failed: {e}")
         return []
 
-# ==================== ۳. جستجوی Archive.org ====================
+# ==================== ۳. Archive.org ====================
 async def _search_archive(query: str) -> List[Dict]:
     q = f'mediatype:audio AND format:MP3 AND ({query}) AND length:[180 TO 7200]'
     params = {"q": q, "fl[]": ["identifier", "title", "creator"], "sort[]": "downloads desc", "rows": 3, "output": "json"}
@@ -136,12 +131,13 @@ async def _search_archive(query: str) -> List[Dict]:
         async with httpx.AsyncClient() as client:
             r = await client.get(ARCHIVE_SEARCH_URL, params=params, timeout=10.0)
             docs = r.json().get("response", {}).get("docs", [])
+            logger.info(f"Archive: {len(docs)} results for '{query}'")
             return [{"id": d.get("identifier"), "title": d.get("title", "Unknown"), "artist": d.get("creator", "Unknown Artist"), "source": "Archive.org"} for d in docs]
     except Exception as e:
         logger.warning(f"Archive search failed: {e}")
         return []
 
-# ==================== ۴. دانلود ====================
+# ==================== دانلود ====================
 def _download_ytdlp(url: str, output_template: str) -> Optional[dict]:
     ydl_opts = {
         'format': 'bestaudio/best',
@@ -190,13 +186,13 @@ async def _download_audius(stream_url: str, output_path: str) -> Optional[dict]:
         logger.error(f"Audius download error: {e}")
     return None
 
-# ==================== ۵. تابع اصلی ====================
+# ==================== تابع اصلی ====================
 async def fetch_and_send_music(bot: Bot, chat_id: int, thread_id: int = None) -> bool:
     # ۳ کوئری تصادفی برای شانس بیشتر
     queries = random.sample(SEARCH_QUERIES, min(3, len(SEARCH_QUERIES)))
     
     for query in queries:
-        logger.info(f"--- Searching for: {query} ---")
+        logger.info(f"=== Searching for: {query} ===")
         
         # جستجوی موازی در همه منابع
         audius_task = _search_audius(query)
@@ -208,7 +204,7 @@ async def fetch_and_send_music(bot: Bot, chat_id: int, thread_id: int = None) ->
         sc_res = await asyncio.to_thread(_search_with_ytdlp, query, "scsearch")
         bc_res = await asyncio.to_thread(_search_with_ytdlp, query, "bcsearch")
 
-        # اولویت‌بندی منابع: Audius > SoundCloud > YouTube > Bandcamp > Archive
+        # اولویت‌بندی: Audius > SoundCloud > YouTube > Bandcamp > Archive
         candidates = []
         candidates.extend(audius_res)
         candidates.extend(sc_res)
@@ -217,7 +213,7 @@ async def fetch_and_send_music(bot: Bot, chat_id: int, thread_id: int = None) ->
         candidates.extend(archive_res)
 
         if not candidates:
-            continue # برو سراغ کوئری بعدی
+            continue
 
         random.shuffle(candidates)
 
@@ -243,7 +239,6 @@ async def fetch_and_send_music(bot: Bot, chat_id: int, thread_id: int = None) ->
                 dl = await asyncio.to_thread(_download_ytdlp, url, output_template)
                 if dl: dl["title"] = dl.get("title", title); dl["artist"] = dl.get("artist", artist)
             elif item["source"] == "Archive.org":
-                # (از آرشیو صرف نظر می‌کنیم چون لینک مستقیم نداره و کند است)
                 continue
 
             if not dl: continue

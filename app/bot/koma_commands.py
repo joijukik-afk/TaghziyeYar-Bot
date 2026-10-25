@@ -12,12 +12,13 @@ async def cmd_koma(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_chat is None or update.message is None: return
     chat_id = update.effective_chat.id
 
+    # جلوگیری از زدن همزمان دستور
     if chat_id in _chat_locks:
         await update.message.reply_text("⏳ لطفاً صبر کنید، در حال آماده‌سازی آهنگ بعدی...")
         return
 
     _chat_locks.add(chat_id)
-    status_msg = await update.message.reply_text("🎧 در حال جستجو در آرشیو KOMA (SoundCloud, Bandcamp, Archive)...")
+    status_msg = await update.message.reply_text("🎧 در حال جستجو در آرشیو KOMA (YouTube, SoundCloud, Archive)...")
 
     try:
         success = await fetch_and_send_music(context.bot, chat_id)

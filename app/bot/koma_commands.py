@@ -1,4 +1,4 @@
-"""دستور /koma برای دریافت آهنگ (سازگار با گروه‌ها و تاپیک‌ها)"""
+"""دستور /koma برای دریافت آهنگ (فقط SoundCloud، سازگار با گروه‌ها و تاپیک‌ها)"""
 
 import logging
 from telegram import Update
@@ -24,7 +24,7 @@ async def cmd_koma(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     _chat_locks.add(chat_id)
     
     try:
-        status_msg = await update.message.reply_text("🎧 در حال جستجو در آرشیو KOMA (Audius, SoundCloud, YouTube, Bandcamp)...")
+        status_msg = await update.message.reply_text("🎧 در حال جستجو در آرشیو KOMA (SoundCloud)...")
     except Forbidden:
         _chat_locks.discard(chat_id)
         return 

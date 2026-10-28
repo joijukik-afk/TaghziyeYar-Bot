@@ -730,8 +730,6 @@ async def post_shutdown(application: Application) -> None: await dispose_engine(
 
 def build_application() -> Application:
     settings = get_settings()
-    
-    # ساخت اپلیکیشن (بدون هیچ پروکسی اجباری برای خود ربات)
     app = (ApplicationBuilder().token(settings.telegram_bot_token).post_init(post_init).post_shutdown(post_shutdown).build())
     
     app.add_handler(TypeHandler(Update, check_user_ban), group=-1)
@@ -754,12 +752,13 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("snake", snake_game.cmd_snake))
     app.add_handler(CallbackQueryHandler(snake_game.handle_snake, pattern=r"^snake_"))
     
+    # 👇👇 هندلرهای موزیک
     app.add_handler(CommandHandler("koma", kcmd.cmd_koma))
+    app.add_handler(CommandHandler("music", kcmd.cmd_music)) # 👈 دستور جدید
+    # 👆👆
     
-    # 👇👇 اضافه شدن دستورات پروکسی 👇👇
     app.add_handler(CommandHandler("proxy", prox_cmd.cmd_proxy))
     app.add_handler(CallbackQueryHandler(prox_cmd.handle_proxy_callback, pattern=r"^proxy_"))
-    # 👆👆 ------------------------- 👆👆
     
     app.add_handler(ChatMemberHandler(gmanager.on_bot_added, ChatMemberHandler.MY_CHAT_MEMBER))
     app.add_handler(CommandHandler("setgroup", gmanager.cmd_setgroup)); app.add_handler(CommandHandler("groups", gmanager.cmd_groups)); app.add_handler(CommandHandler("unsetgroup", gmanager.cmd_unsetgroup))

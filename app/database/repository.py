@@ -6,7 +6,7 @@ from app.database.models import (
     AuditLog, BannedUser, Group, Profile, SentImage, User, WeightLog, QuizHistory, SystemState, GeneratedCard
 )
 from app.database.quiz_models import QuizLeaderboard, QuizLog
-from app.database.group_models import GroupMember # 👈 ایمپورت جدید
+from app.database.group_models import GroupMember
 from app.database.session import session_scope
 
 async def get_or_create_user(telegram_id: int, username: str | None, first_name: str | None, last_name: str | None) -> User:
@@ -290,10 +290,27 @@ async def save_group_member(chat_id: int, user_id: int, first_name: str, usernam
             session.add(GroupMember(chat_id=chat_id, user_id=user_id, first_name=first_name, username=username))
         await session.flush()
 
-async def get_group_members(chat_id: int, limit: int = 200) -> list[GroupMember]:
-    """دریافت لیست اعضای ذخیره شده گروه"""
+async def get_group_members(chat_id: int, days: int = 7, limit: int = 200) -> list[GroupMember]:
+    """دریافت اعضای فعال گروه (فقط کسانی که در X روز اخیر پیام دادن)"""
+    cutoff = datetime.utcnow() - timedelta(days=days)
     async with session_scope() as session:
         res = await session.execute(
-            select(GroupMember).where(GroupMember.chat_id == chat_id).limit(limit)
+            select(GroupMember)
+            .where(
+                (GroupMember.chat_id == chat_id) & 
+                (GroupMember.last_seen >= cutoff) 
+            )
+            .order_by(desc(GroupMember.last_seen)) 
+            .limit(limit)
         )
         return list(res.scalars().all())
+
+async def cleanup_inactive_members(days: int = 90) -> int:
+    """پاک کردن اعضایی که در X روز اخیر فعالیت نداشتن (برای بهینه‌سازی دیتابیس)"""
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    async with session_scope() as session:
+        result = await session.execute(
+            delete(GroupMember).where(GroupMember.last_seen < cutoff)
+        )
+        await session.flush()
+        return result.rowcount

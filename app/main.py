@@ -34,7 +34,7 @@ from app.bot.content import get_fact, get_myth, get_tip
 from app.config import get_settings
 from app.database import repository as repo
 from app.database.session import create_all, dispose_engine, init_engine
-from app.database.group_models import GroupMember # 👈 اضافه شد
+from app.database.group_models import GroupMember
 from app.services.ai_service import get_ai_service
 from app.services.auto_content import broadcast_auto_content, post_auto_content
 from app.services.card_generator import generate_ai_health_card
@@ -237,7 +237,7 @@ async def cmd_privacy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message: await update.message.reply_text(with_signature(msg.SETTINGS_TEXT))
 
-# 👇 تگ کردن همه اعضا
+# 👇 تگ کردن همه اعضا (فقط فعال‌ها)
 async def cmd_tagall(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     chat = update.effective_chat
@@ -246,9 +246,26 @@ async def cmd_tagall(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if not await is_admin_user(user.id): 
         return await update.message.reply_text("⛔️ این دستور فقط برای ادمین‌ها است.")
     
-    members = await repo.get_group_members(chat.id, limit=200)
+    # 👇 پارس کردن آرگومان‌ها
+    days = 7 # پیش‌فرض: 7 روز اخیر
+    custom_text = "🔔 توجه!"
+    
+    if context.args:
+        args = list(context.args)
+        if args[0].isdigit():
+            days = int(args[0])
+            args.pop(0)
+        if args:
+            custom_text = " ".join(args)
+    
+    # دریافت اعضای فعال
+    members = await repo.get_group_members(chat.id, days=days, limit=200)
+    
     if not members:
-        return await update.message.reply_text("⚠️ هنوز هیچ عضوی در دیتابیس ذخیره نشده است. اعضا باید در گروه پیام بفرستند.")
+        return await update.message.reply_text(
+            f"⚠️ هیچ عضوی در {days} روز اخیر پیام نداده.\n"
+            f"اعضا باید توی گروه پیام بفرستن تا بتونن تگ بشن."
+        )
         
     mentions = []
     for m in members:
@@ -260,12 +277,18 @@ async def cmd_tagall(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     chunk_size = 20
     chunks = [mentions[i:i + chunk_size] for i in range(0, len(mentions), chunk_size)]
     
-    status_msg = await update.message.reply_text(f"🔔 در حال تگ کردن {len(members)} نفر...")
+    status_msg = await update.message.reply_text(f"🔔 در حال تگ کردن {len(members)} نفر فعال (از {days} روز اخیر)...")
     await status_msg.delete()
     
-    for chunk in chunks:
+    for i, chunk in enumerate(chunks):
         text = " ".join(chunk)
-        await update.message.reply_text(text, parse_mode="Markdown")
+        if i == 0:
+            text = f"{custom_text}\n\n{text}"
+            
+        try:
+            await update.message.reply_text(text, parse_mode="Markdown")
+        except Exception as e:
+            logger.error(f"Tag error: {e}")
         await asyncio.sleep(0.5)
 
 @private_only
@@ -727,7 +750,7 @@ async def post_init(application: Application) -> None:
     import app.database.models
     import app.database.quiz_models 
     import app.database.music_models
-    import app.database.group_models # 👈 اضافه شد
+    import app.database.group_models
     await create_all()
     me = await application.bot.get_me()
     logger.info("Bot started as @%s", me.username)
@@ -765,7 +788,7 @@ def build_application() -> Application:
     app = (ApplicationBuilder().token(settings.telegram_bot_token).post_init(post_init).post_shutdown(post_shutdown).build())
     
     app.add_handler(TypeHandler(Update, check_user_ban), group=-1)
-    app.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.ALL, save_member_handler), group=-2) # 👈 ذخیره اعضا
+    app.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.ALL, save_member_handler), group=-2)
 
     app.add_handler(CommandHandler("start", cmd_start)); app.add_handler(CommandHandler("help", cmd_help)); app.add_handler(CommandHandler("menu", cmd_menu))
     app.add_handler(CommandHandler("about", cmd_about)); app.add_handler(CommandHandler("privacy", cmd_privacy)); app.add_handler(CommandHandler("settings", cmd_settings))
@@ -774,7 +797,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("mycard", cmd_mycard))
     app.add_handler(CommandHandler("setup", cmd_setup)); app.add_handler(CommandHandler("cancel", cmd_cancel))
     
-    app.add_handler(CommandHandler("tagall", cmd_tagall)) # 👈 دستور جدید تگ کردن
+    app.add_handler(CommandHandler("tagall", cmd_tagall))
     
     app.add_handler(CommandHandler("bmi", cmd_bmi)); app.add_handler(CommandHandler("calories", cmd_calories)); app.add_handler(CommandHandler("weight", cmd_weight))
     app.add_handler(CommandHandler("progress", cmd_progress)); app.add_handler(CommandHandler("macros", cmd_macros)); app.add_handler(CommandHandler("protein", cmd_protein))

@@ -29,11 +29,12 @@ from app.bot import profile_commands as pcmd
 from app.bot import setup_wizard as wizard
 from app.bot import snake_game
 from app.bot import koma_commands as kcmd
-from app.bot import proxy_commands as prox_cmd  # 👈 ایمپورت پروکسی
+from app.bot import proxy_commands as prox_cmd
 from app.bot.content import get_fact, get_myth, get_tip
 from app.config import get_settings
 from app.database import repository as repo
 from app.database.session import create_all, dispose_engine, init_engine
+from app.database.group_models import GroupMember # 👈 اضافه شد
 from app.services.ai_service import get_ai_service
 from app.services.auto_content import broadcast_auto_content, post_auto_content
 from app.services.card_generator import generate_ai_health_card
@@ -80,6 +81,13 @@ async def check_user_ban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user = update.effective_user
     if user and await repo.is_user_banned(user.id): 
         raise ApplicationHandlerStop
+
+# 👇 ذخیره اعضای گروه در دیتابیس (برای تگ کردن)
+async def save_member_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    chat = update.effective_chat
+    if user and chat and chat.type in (ChatType.GROUP, ChatType.SUPERGROUP):
+        await repo.save_group_member(chat.id, user.id, user.first_name or "کاربر", user.username)
 
 # ---------------------------------------------------------------------------
 #  Health server
@@ -129,26 +137,18 @@ async def _auto_post_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         now = time.time()
         
         if last_time > 0 and (now - last_time < 28800):
-            logger.info("⏳ هنوز ۸ ساعت از پست قبلی نگذشته. زمان باقی‌مانده: %.1f ساعت", (28800 - (now - last_time)) / 3600)
             return
 
         specific_chat = os.environ.get("AUTO_POST_CHAT_ID", "").strip()
         if specific_chat:
             try: 
                 ok = await post_auto_content(context.bot, int(specific_chat))
-                if ok: 
-                    await repo.set_last_post_time(time.time())
-                    logger.info("✅ پست خودکار ارسال شد به گروه مشخص.")
-            except Exception as e: 
-                logger.warning("خطا در ارسال به %s: %s", specific_chat, e)
+                if ok: await repo.set_last_post_time(time.time())
+            except Exception: pass
             return
 
         sent = await broadcast_auto_content(context.bot)
-        if sent > 0: 
-            await repo.set_last_post_time(time.time())
-            logger.info("✅ پست خودکار به %d گروه ارسال شد.", sent)
-        else:
-            logger.warning("⚠️ پستی ارسال نشد (شاید AI خطا داد یا گروهی نیست).")
+        if sent > 0: await repo.set_last_post_time(time.time())
     except Exception as e:
         logger.error("❌ خطا در _auto_post_job: %s", e)
 
@@ -236,6 +236,37 @@ async def cmd_privacy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message: await update.message.reply_text(with_signature(msg.SETTINGS_TEXT))
+
+# 👇 تگ کردن همه اعضا
+async def cmd_tagall(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    chat = update.effective_chat
+    if not user or not chat or chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP): return
+    
+    if not await is_admin_user(user.id): 
+        return await update.message.reply_text("⛔️ این دستور فقط برای ادمین‌ها است.")
+    
+    members = await repo.get_group_members(chat.id, limit=200)
+    if not members:
+        return await update.message.reply_text("⚠️ هنوز هیچ عضوی در دیتابیس ذخیره نشده است. اعضا باید در گروه پیام بفرستند.")
+        
+    mentions = []
+    for m in members:
+        if m.username:
+            mentions.append(f"@{m.username}")
+        else:
+            mentions.append(f"[{m.first_name}](tg://user?id={m.user_id})")
+            
+    chunk_size = 20
+    chunks = [mentions[i:i + chunk_size] for i in range(0, len(mentions), chunk_size)]
+    
+    status_msg = await update.message.reply_text(f"🔔 در حال تگ کردن {len(members)} نفر...")
+    await status_msg.delete()
+    
+    for chunk in chunks:
+        text = " ".join(chunk)
+        await update.message.reply_text(text, parse_mode="Markdown")
+        await asyncio.sleep(0.5)
 
 @private_only
 @rate_limited
@@ -696,6 +727,7 @@ async def post_init(application: Application) -> None:
     import app.database.models
     import app.database.quiz_models 
     import app.database.music_models
+    import app.database.group_models # 👈 اضافه شد
     await create_all()
     me = await application.bot.get_me()
     logger.info("Bot started as @%s", me.username)
@@ -733,6 +765,7 @@ def build_application() -> Application:
     app = (ApplicationBuilder().token(settings.telegram_bot_token).post_init(post_init).post_shutdown(post_shutdown).build())
     
     app.add_handler(TypeHandler(Update, check_user_ban), group=-1)
+    app.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.ALL, save_member_handler), group=-2) # 👈 ذخیره اعضا
 
     app.add_handler(CommandHandler("start", cmd_start)); app.add_handler(CommandHandler("help", cmd_help)); app.add_handler(CommandHandler("menu", cmd_menu))
     app.add_handler(CommandHandler("about", cmd_about)); app.add_handler(CommandHandler("privacy", cmd_privacy)); app.add_handler(CommandHandler("settings", cmd_settings))
@@ -740,6 +773,8 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("profile", cmd_profile))
     app.add_handler(CommandHandler("mycard", cmd_mycard))
     app.add_handler(CommandHandler("setup", cmd_setup)); app.add_handler(CommandHandler("cancel", cmd_cancel))
+    
+    app.add_handler(CommandHandler("tagall", cmd_tagall)) # 👈 دستور جدید تگ کردن
     
     app.add_handler(CommandHandler("bmi", cmd_bmi)); app.add_handler(CommandHandler("calories", cmd_calories)); app.add_handler(CommandHandler("weight", cmd_weight))
     app.add_handler(CommandHandler("progress", cmd_progress)); app.add_handler(CommandHandler("macros", cmd_macros)); app.add_handler(CommandHandler("protein", cmd_protein))
@@ -752,10 +787,8 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("snake", snake_game.cmd_snake))
     app.add_handler(CallbackQueryHandler(snake_game.handle_snake, pattern=r"^snake_"))
     
-    # 👇👇 هندلرهای موزیک
     app.add_handler(CommandHandler("koma", kcmd.cmd_koma))
-    app.add_handler(CommandHandler("music", kcmd.cmd_music)) # 👈 دستور جدید
-    # 👆👆
+    app.add_handler(CommandHandler("music", kcmd.cmd_music))
     
     app.add_handler(CommandHandler("proxy", prox_cmd.cmd_proxy))
     app.add_handler(CallbackQueryHandler(prox_cmd.handle_proxy_callback, pattern=r"^proxy_"))

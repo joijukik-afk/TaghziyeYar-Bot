@@ -6,6 +6,7 @@ from app.database.models import (
     AuditLog, BannedUser, Group, Profile, SentImage, User, WeightLog, QuizHistory, SystemState, GeneratedCard
 )
 from app.database.quiz_models import QuizLeaderboard, QuizLog
+from app.database.group_models import GroupMember # 👈 ایمپورت جدید
 from app.database.session import session_scope
 
 async def get_or_create_user(telegram_id: int, username: str | None, first_name: str | None, last_name: str | None) -> User:
@@ -233,12 +234,8 @@ async def check_and_mark_card_generated(telegram_id: int) -> bool:
         await session.flush()
         return True
 
-# ---------------------------------------------------------------------------
-#  👇 توابع جدید برای مدیریت ادمین‌ها (اضافه شده در انتهای فایل)
-# ---------------------------------------------------------------------------
-
+# ------------------ توابع جدید مدیریت ادمین‌ها ------------------
 async def get_dynamic_admins() -> list[int]:
-    """دریافت لیست ادمین‌های داینامیک از دیتابیس"""
     async with session_scope() as session:
         result = await session.execute(select(SystemState).where(SystemState.key == "dynamic_admins"))
         state = result.scalar_one_or_none()
@@ -250,7 +247,6 @@ async def get_dynamic_admins() -> list[int]:
         return []
 
 async def add_dynamic_admin(telegram_id: int) -> None:
-    """افزودن یک ادمین جدید به دیتابیس"""
     async with session_scope() as session:
         result = await session.execute(select(SystemState).where(SystemState.key == "dynamic_admins"))
         state = result.scalar_one_or_none()
@@ -267,7 +263,6 @@ async def add_dynamic_admin(telegram_id: int) -> None:
             await session.flush()
 
 async def remove_dynamic_admin(telegram_id: int) -> None:
-    """حذف یک ادمین از دیتابیس"""
     async with session_scope() as session:
         result = await session.execute(select(SystemState).where(SystemState.key == "dynamic_admins"))
         state = result.scalar_one_or_none()
@@ -279,3 +274,26 @@ async def remove_dynamic_admin(telegram_id: int) -> None:
                     state.value = ",".join(map(str, admins))
                     await session.flush()
             except: pass
+
+# ------------------ توابع جدید برای تگ کردن اعضا ------------------
+async def save_group_member(chat_id: int, user_id: int, first_name: str, username: str | None) -> None:
+    """ذخیره کاربر در لیست اعضای گروه"""
+    async with session_scope() as session:
+        res = await session.execute(
+            select(GroupMember).where((GroupMember.chat_id == chat_id) & (GroupMember.user_id == user_id))
+        )
+        member = res.scalar_one_or_none()
+        if member:
+            member.first_name = first_name
+            member.username = username
+        else:
+            session.add(GroupMember(chat_id=chat_id, user_id=user_id, first_name=first_name, username=username))
+        await session.flush()
+
+async def get_group_members(chat_id: int, limit: int = 200) -> list[GroupMember]:
+    """دریافت لیست اعضای ذخیره شده گروه"""
+    async with session_scope() as session:
+        res = await session.execute(
+            select(GroupMember).where(GroupMember.chat_id == chat_id).limit(limit)
+        )
+        return list(res.scalars().all())

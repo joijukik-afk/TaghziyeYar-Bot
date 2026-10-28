@@ -277,7 +277,7 @@ async def remove_dynamic_admin(telegram_id: int) -> None:
 
 # ------------------ توابع تگ کردن اعضا ------------------
 async def save_group_member(chat_id: int, user_id: int, first_name: str, username: str | None) -> None:
-    """ذخیره کاربر در لیست اعضای گروه"""
+    """ذخیره کاربر در لیست اعضای گروه (با آپدیت اجباری last_seen)"""
     async with session_scope() as session:
         res = await session.execute(
             select(GroupMember).where((GroupMember.chat_id == chat_id) & (GroupMember.user_id == user_id))
@@ -286,14 +286,19 @@ async def save_group_member(chat_id: int, user_id: int, first_name: str, usernam
         if member:
             member.first_name = first_name
             member.username = username
+            member.last_seen = datetime.utcnow() # 👈 آپدیت اجباری زمان
         else:
-            session.add(GroupMember(chat_id=chat_id, user_id=user_id, first_name=first_name, username=username))
+            session.add(GroupMember(
+                chat_id=chat_id, user_id=user_id, 
+                first_name=first_name, username=username,
+                last_seen=datetime.utcnow()
+            ))
         await session.flush()
 
 async def get_group_members(chat_id: int, limit: int = 20) -> list[GroupMember]:
-    """دریافت اعضای فعال گروه با اولویت آخرین فعالیت"""
+    """دریافت اعضای فعال گروه با اولویت آخرین فعالیت (ربات‌ها حذف می‌شن)"""
     async with session_scope() as session:
-        # بیشتر می‌گیریم تا بعد از حذف ربات‌ها به تعداد کافی برسیم
+        # بیشتر می‌گیریم تا بعد از فیلتر ربات‌ها به تعداد کافی برسیم
         res = await session.execute(
             select(GroupMember)
             .where(GroupMember.chat_id == chat_id)
@@ -304,7 +309,7 @@ async def get_group_members(chat_id: int, limit: int = 20) -> list[GroupMember]:
         
     filtered = []
     for m in members:
-        # 👇 حذف ربات‌ها
+        # 👇 حذف ربات‌ها بر اساس نام‌کاربری
         if m.username:
             u = m.username.lower()
             if u.endswith('bot') or '_bot' in u or 'bot_' in u:

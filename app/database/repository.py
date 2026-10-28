@@ -234,7 +234,7 @@ async def check_and_mark_card_generated(telegram_id: int) -> bool:
         await session.flush()
         return True
 
-# ------------------ توابع جدید مدیریت ادمین‌ها ------------------
+# ------------------ توابع مدیریت ادمین‌ها ------------------
 async def get_dynamic_admins() -> list[int]:
     async with session_scope() as session:
         result = await session.execute(select(SystemState).where(SystemState.key == "dynamic_admins"))
@@ -275,7 +275,7 @@ async def remove_dynamic_admin(telegram_id: int) -> None:
                     await session.flush()
             except: pass
 
-# ------------------ توابع جدید برای تگ کردن اعضا ------------------
+# ------------------ توابع تگ کردن اعضا ------------------
 async def save_group_member(chat_id: int, user_id: int, first_name: str, username: str | None) -> None:
     """ذخیره کاربر در لیست اعضای گروه"""
     async with session_scope() as session:
@@ -290,23 +290,33 @@ async def save_group_member(chat_id: int, user_id: int, first_name: str, usernam
             session.add(GroupMember(chat_id=chat_id, user_id=user_id, first_name=first_name, username=username))
         await session.flush()
 
-async def get_group_members(chat_id: int, days: int = 7, limit: int = 200) -> list[GroupMember]:
-    """دریافت اعضای فعال گروه (فقط کسانی که در X روز اخیر پیام دادن)"""
-    cutoff = datetime.utcnow() - timedelta(days=days)
+async def get_group_members(chat_id: int, limit: int = 20) -> list[GroupMember]:
+    """دریافت اعضای فعال گروه با اولویت آخرین فعالیت"""
     async with session_scope() as session:
+        # بیشتر می‌گیریم تا بعد از حذف ربات‌ها به تعداد کافی برسیم
         res = await session.execute(
             select(GroupMember)
-            .where(
-                (GroupMember.chat_id == chat_id) & 
-                (GroupMember.last_seen >= cutoff) 
-            )
-            .order_by(desc(GroupMember.last_seen)) 
-            .limit(limit)
+            .where(GroupMember.chat_id == chat_id)
+            .order_by(desc(GroupMember.last_seen))
+            .limit(limit * 5)
         )
-        return list(res.scalars().all())
+        members = list(res.scalars().all())
+        
+    filtered = []
+    for m in members:
+        # 👇 حذف ربات‌ها
+        if m.username:
+            u = m.username.lower()
+            if u.endswith('bot') or '_bot' in u or 'bot_' in u:
+                continue
+        filtered.append(m)
+        if len(filtered) >= limit:
+            break
+            
+    return filtered
 
 async def cleanup_inactive_members(days: int = 90) -> int:
-    """پاک کردن اعضایی که در X روز اخیر فعالیت نداشتن (برای بهینه‌سازی دیتابیس)"""
+    """پاک کردن اعضای غیرفعال برای بهینه‌سازی دیتابیس"""
     cutoff = datetime.utcnow() - timedelta(days=days)
     async with session_scope() as session:
         result = await session.execute(

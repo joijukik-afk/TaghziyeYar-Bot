@@ -15,8 +15,9 @@ BOT_COMMANDS = [
 
     # بازی و سرگرمی
     BotCommand("quiz", "🎮 کوییز زنده"),
-    BotCommand("snake", "🐍 بازی مار و پله زنده"),
-    BotCommand("koma", "🎧 دریافت آهنگ جدید"),
+    BotCommand("snake", "🐍 بازی مار و پله"),
+    BotCommand("koma", "🎧 دریافت آهنگ تصادفی"),
+    BotCommand("music", "🎵 دانلود آهنگ با اسم یا لینک"), # 👈 اضافه شد
     BotCommand("leaderboard", "🏆 جدول قهرمانان"),
     BotCommand("mystats", "📊 آمار من"),
 
@@ -53,8 +54,8 @@ BOT_COMMANDS = [
     # مدیریت گروه
     BotCommand("setgroup", "📌 ثبت این گروه برای پست خودکار"),
     
-    # 👇 دستور پروکسی (فقط برای صاحب ربات)
-    BotCommand("proxy", "🌐 دریافت لیست پروکسی‌های سالم (مدیر)"),
+    # ادمین (پروکسی)
+    BotCommand("proxy", "🌐 دریافت لیست پروکسی (مدیر)"),
 
     # سایر
     BotCommand("about", "ℹ️ درباره بات"),

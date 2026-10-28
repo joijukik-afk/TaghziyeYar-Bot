@@ -1,11 +1,9 @@
 """Register bot commands with Telegram's menu."""
 
 import logging
-
 from telegram import Bot, BotCommand
 
 logger = logging.getLogger(__name__)
-
 
 BOT_COMMANDS = [
     # عمومی
@@ -17,7 +15,7 @@ BOT_COMMANDS = [
     BotCommand("quiz", "🎮 کوییز زنده"),
     BotCommand("snake", "🐍 بازی مار و پله"),
     BotCommand("koma", "🎧 دریافت آهنگ تصادفی"),
-    BotCommand("music", "🎵 دانلود آهنگ با اسم یا لینک"), # 👈 اضافه شد
+    BotCommand("music", "🎵 دانلود آهنگ با اسم یا لینک"),
     BotCommand("leaderboard", "🏆 جدول قهرمانان"),
     BotCommand("mystats", "📊 آمار من"),
 
@@ -53,6 +51,7 @@ BOT_COMMANDS = [
 
     # مدیریت گروه
     BotCommand("setgroup", "📌 ثبت این گروه برای پست خودکار"),
+    BotCommand("tagall", "📢 تگ کردن تمام اعضای گروه (ادمین)"), # 👈 اضافه شد
     
     # ادمین (پروکسی)
     BotCommand("proxy", "🌐 دریافت لیست پروکسی (مدیر)"),

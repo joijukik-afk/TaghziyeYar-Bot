@@ -82,12 +82,27 @@ async def check_user_ban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if user and await repo.is_user_banned(user.id): 
         raise ApplicationHandlerStop
 
-# 👇 ذخیره اعضای گروه در دیتابیس (برای تگ کردن)
+# 👇 ذخیره اعضا در دیتابیس (با هر پیام)
 async def save_member_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     chat = update.effective_chat
     if user and chat and chat.type in (ChatType.GROUP, ChatType.SUPERGROUP):
         await repo.save_group_member(chat.id, user.id, user.first_name or "کاربر", user.username)
+
+# 👇 ذخیره اعضای جدیدی که به گروه اضافه می‌شن
+async def track_new_members(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    if not chat or chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP):
+        return
+    if update.message and update.message.new_chat_members:
+        for member in update.message.new_chat_members:
+            if member.is_bot:
+                continue
+            await repo.save_group_member(
+                chat.id, member.id, 
+                member.first_name or "کاربر", 
+                member.username
+            )
 
 # ---------------------------------------------------------------------------
 #  Health server
@@ -237,7 +252,7 @@ async def cmd_privacy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message: await update.message.reply_text(with_signature(msg.SETTINGS_TEXT))
 
-# 👇 تگ کردن همه اعضا (با تعداد و اولویت افراد آنلاین)
+# 👇 تگ کردن اعضا (با تعداد و اولویت افراد آنلاین)
 async def cmd_tagall(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     chat = update.effective_chat
@@ -258,7 +273,7 @@ async def cmd_tagall(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         if args:
             custom_text = " ".join(args)
     
-    # دریافت اعضای فعال (ربات‌ها حذف می‌شوند)
+    # دریافت اعضای فعال
     members = await repo.get_group_members(chat.id, limit=count)
     
     if not members:
@@ -784,6 +799,7 @@ def build_application() -> Application:
     
     app.add_handler(TypeHandler(Update, check_user_ban), group=-1)
     app.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.ALL, save_member_handler), group=-2)
+    app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS & filters.ChatType.GROUPS, track_new_members), group=-2)
 
     app.add_handler(CommandHandler("start", cmd_start)); app.add_handler(CommandHandler("help", cmd_help)); app.add_handler(CommandHandler("menu", cmd_menu))
     app.add_handler(CommandHandler("about", cmd_about)); app.add_handler(CommandHandler("privacy", cmd_privacy)); app.add_handler(CommandHandler("settings", cmd_settings))

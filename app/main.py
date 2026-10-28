@@ -237,7 +237,7 @@ async def cmd_privacy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message: await update.message.reply_text(with_signature(msg.SETTINGS_TEXT))
 
-# 👇 تگ کردن همه اعضا (فقط فعال‌ها)
+# 👇 تگ کردن همه اعضا (با تعداد و اولویت افراد آنلاین)
 async def cmd_tagall(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     chat = update.effective_chat
@@ -247,26 +247,24 @@ async def cmd_tagall(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return await update.message.reply_text("⛔️ این دستور فقط برای ادمین‌ها است.")
     
     # 👇 پارس کردن آرگومان‌ها
-    days = 7 # پیش‌فرض: 7 روز اخیر
+    count = 20  # پیش‌فرض
     custom_text = "🔔 توجه!"
     
     if context.args:
         args = list(context.args)
         if args[0].isdigit():
-            days = int(args[0])
+            count = min(int(args[0]), 100)  # سقف 100 نفر
             args.pop(0)
         if args:
             custom_text = " ".join(args)
     
-    # دریافت اعضای فعال
-    members = await repo.get_group_members(chat.id, days=days, limit=200)
+    # دریافت اعضای فعال (ربات‌ها حذف می‌شوند)
+    members = await repo.get_group_members(chat.id, limit=count)
     
     if not members:
-        return await update.message.reply_text(
-            f"⚠️ هیچ عضوی در {days} روز اخیر پیام نداده.\n"
-            f"اعضا باید توی گروه پیام بفرستن تا بتونن تگ بشن."
-        )
-        
+        return await update.message.reply_text("⚠️ هیچ عضوی توی گروه پیدا نشد.")
+    
+    # ساخت لیست منشن
     mentions = []
     for m in members:
         if m.username:
@@ -274,19 +272,16 @@ async def cmd_tagall(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         else:
             mentions.append(f"[{m.first_name}](tg://user?id={m.user_id})")
             
+    # تقسیم به پیام‌های 20 نفره
     chunk_size = 20
     chunks = [mentions[i:i + chunk_size] for i in range(0, len(mentions), chunk_size)]
-    
-    status_msg = await update.message.reply_text(f"🔔 در حال تگ کردن {len(members)} نفر فعال (از {days} روز اخیر)...")
-    await status_msg.delete()
     
     for i, chunk in enumerate(chunks):
         text = " ".join(chunk)
         if i == 0:
             text = f"{custom_text}\n\n{text}"
-            
         try:
-            await update.message.reply_text(text, parse_mode="Markdown")
+            await update.message.reply_text(text, parse_mode="Markdown", disable_web_page_preview=True)
         except Exception as e:
             logger.error(f"Tag error: {e}")
         await asyncio.sleep(0.5)

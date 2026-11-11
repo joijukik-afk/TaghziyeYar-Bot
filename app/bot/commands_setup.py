@@ -5,6 +5,7 @@ from telegram import Bot, BotCommand
 
 logger = logging.getLogger(__name__)
 
+
 BOT_COMMANDS = [
     # عمومی
     BotCommand("start", "🚀 شروع کار با ربات"),
@@ -16,6 +17,7 @@ BOT_COMMANDS = [
     BotCommand("snake", "🐍 بازی مار و پله"),
     BotCommand("koma", "🎧 دریافت آهنگ تصادفی"),
     BotCommand("music", "🎵 دانلود آهنگ با اسم یا لینک"),
+    BotCommand("tts", "🎙️ تبدیل متن به صدا"), # 👈 اضافه شد
     BotCommand("leaderboard", "🏆 جدول قهرمانان"),
     BotCommand("mystats", "📊 آمار من"),
 
@@ -50,12 +52,12 @@ BOT_COMMANDS = [
     BotCommand("myth", "❌ باور اشتباه"),
 
     # مدیریت گروه
-    BotCommand("setgroup", "📌 ثبت این گروه برای پست خودکار"),
     BotCommand("tagall", "📢 تگ کردن تمام اعضای گروه (ادمین)"),
+    BotCommand("setgroup", "📌 ثبت این گروه برای پست خودکار"),
     
     # ادمین (پروکسی و کانفیگ)
     BotCommand("proxy", "🌐 دریافت لیست پروکسی (مدیر)"),
-    BotCommand("getconfig", "⚙️ دریافت کانفیگ V2Ray (مدیر)"), # 👈 اضافه شد
+    BotCommand("getconfig", "⚙️ دریافت کانفیگ V2Ray (مدیر)"),
 
     # سایر
     BotCommand("about", "ℹ️ درباره بات"),

@@ -17,7 +17,7 @@ _RATE_MAX_REQUESTS = 10
 _user_requests: dict[int, deque] = defaultdict(deque)
 
 
-# 🔥 مدل‌های سالم و فعال Groq (مدل‌های قدیمی llama حذف شدند)
+# 🔥 مدل‌های سالم و فعال Groq
 PREFERRED_MODELS = [
     "qwen/qwen3.8-27b",
     "openai/gpt-oss-120b",
@@ -38,9 +38,8 @@ def _check_rate_limit(user_id: int) -> tuple[bool, int]:
     return True, 0
 
 
-# 🧠 پرامپت تقویت‌شده: دقت علمی بالا + جلوگیری از توهم‌زنی + حفظ فرمت HTML
+# 🧠 پرامپت تقویت‌شده
 SYSTEM_PROMPT = """تو «تغذیه‌یار» هستی، یک متخصص تغذیه دقیق، علمی و قابل اعتماد در تلگرام.
-
 🚨 قوانین حیاتی اطلاعاتی (بسیار مهم):
 1. هرگز اطلاعات غلط نده. اگر کالری یا عدد دقیقی را نمی‌دانی، از کلمه «تقریبی» استفاده کن.
 2. هیچ‌گاه توصیه پزشکی (مثل تجویز دارو یا دوز ویتامین برای بیماری خاص) نکن. همیشه برای بیماری‌های خاص (دیابت، کلیه، بارداری) به پزشک ارجاع بده.
@@ -56,24 +55,8 @@ SYSTEM_PROMPT = """تو «تغذیه‌یار» هستی، یک متخصص تغ�
 <a href="لینک">متن</a> — لینک
 
 ❌ ممنوع: markdown (`**`, `##`, `|`), جدول markdown, تگ‌های غیرمجاز مثل <div>, <table>, <tr>, <td>.
-
 📊 ساخت جدول با <pre>:
 حتماً از <pre>...</pre> برای جدول استفاده کن. چون فونت monospace داره و ستون‌ها هم‌تراز می‌شن.
-برای جدول راست‌چین فارسی، از این الگو استفاده کن:
-
-<blockquote>📊 عنوان جدول</blockquote>
-
-<pre>
-میوه            کالری
-━━━━━━━━━━━━━━━━━━━━
-🍎 سیب           52
-🍌 موز           89
-🍊 پرتقال        47
-🍇 انگور         69
-</pre>
-
-⚠️ نکته: توی <pre> حتماً از فاصله‌های دقیق استفاده کن تا ستون‌ها هم‌تراز بشن.
-
 📌 پاسخ‌های عادی:
 - کوتاه و مفید (حداکثر ۵-۶ خط)
 - فارسی روان
@@ -85,7 +68,6 @@ SYSTEM_PROMPT = """تو «تغذیه‌یار» هستی، یک متخصص تغ�
 class AIService:
     def __init__(self):
         settings = get_settings()
-        # استفاده از هر دو نام برای سازگاری کامل
         self.api_key = getattr(settings, 'groq_api_key', '') or getattr(settings, 'deepseek_api_key', '')
         self.requested_model = getattr(settings, 'groq_model', '') or getattr(settings, 'deepseek_model', '')
         self.mock = settings.mock_mode or not self.api_key
@@ -141,18 +123,10 @@ class AIService:
         if user_id:
             allowed, wait = _check_rate_limit(user_id)
             if not allowed:
-                return (
-                    f"⏳ خیلی سریع پیام می‌دی. {wait} ثانیه صبر کن.",
-                    "rate_limited",
-                )
+                return (f"⏳ خیلی سریع پیام می‌دی. {wait} ثانیه صبر کن.", "rate_limited")
 
         if self.mock:
-            return (
-                "🤖 (حالت آزمایشی — AI فعال نیست)\n"
-                f"پیام تو: {user_message[:200]}\n\n"
-                "برای فعال‌سازی، کلید API را در Render تنظیم کن.",
-                "mock",
-            )
+            return ("🤖 (حالت آزمایشی — AI فعال نیست)\n"f"پیام تو: {user_message[:200]}\n\n""برای فعال‌سازی، کلید API را در Render تنظیم کن.", "mock")
 
         messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
 
@@ -162,10 +136,7 @@ class AIService:
         if user_profile_summary:
             ctx.append(f"اطلاعات کاربر:\n{user_profile_summary}")
         if ctx:
-            messages.append({
-                "role": "system",
-                "content": "زمینه کاربر:\n" + "\n".join(ctx),
-            })
+            messages.append({"role": "system", "content": "زمینه کاربر:\n" + "\n".join(ctx)})
 
         if chat_history:
             for msg in chat_history[-6:]:
@@ -181,14 +152,12 @@ class AIService:
             if not model_name:
                 return ("😔 مدل AI در دسترس نیست.", "error")
 
-            logger.info("استفاده از مدل: %s", model_name)
-
             client = self._get_client()
             response = await client.chat.completions.create(
                 model=model_name,
                 messages=messages,
-                temperature=0.2,  # 🔥 دقت علمی بالا
-                max_tokens=2500,  # 🔥 افزایش حیاتی برای تولید برنامه غذایی
+                temperature=0.2,
+                max_tokens=2500,
                 top_p=0.9,
             )
             reply = (response.choices[0].message.content or "").strip()
@@ -197,10 +166,57 @@ class AIService:
             return reply, "ok"
         except Exception as e:
             logger.warning("AI API error: %s", e)
-            return (
-                "😔 الان نمی‌تونم به سرور AI وصل بشم. چند دقیقه بعد دوباره تلاش کن.",
-                "error",
+            return ("😔 الان نمی‌تونم به سرور AI وصل بشم. چند دقیقه بعد دوباره تلاش کن.", "error")
+
+    # 👈 متد جدید برای ترجمه
+    async def translate(
+        self,
+        text: str,
+        target_language: str,
+        user_id: int = 0,
+    ) -> str:
+        """ترجمه متن با استفاده از هوش مصنوعی."""
+        text = (text or "").strip()[:1500]
+        if not text:
+            return ""
+
+        if user_id:
+            allowed, wait = _check_rate_limit(user_id)
+            if not allowed:
+                return f"⏳ خیلی سریع پیام می‌دی. {wait} ثانیه صبر کن."
+
+        if self.mock:
+            return f"🤖 (ترجمه آزمایشی به {target_language}): {text}"
+
+        translation_prompt = (
+            f"You are a professional translator. Translate the user's text to the language code '{target_language}'. "
+            "Only output the exact translated text without any extra explanation, quotes, or formatting. "
+            "Preserve the original tone and meaning perfectly."
+        )
+
+        messages = [
+            {"role": "system", "content": translation_prompt},
+            {"role": "user", "content": text}
+        ]
+
+        try:
+            model_name = await self._pick_model()
+            if not model_name:
+                return "😔 مدل هوش مصنوعی در دسترس نیست."
+
+            client = self._get_client()
+            response = await client.chat.completions.create(
+                model=model_name,
+                messages=messages,
+                temperature=0.1,
+                max_tokens=2000,
             )
+            result = (response.choices[0].message.content or "").strip()
+            return result if result else "متأسفانه ترجمه‌ای دریافت نشد."
+            
+        except Exception as e:
+            logger.warning("AI Translate API error: %s", e)
+            return "😔 الان نمی‌تونم به سرور AI وصل بشم. چند دقیقه بعد دوباره تلاش کن."
 
 
 _ai_service: Optional[AIService] = None

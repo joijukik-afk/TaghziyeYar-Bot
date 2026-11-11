@@ -12,53 +12,47 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-# --- لایه ۱: منابع طلایی (بسیار قوی و آپدیت روزانه) ---
-GOLD_SOURCES = [
+# منابع بسیار قوی (روزانه هزاران کانفیگ جدید می‌ذارن)
+TOP_SOURCES = [
     "https://raw.githubusercontent.com/Epodonios/v2ray-configs/main/All_Configs_Sub.txt",
-    "https://raw.githubusercontent.com/yebekhe/TelegramV2rayCollector/main/sub/mix",
-    "https://raw.githubusercontent.com/Soroushmirzaei/telegram-configs-collector/main/protocols/reality",
-    "https://raw.githubusercontent.com/mahdibland/ShadowsocksAggregator/master/Eternity.txt",
-]
-
-# --- لایه ۲: منابع نقره‌ای (جایگزین) ---
-SILVER_SOURCES = [
-    "https://raw.githubusercontent.com/barry-far/V2ray-Config/main/All_Configs_Sub.txt",
+    "https://raw.githubusercontent.com/DukeMehdi/FreeList-V2ray-Configs/refs/heads/main/Configs/All-DukeMehdi-Configs.txt",
     "https://raw.githubusercontent.com/liMilCo/v2r/main/best.txt",
     "https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/main/sub.txt",
+    "https://raw.githubusercontent.com/yebekhe/TelegramV2rayCollector/main/sub/mix",
+    "https://raw.githubusercontent.com/Soroushmirzaei/telegram-configs-collector/main/protocols/reality",
+    "https://raw.githubusercontent.com/barry-far/V2ray-Config/main/All_Configs_Sub.txt",
 ]
 
 SENT_HASHES_FILE = "sent_configs.json"
-CACHE_GOOD_CONFIGS_FILE = "cache_good_configs.json"
-MAX_HASH_MEMORY = 5000 # اگر حافظه از این بیشتر شد، ریست میشه
+CACHE_POOL_FILE = "config_cache_pool.json"
 
-def _load_json(filepath: str) -> list:
+def _load_json(path: str) -> list:
     try:
-        with open(filepath, "r") as f:
+        with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception:
         return []
 
-def _save_json(filepath: str, data: list):
+def _save_json(path: str, data: list):
     try:
-        with open(filepath, "w") as f:
-            json.dump(data, f)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
     except Exception as e:
-        logger.error(f"Could not save {filepath}: {e}")
+        logger.error(f"Save error {path}: {e}")
 
-async def _fetch_url(client: httpx.AsyncClient, url: str) -> List[str]:
-    """دانلود و استخراج کانفیگ‌ها از یک لینک"""
+async def _fetch_source(client: httpx.AsyncClient, url: str) -> List[str]:
     try:
         resp = await client.get(url, timeout=15.0, follow_redirects=True)
         if resp.status_code != 200:
             return []
         # استخراج تمام پروتکل‌های ممکن
-        return re.findall(r'(?:vless|vmess|trojan|ss|ssr|hysteria2?|tuic)://[^\s]+', resp.text, ignore_ignorecase=True)
+        return re.findall(r'(?:vless|vmess|trojan|ss|ssr|hysteria2?|tuic)://[^\s]+', resp.text, re.IGNORECASE)
     except Exception as e:
-        logger.warning(f"Failed to fetch {url}: {e}")
+        logger.warning(f"Fetch warning ({url}): {e}")
         return []
 
-async def _test_tcp(host: str, port: int) -> bool:
-    """تست سریع TCP (حداکثر ۲ ثانیه)"""
+async def _test_tcp_alive(host: str, port: int) -> bool:
+    """تست سریع TCP (حداکثر ۲ ثانیه) برای اطمینان از زنده بودن سرور"""
     try:
         _, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=2.0)
         writer.close()
@@ -68,12 +62,8 @@ async def _test_tcp(host: str, port: int) -> bool:
         return False
 
 def _parse_host_port(config: str) -> Optional[tuple]:
-    """استخراج هاست و پورت از لینک"""
     try:
-        # استثنا برای vmess (چون فرمت Base64 داره)
-        if config.startswith("vmess://"):
-            return None
-            
+        if config.startswith("vmess://"): return None
         parsed = urllib.parse.urlparse(config)
         if parsed.hostname and parsed.port:
             return parsed.hostname, parsed.port
@@ -84,14 +74,14 @@ def _parse_host_port(config: str) -> Optional[tuple]:
 async def _filter_alive(configs: List[str]) -> List[str]:
     """تست همزمان و فیلتر کردن کانفیگ‌های زنده"""
     alive = []
-    sem = asyncio.Semaphore(40) # 40 تست همزمان
+    sem = asyncio.Semaphore(50) # ۵۰ تست همزمان
     
     async def check(c):
         hp = _parse_host_port(c)
-        if not hp: return c # vmess و موارد خاص رو نگه دار
+        if not hp: return c
         host, port = hp
         async with sem:
-            if await _test_tcp(host, port):
+            if await _test_tcp_alive(host, port):
                 return c
         return None
 
@@ -101,7 +91,7 @@ async def _filter_alive(configs: List[str]) -> List[str]:
     return alive
 
 def _prioritize(configs: List[str]) -> List[str]:
-    """اولویت‌بندی: Reality اول، TLS دوم، بقیه سوم"""
+    """اولویت‌بندی: Reality اول، TLS دوم"""
     def score(c):
         cl = c.lower()
         if "security=reality" in cl: return 0
@@ -109,35 +99,25 @@ def _prioritize(configs: List[str]) -> List[str]:
         return 2
     return sorted(configs, key=score)
 
-async def get_fresh_configs(limit: int = 10) -> List[str]:
-    """تابع اصلی: جستجو در لایه‌ها، تست، و انتخاب"""
+async def get_fresh_configs(limit: int = 15) -> List[str]:
     sent_hashes = set(_load_json(SENT_HASHES_FILE))
-    cache_good = _load_json(CACHE_GOOD_CONFIGS_FILE)
+    cache_good = _load_json(CACHE_POOL_FILE)
     
-    # اگر حافظه پر شده بود، ریست کن تا دوباره از اول بفرسته
-    if len(sent_hashes) > MAX_HASH_MEMORY:
-        logger.info("Resetting sent hashes memory...")
+    # اگر تعداد هش‌ها خیلی زیاد شد (بیشتر از ۱۰۰۰۰)، حافظه رو ریست کن
+    if len(sent_hashes) > 10000:
+        logger.info("Memory full. Resetting sent hashes...")
         sent_hashes.clear()
         _save_json(SENT_HASHES_FILE, [])
 
     raw_configs = []
     
     async with httpx.AsyncClient() as client:
-        # ۱. تلاش در لایه طلایی
-        tasks = [_fetch_url(client, url) for url in GOLD_SOURCES]
-        gold_results = await asyncio.gather(*tasks)
-        for res in gold_results:
+        tasks = [_fetch_source(client, url) for url in TOP_SOURCES]
+        results = await asyncio.gather(*tasks)
+        for res in results:
             raw_configs.extend(res)
-            
-        # ۲. اگر خیلی کم بود، لایه نقره‌ای رو هم اضافه کن
-        if len(raw_configs) < 50:
-            logger.info("Gold layer yielded few results. Fetching silver layer...")
-            tasks_silver = [_fetch_url(client, url) for url in SILVER_SOURCES]
-            silver_results = await asyncio.gather(*tasks_silver)
-            for res in silver_results:
-                raw_configs.extend(res)
 
-    # ۳. حذف تکراری‌ها
+    # حذف تکراری‌ها و کانفیگ‌های ارسال شده
     unique_new = []
     new_hashes = set()
     seen_now = set()
@@ -149,15 +129,15 @@ async def get_fresh_configs(limit: int = 10) -> List[str]:
             new_hashes.add(h)
             seen_now.add(h)
 
-    # ۴. تست زنده بودن
+    # تست زنده بودن
     alive_configs = await _filter_alive(unique_new)
     
-    # ۵. اولویت‌بندی
+    # اولویت‌بندی
     prioritized = _prioritize(alive_configs)
     
     final_selection = prioritized[:limit]
     
-    # ۶. **سیستم نجات‌بخش:** اگر جدید نبود، از Cache بده
+    # 🚀 **سیستم نجات ۱:** اگر جدید نبود، از Cache بده
     if len(final_selection) < limit and cache_good:
         logger.info("Using backup cache to fill the gap...")
         random.shuffle(cache_good)
@@ -166,7 +146,7 @@ async def get_fresh_configs(limit: int = 10) -> List[str]:
             if c not in final_selection:
                 final_selection.append(c)
 
-    # ۷. اگر Cache هم خالی بود (بار اول)، دوباره از کانفیگ‌های خام (بدون تست) بده
+    # 🚀 **سیستم نجات ۲:** اگر Cache هم خالی بود، از کانفیگ‌های خام (بدون تست) بده
     if len(final_selection) < limit and raw_configs:
         logger.info("Using raw configs as last resort...")
         random.shuffle(raw_configs)
@@ -175,13 +155,13 @@ async def get_fresh_configs(limit: int = 10) -> List[str]:
             if c not in final_selection:
                 final_selection.append(c)
 
-    # ۸. ذخیره در حافظه
+    # ذخیره در حافظه
     if final_selection:
         sent_hashes.update(new_hashes)
         _save_json(SENT_HASHES_FILE, list(sent_hashes))
         
-        # آپدیت Cache (حداکثر 100 تا نگه داریم)
+        # آپدیت Cache (حداکثر ۱۰۰ تا نگه داریم)
         updated_cache = list(set(final_selection + cache_good))[:100]
-        _save_json(CACHE_GOOD_CONFIGS_FILE, updated_cache)
+        _save_json(CACHE_POOL_FILE, updated_cache)
 
     return final_selection

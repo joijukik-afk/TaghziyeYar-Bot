@@ -17,7 +17,7 @@ BOT_COMMANDS = [
     BotCommand("snake", "🐍 بازی مار و پله"),
     BotCommand("koma", "🎧 دریافت آهنگ تصادفی"),
     BotCommand("music", "🎵 دانلود آهنگ با اسم یا لینک"),
-    BotCommand("tts", "🎙️ تبدیل متن به صدا"), # 👈 اضافه شد
+    BotCommand("tts", "🎙️ تبدیل متن به صدا"),
     BotCommand("leaderboard", "🏆 جدول قهرمانان"),
     BotCommand("mystats", "📊 آمار من"),
 
@@ -58,6 +58,9 @@ BOT_COMMANDS = [
     # ادمین (پروکسی و کانفیگ)
     BotCommand("proxy", "🌐 دریافت لیست پروکسی (مدیر)"),
     BotCommand("getconfig", "⚙️ دریافت کانفیگ V2Ray (مدیر)"),
+
+    # ابزارها
+    BotCommand("translate", "🌐 ترجمه هوشمند متن"), # 👈 جدید
 
     # سایر
     BotCommand("about", "ℹ️ درباره بات"),

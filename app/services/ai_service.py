@@ -16,15 +16,12 @@ _RATE_MAX_REQUESTS = 10
 
 _user_requests: dict[int, deque] = defaultdict(deque)
 
-
-# 🔥 مدل‌های سالم و فعال Groq
 PREFERRED_MODELS = [
     "qwen/qwen3.8-27b",
     "openai/gpt-oss-120b",
     "openai/gpt-oss-20b",
     "gemma2-9b-it",
 ]
-
 
 def _check_rate_limit(user_id: int) -> tuple[bool, int]:
     now = time.time()
@@ -37,8 +34,6 @@ def _check_rate_limit(user_id: int) -> tuple[bool, int]:
     q.append(now)
     return True, 0
 
-
-# 🧠 پرامپت تقویت‌شده برای چت عادی (تغذیه)
 SYSTEM_PROMPT = """تو «تغذیه‌یار» هستی، یک متخصص تغذیه دقیق، علمی و قابل اعتماد در تلگرام.
 🚨 قوانین حیاتی اطلاعاتی (بسیار مهم):
 1. هرگز اطلاعات غلط نده. اگر کالری یا عدد دقیقی را نمی‌دانی، از کلمه «تقریبی» استفاده کن.
@@ -53,10 +48,8 @@ SYSTEM_PROMPT = """تو «تغذیه‌یار» هستی، یک متخصص تغ�
 <pre>متن</pre> — بلوک monospace
 <blockquote>متن</blockquote> — نقل‌قول
 <a href="لینک">متن</a> — لینک
-
-❌ ممنوع: markdown (`**`, `##`, `|`), جدول markdown, تگ‌های غیرمجاز مثل <div>, <table>, <tr>, <td>.
+❌ ممنوع: markdown (`**`, `##`, `|`), جدول markdown.
 """
-
 
 class AIService:
     def __init__(self):
@@ -73,14 +66,11 @@ class AIService:
         return self._client
 
     async def _pick_model(self) -> str | None:
-        if self._model_name:
-            return self._model_name
-
+        if self._model_name: return self._model_name
         try:
             client = self._get_client()
             response = await client.models.list()
             available = [m.id for m in response.data]
-            logger.info("مدل‌های موجود Groq: %s", ", ".join(available[:10]))
         except Exception as e:
             logger.warning("خطا در دریافت لیست مدل‌ها: %s", e)
             available = []
@@ -108,31 +98,25 @@ class AIService:
         user_profile_summary: str = "",
         chat_history: Optional[list[dict]] = None,
         user_id: int = 0,
-        custom_system_prompt: Optional[str] = None, # 👈 اضافه شد برای تغییر شخصیت
+        custom_system_prompt: Optional[str] = None,
     ) -> tuple[str, str]:
         user_message = (user_message or "").strip()[:2000]
-        if not user_message:
-            return "", "error"
+        if not user_message: return "", "error"
 
         if user_id:
             allowed, wait = _check_rate_limit(user_id)
-            if not allowed:
-                return (f"⏳ خیلی سریع پیام می‌دی. {wait} ثانیه صبر کن.", "rate_limited")
+            if not allowed: return (f"⏳ خیلی سریع پیام می‌دی. {wait} ثانیه صبر کن.", "rate_limited")
 
         if self.mock:
             return ("🤖 (حالت آزمایشی — AI فعال نیست)\n"f"پیام تو: {user_message[:200]}\n\n""برای فعال‌سازی، کلید API را در Render تنظیم کن.", "mock")
 
-        # 👈 اگر پرامپت خاصی فرستاده شده بود (مثل جستجوگر)، از اون استفاده کن. وگرنه پرامپت تغذیه
         sys_prompt = custom_system_prompt if custom_system_prompt else SYSTEM_PROMPT
         messages: list[dict] = [{"role": "system", "content": sys_prompt}]
 
         ctx: list[str] = []
-        if user_name:
-            ctx.append(f"نام کاربر: {user_name}")
-        if user_profile_summary:
-            ctx.append(f"اطلاعات کاربر:\n{user_profile_summary}")
-        if ctx:
-            messages.append({"role": "system", "content": "زمینه کاربر:\n" + "\n".join(ctx)})
+        if user_name: ctx.append(f"نام کاربر: {user_name}")
+        if user_profile_summary: ctx.append(f"اطلاعات کاربر:\n{user_profile_summary}")
+        if ctx: messages.append({"role": "system", "content": "زمینه کاربر:\n" + "\n".join(ctx)})
 
         if chat_history:
             for msg in chat_history[-6:]:
@@ -145,27 +129,23 @@ class AIService:
 
         try:
             model_name = await self._pick_model()
-            if not model_name:
-                return ("😔 مدل AI در دسترس نیست.", "error")
+            if not model_name: return ("😔 مدل AI در دسترس نیست.", "error")
 
             client = self._get_client()
             response = await client.chat.completions.create(
                 model=model_name,
                 messages=messages,
-                temperature=0.3, # کمی بالا بردیم که جستجوگر روان‌تر باشد
+                temperature=0.4, 
                 max_tokens=2500,
                 top_p=0.9,
             )
             reply = (response.choices[0].message.content or "").strip()
-            if not reply:
-                return ("متأسفانه پاسخی دریافت نشد.", "error")
-            return reply, "ok"
+            return reply, "ok" if reply else ("متأسفانه پاسخی دریافت نشد.", "error")
         except Exception as e:
             logger.warning("AI API error: %s", e)
             return ("😔 الان نمی‌تونم به سرور AI وصل بشم. چند دقیقه بعد دوباره تلاش کن.", "error")
 
     async def translate(self, text: str, target_language: str, user_id: int = 0) -> str:
-        # (همون کد قبلی ترجمه دست نخورده باقی می‌مونه)
         text = (text or "").strip()[:1500]
         if not text: return ""
         if user_id:
@@ -185,6 +165,21 @@ class AIService:
             logger.warning("AI Translate API error: %s", e)
             return "😔 خطا در اتصال به سرور AI."
 
+    async def transcribe_audio(self, file_path: str) -> str:
+        if self.mock: return "این یک متن آزمایشی است."
+        try:
+            client = self._get_client()
+            with open(file_path, "rb") as file:
+                transcription = await client.audio.transcriptions.create(
+                    file=(file_path, file.read()),
+                    model="whisper-large-v3",
+                    response_format="text",
+                    language="fa" 
+                )
+            return str(transcription).strip()
+        except Exception as e:
+            logger.error(f"Whisper Transcription Error: {e}")
+            raise e
 
 _ai_service: Optional[AIService] = None
 

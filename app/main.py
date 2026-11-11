@@ -83,14 +83,12 @@ async def check_user_ban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if user and await repo.is_user_banned(user.id): 
         raise ApplicationHandlerStop
 
-# 👇 ذخیره اعضا در دیتابیس (با هر پیام)
 async def save_member_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     chat = update.effective_chat
     if user and chat and chat.type in (ChatType.GROUP, ChatType.SUPERGROUP):
         await repo.save_group_member(chat.id, user.id, user.first_name or "کاربر", user.username)
 
-# 👇 ذخیره اعضای جدیدی که به گروه اضافه می‌شن
 async def track_new_members(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat = update.effective_chat
     if not chat or chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP):
@@ -253,7 +251,6 @@ async def cmd_privacy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message: await update.message.reply_text(with_signature(msg.SETTINGS_TEXT))
 
-# 👇 تگ کردن اعضا
 async def cmd_tagall(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     chat = update.effective_chat
@@ -499,7 +496,7 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.exception("Exception", exc_info=context.error)
 
 # ---------------------------------------------------------------------------
-#  Admin Management Commands (فقط برای صاحب ربات)
+#  Admin Management Commands
 # ---------------------------------------------------------------------------
 async def cmd_addadmin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
@@ -566,7 +563,7 @@ async def cmd_admins(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     await update.message.reply_text(text, parse_mode="HTML")
 
 # ---------------------------------------------------------------------------
-#  Admin Commands (با سیستم رصد لحظه‌ای)
+#  Admin Commands
 # ---------------------------------------------------------------------------
 async def cmd_advertise(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
@@ -807,9 +804,9 @@ def build_application() -> Application:
     
     app.add_handler(CommandHandler("tagall", cmd_tagall))
     
-    # 👇 اضافه شدن دستور کانفیگ
+    # 👇 اضافه شدن دستور کانفیگ و دکمه‌های کپی/رفرش
     app.add_handler(CommandHandler("getconfig", conf_cmd.cmd_getconfig))
-    app.add_handler(CallbackQueryHandler(conf_cmd.handle_config_callback, pattern=r"^copy_cfg_"))
+    app.add_handler(CallbackQueryHandler(conf_cmd.handle_config_callback, pattern=r"^(copy_cfg_|refresh_cfg)"))
     
     app.add_handler(CommandHandler("bmi", cmd_bmi)); app.add_handler(CommandHandler("calories", cmd_calories)); app.add_handler(CommandHandler("weight", cmd_weight))
     app.add_handler(CommandHandler("progress", cmd_progress)); app.add_handler(CommandHandler("macros", cmd_macros)); app.add_handler(CommandHandler("protein", cmd_protein))

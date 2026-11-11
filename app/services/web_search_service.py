@@ -17,7 +17,7 @@ class WebSearchService:
 
     async def _extract_text_from_url(self, url: str) -> str:
         try:
-            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
             async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
                 resp = await client.get(url, headers=headers)
                 resp.raise_for_status()
@@ -30,9 +30,8 @@ class WebSearchService:
                 main_content = soup.find('main') or soup.find('article') or soup.body
                 if not main_content: return ""
                 paragraphs = main_content.find_all('p')
-                # فقط پاراگراف‌های با طول بیشتر از ۳۰ کاراکتر (حذف متن‌های اضافی)
                 text = "\n".join([p.get_text(strip=True) for p in paragraphs if len(p.get_text(strip=True)) > 30])
-                return text[:2000] # محدودیت هر سایت
+                return text[:2000]
 
             return await asyncio.to_thread(parse_html, html)
         except Exception as e:
@@ -41,7 +40,9 @@ class WebSearchService:
 
     async def search_text(self, query: str, max_results: int = 6) -> List[Dict[str, Any]]:
         try:
-            return await asyncio.to_thread(lambda: list(DDGS().text(query, max_results=max_results)))
+            results = await asyncio.to_thread(lambda: list(DDGS().text(query, max_results=max_results)))
+            logger.info(f"Web search for '{query}' returned {len(results)} results.")
+            return results
         except Exception as e:
             logger.warning(f"Text search error: {e}")
             return []
@@ -55,23 +56,21 @@ class WebSearchService:
 
     async def search_images(self, query: str, max_results: int = 4) -> List[str]:
         try:
-            # گرفتن عکس‌های با کیفیت
             results = await asyncio.to_thread(lambda: list(DDGS().images(query, max_results=max_results)))
-            # استخراج لینک مستقیم عکس‌ها
             return [img.get("image") for img in results if img.get("image")]
         except Exception as e:
             logger.warning(f"Image search error: {e}")
             return []
 
     async def search_and_answer(self, query: str, user_id: int = 0) -> Dict[str, Any]:
-        # ۱. جستجوی متنی و خبری موازی
+        # ۱. جستجوی متنی و خبری
         text_results, news_results, images = await asyncio.gather(
             self.search_text(query, max_results=5),
             self.search_news(query, max_results=2),
             self.search_images(query, max_results=4)
         )
 
-        # ۲. استخراج متن کامل از ۲ نتیجه اول برای دقت بیشتر
+        # ۲. استخراج متن کامل
         extracted_content = ""
         tasks = []
         for res in text_results[:2]:
@@ -98,16 +97,20 @@ class WebSearchService:
             context_parts.append(f"\n📄 متن کامل مقالات:\n{extracted_content}")
 
         full_context = "\n\n".join(context_parts)
-        if len(full_context) > 7000:
-            full_context = full_context[:7000] + "\n...(متن کوتاه شد)"
+        
+        # اگر جستجو خالی بود، به هوش مصنوعی می‌گوییم که از دانش خودش استفاده کند
+        if not full_context.strip():
+            full_context = "⚠️ متأسفانه جستجوی اینترنتی نتیجه‌ای برنگرداند (احتمالاً به دلیل محدودیت سرور). لطفاً از دانش داخلی خودت برای پاسخ به سوال کاربر استفاده کن."
 
-        # ۴. پرامپت اختصاصی جستجوگر (مهم‌ترین بخش!)
+        # ۴. پرامپت اختصاصی جستجوگر
         search_system_prompt = (
-            "You are an expert AI search assistant. Your job is to answer the user's question accurately using ONLY the provided web search context. "
+            "You are an expert AI search assistant. Your job is to answer the user's question accurately. "
             "You are NOT a nutritionist right now. You are a general-purpose smart assistant. "
-            "Do NOT say 'I only know about nutrition'. Answer the user's question comprehensively. "
-            "Always answer in Persian. Use HTML tags like <b>, <i>, and <code> to make the text readable. "
-            "If the context does not contain the answer, politely say you couldn't find the exact answer."
+            "Do NOT say 'I only know about nutrition'. "
+            "Answer in Persian using HTML tags like <b>, <i>, and <code>. "
+            "If the provided web search context contains relevant information, use it. "
+            "If the web search context is empty or does not contain the answer, USE YOUR OWN INTERNAL KNOWLEDGE to answer the question. "
+            "Always provide a helpful, complete answer. Never refuse to answer just because the search failed."
         )
 
         prompt = f"سوال کاربر: {query}\n\nاطلاعات جمع‌آوری شده از وب:\n{full_context}\n\nپاسخ تو:"
@@ -116,7 +119,7 @@ class WebSearchService:
             user_message=prompt,
             user_name="جستجوگر",
             user_id=user_id,
-            custom_system_prompt=search_system_prompt # 👈 اینجا شخصیت رو عوض میکنیم
+            custom_system_prompt=search_system_prompt
         )
         
         answer_text = answer_tuple[0] if isinstance(answer_tuple, tuple) else str(answer_tuple)

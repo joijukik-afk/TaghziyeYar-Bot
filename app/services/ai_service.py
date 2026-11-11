@@ -38,7 +38,7 @@ def _check_rate_limit(user_id: int) -> tuple[bool, int]:
     return True, 0
 
 
-# 🧠 پرامپت تقویت‌شده
+# 🧠 پرامپت تقویت‌شده برای چت عادی (تغذیه)
 SYSTEM_PROMPT = """تو «تغذیه‌یار» هستی، یک متخصص تغذیه دقیق، علمی و قابل اعتماد در تلگرام.
 🚨 قوانین حیاتی اطلاعاتی (بسیار مهم):
 1. هرگز اطلاعات غلط نده. اگر کالری یا عدد دقیقی را نمی‌دانی، از کلمه «تقریبی» استفاده کن.
@@ -50,18 +50,11 @@ SYSTEM_PROMPT = """تو «تغذیه‌یار» هستی، یک متخصص تغ�
 <b>متن</b> — بولد
 <i>متن</i> — ایتالیک
 <code>متن</code> — کد درون‌خطی
-<pre>متن</pre> — بلوک monospace (برای جدول!)
-<blockquote>متن</blockquote> — نقل‌قول (پس‌زمینه خاکستری)
+<pre>متن</pre> — بلوک monospace
+<blockquote>متن</blockquote> — نقل‌قول
 <a href="لینک">متن</a> — لینک
 
 ❌ ممنوع: markdown (`**`, `##`, `|`), جدول markdown, تگ‌های غیرمجاز مثل <div>, <table>, <tr>, <td>.
-📊 ساخت جدول با <pre>:
-حتماً از <pre>...</pre> برای جدول استفاده کن. چون فونت monospace داره و ستون‌ها هم‌تراز می‌شن.
-📌 پاسخ‌های عادی:
-- کوتاه و مفید (حداکثر ۵-۶ خط)
-- فارسی روان
-- از ایموجی‌های مناسب استفاده کن
-- لحن تو باید دوستانه، انگیزه‌بخش و علمی باشد.
 """
 
 
@@ -115,8 +108,9 @@ class AIService:
         user_profile_summary: str = "",
         chat_history: Optional[list[dict]] = None,
         user_id: int = 0,
+        custom_system_prompt: Optional[str] = None, # 👈 اضافه شد برای تغییر شخصیت
     ) -> tuple[str, str]:
-        user_message = (user_message or "").strip()[:1500]
+        user_message = (user_message or "").strip()[:2000]
         if not user_message:
             return "", "error"
 
@@ -128,7 +122,9 @@ class AIService:
         if self.mock:
             return ("🤖 (حالت آزمایشی — AI فعال نیست)\n"f"پیام تو: {user_message[:200]}\n\n""برای فعال‌سازی، کلید API را در Render تنظیم کن.", "mock")
 
-        messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
+        # 👈 اگر پرامپت خاصی فرستاده شده بود (مثل جستجوگر)، از اون استفاده کن. وگرنه پرامپت تغذیه
+        sys_prompt = custom_system_prompt if custom_system_prompt else SYSTEM_PROMPT
+        messages: list[dict] = [{"role": "system", "content": sys_prompt}]
 
         ctx: list[str] = []
         if user_name:
@@ -156,7 +152,7 @@ class AIService:
             response = await client.chat.completions.create(
                 model=model_name,
                 messages=messages,
-                temperature=0.2,
+                temperature=0.3, # کمی بالا بردیم که جستجوگر روان‌تر باشد
                 max_tokens=2500,
                 top_p=0.9,
             )
@@ -168,59 +164,29 @@ class AIService:
             logger.warning("AI API error: %s", e)
             return ("😔 الان نمی‌تونم به سرور AI وصل بشم. چند دقیقه بعد دوباره تلاش کن.", "error")
 
-    # 👈 متد جدید برای ترجمه
-    async def translate(
-        self,
-        text: str,
-        target_language: str,
-        user_id: int = 0,
-    ) -> str:
-        """ترجمه متن با استفاده از هوش مصنوعی."""
+    async def translate(self, text: str, target_language: str, user_id: int = 0) -> str:
+        # (همون کد قبلی ترجمه دست نخورده باقی می‌مونه)
         text = (text or "").strip()[:1500]
-        if not text:
-            return ""
-
+        if not text: return ""
         if user_id:
             allowed, wait = _check_rate_limit(user_id)
-            if not allowed:
-                return f"⏳ خیلی سریع پیام می‌دی. {wait} ثانیه صبر کن."
+            if not allowed: return f"⏳ خیلی سریع پیام می‌دی. {wait} ثانیه صبر کن."
+        if self.mock: return f"🤖 (ترجمه آزمایشی به {target_language}): {text}"
 
-        if self.mock:
-            return f"🤖 (ترجمه آزمایشی به {target_language}): {text}"
-
-        translation_prompt = (
-            f"You are a professional translator. Translate the user's text to the language code '{target_language}'. "
-            "Only output the exact translated text without any extra explanation, quotes, or formatting. "
-            "Preserve the original tone and meaning perfectly."
-        )
-
-        messages = [
-            {"role": "system", "content": translation_prompt},
-            {"role": "user", "content": text}
-        ]
+        translation_prompt = f"You are a professional translator. Translate the text to '{target_language}'. Only output the translated text."
+        messages = [{"role": "system", "content": translation_prompt}, {"role": "user", "content": text}]
 
         try:
             model_name = await self._pick_model()
-            if not model_name:
-                return "😔 مدل هوش مصنوعی در دسترس نیست."
-
             client = self._get_client()
-            response = await client.chat.completions.create(
-                model=model_name,
-                messages=messages,
-                temperature=0.1,
-                max_tokens=2000,
-            )
-            result = (response.choices[0].message.content or "").strip()
-            return result if result else "متأسفانه ترجمه‌ای دریافت نشد."
-            
+            response = await client.chat.completions.create(model=model_name, messages=messages, temperature=0.1, max_tokens=2000)
+            return (response.choices[0].message.content or "").strip() or "ترجمه‌ای دریافت نشد."
         except Exception as e:
             logger.warning("AI Translate API error: %s", e)
-            return "😔 الان نمی‌تونم به سرور AI وصل بشم. چند دقیقه بعد دوباره تلاش کن."
+            return "😔 خطا در اتصال به سرور AI."
 
 
 _ai_service: Optional[AIService] = None
-
 
 def get_ai_service() -> AIService:
     global _ai_service

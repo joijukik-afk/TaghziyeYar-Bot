@@ -30,6 +30,7 @@ from app.bot import setup_wizard as wizard
 from app.bot import snake_game
 from app.bot import koma_commands as kcmd
 from app.bot import proxy_commands as prox_cmd
+from app.bot import config_commands as conf_cmd  # 👈 ایمپورت کانفیگ
 from app.bot.content import get_fact, get_myth, get_tip
 from app.config import get_settings
 from app.database import repository as repo
@@ -252,7 +253,7 @@ async def cmd_privacy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message: await update.message.reply_text(with_signature(msg.SETTINGS_TEXT))
 
-# 👇 تگ کردن اعضا (با تعداد و اولویت افراد آنلاین)
+# 👇 تگ کردن اعضا
 async def cmd_tagall(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     chat = update.effective_chat
@@ -261,25 +262,22 @@ async def cmd_tagall(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if not await is_admin_user(user.id): 
         return await update.message.reply_text("⛔️ این دستور فقط برای ادمین‌ها است.")
     
-    # 👇 پارس کردن آرگومان‌ها
-    count = 20  # پیش‌فرض
+    count = 20
     custom_text = "🔔 توجه!"
     
     if context.args:
         args = list(context.args)
         if args[0].isdigit():
-            count = min(int(args[0]), 100)  # سقف 100 نفر
+            count = min(int(args[0]), 100)
             args.pop(0)
         if args:
             custom_text = " ".join(args)
     
-    # دریافت اعضای فعال
     members = await repo.get_group_members(chat.id, limit=count)
     
     if not members:
         return await update.message.reply_text("⚠️ هیچ عضوی توی گروه پیدا نشد.")
     
-    # ساخت لیست منشن
     mentions = []
     for m in members:
         if m.username:
@@ -287,7 +285,6 @@ async def cmd_tagall(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         else:
             mentions.append(f"[{m.first_name}](tg://user?id={m.user_id})")
             
-    # تقسیم به پیام‌های 20 نفره
     chunk_size = 20
     chunks = [mentions[i:i + chunk_size] for i in range(0, len(mentions), chunk_size)]
     
@@ -809,6 +806,10 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("setup", cmd_setup)); app.add_handler(CommandHandler("cancel", cmd_cancel))
     
     app.add_handler(CommandHandler("tagall", cmd_tagall))
+    
+    # 👇 اضافه شدن دستور کانفیگ
+    app.add_handler(CommandHandler("getconfig", conf_cmd.cmd_getconfig))
+    app.add_handler(CallbackQueryHandler(conf_cmd.handle_config_callback, pattern=r"^copy_cfg_"))
     
     app.add_handler(CommandHandler("bmi", cmd_bmi)); app.add_handler(CommandHandler("calories", cmd_calories)); app.add_handler(CommandHandler("weight", cmd_weight))
     app.add_handler(CommandHandler("progress", cmd_progress)); app.add_handler(CommandHandler("macros", cmd_macros)); app.add_handler(CommandHandler("protein", cmd_protein))

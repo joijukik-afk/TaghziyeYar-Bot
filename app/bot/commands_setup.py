@@ -12,12 +12,16 @@ BOT_COMMANDS = [
     BotCommand("help", "📖 راهنمای کامل"),
     BotCommand("menu", "🏠 منوی اصلی"),
 
+    # ابزارهای هوشمند
+    BotCommand("search", "🔍 جستجوی هوشمند در وب"),
+    BotCommand("translate", "🌐 ترجمه هوشمند متن"),
+    BotCommand("tts", "🎙️ تبدیل متن به صدا"),
+
     # بازی و سرگرمی
     BotCommand("quiz", "🎮 کوییز زنده"),
     BotCommand("snake", "🐍 بازی مار و پله"),
     BotCommand("koma", "🎧 دریافت آهنگ تصادفی"),
     BotCommand("music", "🎵 دانلود آهنگ با اسم یا لینک"),
-    BotCommand("tts", "🎙️ تبدیل متن به صدا"),
     BotCommand("leaderboard", "🏆 جدول قهرمانان"),
     BotCommand("mystats", "📊 آمار من"),
 
@@ -58,9 +62,6 @@ BOT_COMMANDS = [
     # ادمین (پروکسی و کانفیگ)
     BotCommand("proxy", "🌐 دریافت لیست پروکسی (مدیر)"),
     BotCommand("getconfig", "⚙️ دریافت کانفیگ V2Ray (مدیر)"),
-
-    # ابزارها
-    BotCommand("translate", "🌐 ترجمه هوشمند متن"), # 👈 جدید
 
     # سایر
     BotCommand("about", "ℹ️ درباره بات"),

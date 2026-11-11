@@ -1,4 +1,4 @@
-"""دستور اختصاصی دریافت کانفیگ V2Ray (فقط صاحب ربات)"""
+"""دستور اختصاصی کانفیگ با دکمه‌های کپی"""
 
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -9,51 +9,57 @@ from app.services.config_service import get_fresh_configs
 logger = logging.getLogger(__name__)
 
 async def cmd_getconfig(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """دریافت کانفیگ‌های جدید V2Ray (فقط مالک)"""
     user = update.effective_user
     if not user or not get_settings().is_admin(user.id):
         return await update.message.reply_text("⛔️ این دستور فقط برای صاحب ربات است.")
     
-    status = await update.message.reply_text("🔄 در حال جمع‌آوری و تست کانفیگ‌های جدید...")
+    status = await update.message.reply_text("🔄 در حال جستجو، تست و اعتبارسنجی جدیدترین کانفیگ‌ها... (حدود ۵ تا ۱۰ ثانیه)")
     
     try:
         configs = await get_fresh_configs(limit=10)
         
-        if not configs:
-            return await status.edit_text("❌ کانفیگ جدیدی پیدا نشد. لطفاً بعداً تلاش کنید.")
+        # ذخیره برای دکمه‌ها
+        context.user_data["saved_configs"] = configs
         
-        # ارسال کانفیگ‌ها به صورت دکمه‌های شیشه‌ای (برای کپی راحت)
+        text_lines = ["✅ **کانفیگ‌های سالم (اولویت با جدیدها و مناسب ایران):**\n"]
         keyboard = []
-        for i, c in enumerate(configs, 1):
-            # دکمه برای کپی کردن متن کانفیگ
-            keyboard.append([InlineKeyboardButton(f"🔗 کانفیگ {i}", callback_data=f"copy_config_{i}")])
         
-        # ارسال لیست به عنوان متن (با قابلیت کپی)
-        text_lines = [f"✅ **{len(configs)} کانفیگ جدید (مناسب ایران):**\n"]
         for i, c in enumerate(configs, 1):
-            # نمایش کوتاه شده برای خوانایی
-            short = c[:50] + "..." if len(c) > 50 else c
-            text_lines.append(f"{i}. `{short}`")
+            protocol = c.split("://")[0].upper()
+            # یک متن کوتاه برای نمایش
+            short = c[:30] + "..." if len(c) > 30 else c
+            text_lines.append(f"{i}. [{protocol}] `{short}`")
+            keyboard.append([InlineKeyboardButton(f"📋 کپی کانفیگ {i} ({protocol})", callback_data=f"copy_cfg_{i}")])
+            
+        keyboard.append([InlineKeyboardButton("🔄 دریافت کانفیگ‌های جدید", callback_data="refresh_cfg")])
         
         await status.edit_text(
             "\n".join(text_lines),
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(keyboard)
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            disable_web_page_preview=True
         )
-        
     except Exception as e:
         logger.error(f"Config error: {e}", exc_info=True)
-        await status.edit_text("⚠️ خطایی رخ داد.")
+        await status.edit_text("⚠️ خطای غیرمنتظره رخ داد.")
 
 async def handle_config_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """مدیریت دکمه‌های کپی کانفیگ"""
     query = update.callback_query
     await query.answer()
     data = query.data
-    if data.startswith("copy_config_"):
-        # ارسال یک پیام موقت با متن کامل کانفیگ
-        await query.message.reply_text(
-            "📋 **کانفیگ شما (برای کپی روی آن ضربه بزنید):**\n\n"
-            "`" + context.user_data.get("configs", [""])[int(data.split("_")[-1]) - 1] + "`",
-            parse_mode="Markdown"
-        )
+    
+    if data.startswith("copy_cfg_"):
+        idx = int(data.split("_")[-1]) - 1
+        configs = context.user_data.get("saved_configs", [])
+        
+        if idx < len(configs):
+            # ارسال به صورت HTML code block برای کپی راحت با یک ضربه
+            await query.message.reply_text(
+                f"📋 **کانفیگ {idx+1} (روی متن زیر ضربه بزنید تا کپی شود):**\n\n"
+                f"<code>{configs[idx]}</code>",
+                parse_mode="HTML"
+            )
+    elif data == "refresh_cfg":
+        # حذف پیام قبلی و گرفتن کانفیگ جدید
+        await query.message.delete()
+        await cmd_getconfig(update, context)

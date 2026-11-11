@@ -31,7 +31,8 @@ from app.bot import snake_game
 from app.bot import koma_commands as kcmd
 from app.bot import proxy_commands as prox_cmd
 from app.bot import config_commands as conf_cmd
-from app.bot import tts_commands as tts_cmd  # 👈 ایمپورت TTS
+from app.bot import tts_commands as tts_cmd 
+from app.bot import translate_commands as trans_cmd # 👈 جدید
 from app.bot.content import get_fact, get_myth, get_tip
 from app.config import get_settings
 from app.database import repository as repo
@@ -98,11 +99,7 @@ async def track_new_members(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         for member in update.message.new_chat_members:
             if member.is_bot:
                 continue
-            await repo.save_group_member(
-                chat.id, member.id, 
-                member.first_name or "کاربر", 
-                member.username
-            )
+            await repo.save_group_member(chat.id, member.id, member.first_name or "کاربر", member.username)
 
 # ---------------------------------------------------------------------------
 #  Health server
@@ -808,7 +805,10 @@ def build_application() -> Application:
     # 👇 دستورات کانفیگ و TTS
     app.add_handler(CommandHandler("getconfig", conf_cmd.cmd_getconfig))
     app.add_handler(CallbackQueryHandler(conf_cmd.handle_config_callback, pattern=r"^(copy_cfg_|refresh_cfg)"))
-    app.add_handler(CommandHandler("tts", tts_cmd.cmd_tts)) # 👈 اضافه شد
+    app.add_handler(CommandHandler("tts", tts_cmd.cmd_tts)) 
+    
+    # 👇 دستور ترجمه (جدید)
+    app.add_handler(CommandHandler("translate", trans_cmd.cmd_translate))
     
     app.add_handler(CommandHandler("bmi", cmd_bmi)); app.add_handler(CommandHandler("calories", cmd_calories)); app.add_handler(CommandHandler("weight", cmd_weight))
     app.add_handler(CommandHandler("progress", cmd_progress)); app.add_handler(CommandHandler("macros", cmd_macros)); app.add_handler(CommandHandler("protein", cmd_protein))

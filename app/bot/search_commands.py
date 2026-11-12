@@ -21,7 +21,7 @@ async def cmd_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             parse_mode="HTML"
         )
 
-    status_msg = await update.message.reply_text(f"🔍 در حال جستجوی عمیق برای: <b>{query[:50]}...</b>", parse_mode="HTML")
+    status_msg = await update.message.reply_text(f"🔍 در حال جستجو برای: <b>{query[:50]}...</b>", parse_mode="HTML")
 
     try:
         search_service = get_web_search_service()
@@ -35,9 +35,14 @@ async def cmd_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         if sources:
             final_text += "\n\n🔗 <b>منابع:</b>\n" + "\n".join([f"• <a href='{s}'>لینک {i+1}</a>" for i, s in enumerate(sources[:3])])
 
-        try: await status_msg.edit_text(final_text, parse_mode="HTML", disable_web_page_preview=True)
-        except BadRequest: await status_msg.edit_text(answer_text, disable_web_page_preview=True)
+        # ۱. ارسال متن
+        try: 
+            await status_msg.edit_text(final_text, parse_mode="HTML", disable_web_page_preview=True)
+        except BadRequest as e: 
+            logger.warning(f"HTML parse error in search text: {e}")
+            await status_msg.edit_text(answer_text, disable_web_page_preview=True)
 
+        # ۲. ارسال عکس‌ها
         if images:
             media_group = [InputMediaPhoto(media=img_url) for img_url in images if img_url.startswith("http")]
             if media_group:
@@ -46,9 +51,11 @@ async def cmd_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
                 except Exception as e:
                     logger.warning(f"Album failed: {e}. Sending individually...")
                     for img in media_group:
-                        try: await update.message.reply_photo(photo=img.media)
-                        except: continue
+                        try: 
+                            await update.message.reply_photo(photo=img.media)
+                        except Exception as single_err:
+                            logger.warning(f"Single photo failed: {single_err}")
 
     except Exception as e:
-        logger.error(f"Search error: {e}")
-        await status_msg.edit_text("❌ خطایی در جستجو رخ داد. دوباره تلاش کنید.")
+        logger.error(f"Cmd Search Error: {e}", exc_info=True) # لاگ کامل برای دیباگ
+        await status_msg.edit_text("❌ خطایی در جستجو رخ داد. لطفاً دوباره تلاش کنید.")

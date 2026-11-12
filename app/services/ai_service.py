@@ -2,6 +2,7 @@
 
 import logging
 import time
+import random
 from collections import defaultdict, deque
 from typing import Optional
 from groq import AsyncGroq
@@ -15,6 +16,15 @@ _user_requests: dict[int, deque] = defaultdict(deque)
 
 PREFERRED_MODELS = ["qwen/qwen3.8-27b", "llama-3.3-70b-versatile", "openai/gpt-oss-20b", "gemma2-9b-it"]
 
+# 👇 جواب‌های جایگزین در صورتی که سرور هوش مصنوعی کلاً قطع باشد
+FALLBACK_RESPONSES = [
+    "سلام! 👋 من همینجام، یه لحظه مغزم هنگ کرد! 😅 دوباره پیامت رو بفرست.",
+    "🌱 جالبه! ولی الان درگیر پردازش یه سری اطلاعاتم. می‌تونی یه بار دیگه سوالت رو بپرسی؟",
+    "متوجه شدم! ارتباطم با سرور اصلی یه لحظه قطع شد. چی بود؟ دوباره بگو تا دقیق جواب بدم.",
+    "🤖 یه لحظه صبر کن، دارم اطلاعات رو آپدیت می‌کنم. لطفاً دوباره بفرست.",
+    "💧 یه نکته تغذیه‌ای بگم تا سرور درست بشه: نوشیدن آب کافی باعث افزایش متابولیسم می‌شه! (حالا دوباره پیامت رو بفرست 😅)"
+]
+
 def _check_rate_limit(user_id: int) -> tuple[bool, int]:
     now = time.time()
     q = _user_requests[user_id]
@@ -26,12 +36,18 @@ def _check_rate_limit(user_id: int) -> tuple[bool, int]:
     q.append(now)
     return True, 0
 
-SYSTEM_PROMPT = """تو «تغذیه‌یار» هستی، یک دستیار هوشمند، مودب و همه‌فن‌حریف.
+# 👇 پرامپت جدید و بسیار قوی (دستور به ربات که به هر چیزی جواب بده)
+SYSTEM_PROMPT = """تو «تغذیه‌یار» هستی، یک دستیار هوشمند، خوش‌برخورد، پرانرژی و همه‌فن‌حریف.
 تخصص اصلی تو تغذیه و سلامت است، اما تو یک هوش مصنوعی جامع هستی.
-اگر کاربر سوالی عمومی، علمی یا خبری پرسید، با دانش خودت به بهترین شکل جواب بده.
-🚨 قوانین:
-1. اگر جواب سوالی را نمی‌دانی، حدس الکی نزن، اما سعی کن با دانش عمومی خودت کمک کنی.
-2. از تگ‌های HTML مثل <b>، <i>، <code> و <blockquote> استفاده کن. هرگز از مارک‌داون (**) استفاده نکن.
+
+🚨 قانون طلایی (بسیار مهم!):
+تو باید به **هر پیامی** که کاربر می‌فرستد جواب بدهی! حتی اگر پیام فقط یک کلمه (مثل "سلام")، یک حرف، یا یک ایموجی باشد.
+هرگز نگو "من نمی‌توانم جواب بدهم". تو همیشه آنلاین هستی و همیشه یک جواب دوستانه، مفید یا بامزه داری.
+
+📌 نحوه رفتار:
+- اگر کاربر فقط گفت "سلام"، تو با خوش‌رویی سلام کن و بپرس چطور می‌توانی کمکش کنی.
+- اگر سوال عمومی، علمی یا خبری پرسید، با دانش خودت به بهترین شکل جواب بده.
+- از تگ‌های HTML مثل <b>، <i>، <code> و <blockquote> استفاده کن. هرگز از مارک‌داون (**) استفاده نکن.
 """
 
 class AIService:
@@ -94,27 +110,31 @@ class AIService:
         try:
             model_name = await self._pick_model()
             client = self._get_client()
+            # دما را روی 0.7 گذاشتیم تا ربات خلاقیت و گرمی بیشتری در جواب دادن داشته باشه
             response = await client.chat.completions.create(
-                model=model_name, messages=messages, temperature=0.5, max_tokens=2500, top_p=0.9
+                model=model_name, messages=messages, temperature=0.7, max_tokens=2500, top_p=0.9
             )
             reply = (response.choices[0].message.content or "").strip()
-            return reply, "ok" if reply else ("پاسخی دریافت نشد.", "error")
+            
+            if not reply: raise ValueError("Empty response")
+            return reply, "ok"
             
         except Exception as e:
             logger.error("AI API error with primary model: %s", e)
             
-            # 👇 حالت پشتیبان (Fallback): اگر مدل اصلی خطا داد، این بار با مدل دوم امتحان می‌کنیم
+            # تلاش مجدد با مدل پشتیبان (اگر مدل اول ارور داد)
             try:
                 fallback_model = "llama-3.3-70b-versatile"
                 response = await client.chat.completions.create(
-                    model=fallback_model, messages=messages, temperature=0.5, max_tokens=2500
+                    model=fallback_model, messages=messages, temperature=0.7, max_tokens=2500
                 )
                 reply = (response.choices[0].message.content or "").strip()
-                return reply, "ok"
+                if reply: return reply, "ok"
             except Exception as e2:
                 logger.error("Fallback AI API error: %s", e2)
-                # اگر هر دو مدل خطا دادن، متن خطا رو نشون بده تا بدونیم مشکل چیه
-                return (f"😔 خطا در اتصال به AI:\n<code>{str(e)[:150]}</code>", "error")
+            
+            # 👇 اگر هر دو مدل قطع بودن، یک جواب از پیش نوشته‌شده می‌دیم تا کاربر ناراضی نشه
+            return random.choice(FALLBACK_RESPONSES), "fallback"
 
     async def translate(self, text: str, target_language: str, user_id: int = 0) -> str:
         text = (text or "").strip()[:1500]
@@ -170,9 +190,8 @@ class AIService:
 
         try:
             client = self._get_client()
-            # استفاده از مدل صحیح و پشتیبانی‌شده گروک برای تصویر
             response = await client.chat.completions.create(
-                model="llama-3.2-11b-vision-preview", 
+                model="qwen/qwen3.8-27b", 
                 messages=messages,
                 temperature=0.7,
                 max_tokens=1500,

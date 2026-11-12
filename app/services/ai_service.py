@@ -134,7 +134,7 @@ class AIService:
         except Exception as e:
             logger.error(f"Whisper Error: {e}"); raise e
 
-    # 👇 متد اصلاح‌شده برای تحلیل عکس با مدل معتبر Vision
+    # 👇 متد اصلاح‌شده برای تحلیل عکس با مدل جدید و فعال Vision
     async def analyze_image(self, image_base64: str, prompt: str, user_id: int = 0) -> str:
         if self.mock:
             return "🤖 (حالت آزمایشی) - عکس دریافت شد اما AI فعال نیست."
@@ -158,9 +158,9 @@ class AIService:
 
         try:
             client = self._get_client()
-            # استفاده از مدل صحیح و پشتیبانی‌شده گروک برای تصویر
+            # 👇 استفاده از مدل جدید و فعال qwen/qwen3.8-27b به جای مدل بازنشسته
             response = await client.chat.completions.create(
-                model="llama-3.2-11b-vision-preview", 
+                model="qwen/qwen3.8-27b", 
                 messages=messages,
                 temperature=0.7,
                 max_tokens=1500,

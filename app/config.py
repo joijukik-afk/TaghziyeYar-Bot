@@ -41,9 +41,9 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     mock_mode: bool = False
 
-    # Branding
+    # 👇 Branding (اصلاح‌شده - بدون اسم متخصص)
     bot_display_name: str = "تغذیه‌یار"
-    signature: str = "🥗 متخصص علی اکبر ابراهیم پور"
+    signature: str = "🌱 تغذیه‌یار | دستیار هوشمند شما"
 
     # 🛡️ Security & Render
     webhook_url: str = ""  

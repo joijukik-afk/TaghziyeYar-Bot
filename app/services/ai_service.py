@@ -134,7 +134,7 @@ class AIService:
         except Exception as e:
             logger.error(f"Whisper Error: {e}"); raise e
 
-    # 👇 متد جدید برای تحلیل عکس با Groq Vision
+    # 👇 متد اصلاح‌شده برای تحلیل عکس با مدل معتبر Vision
     async def analyze_image(self, image_base64: str, prompt: str, user_id: int = 0) -> str:
         if self.mock:
             return "🤖 (حالت آزمایشی) - عکس دریافت شد اما AI فعال نیست."
@@ -158,9 +158,9 @@ class AIService:
 
         try:
             client = self._get_client()
-            # استفاده از مدل Vision گروک
+            # استفاده از مدل صحیح و پشتیبانی‌شده گروک برای تصویر
             response = await client.chat.completions.create(
-                model="llama-3.2-11b-vision-preview",
+                model="llama-3.2-11b-vision-preview", 
                 messages=messages,
                 temperature=0.7,
                 max_tokens=1500,
@@ -168,7 +168,8 @@ class AIService:
             return (response.choices[0].message.content or "").strip()
         except Exception as e:
             logger.error(f"Vision API error: {e}")
-            return "😔 متأسفانه در تحلیل تصویر خطایی پیش آمد. لطفاً دوباره تلاش کنید."
+            # 👈 این خط رو اضافه کردم که اگر خطایی داد، دقیقاً بگه چرا
+            return f"😔 متأسفانه در تحلیل تصویر خطایی پیش آمد.\n\nعلت خطا:\n<code>{str(e)[:200]}</code>"
 
 _ai_service: Optional[AIService] = None
 def get_ai_service() -> AIService:

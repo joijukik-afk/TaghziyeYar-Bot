@@ -36,7 +36,8 @@ from app.bot import translate_commands as trans_cmd
 from app.bot import search_commands as search_cmd
 from app.bot import voice_chat_commands as voice_cmd
 from app.bot import image_commands as img_cmd
-from app.bot import persona_commands as persona_cmd # 👈 جدید
+from app.bot import persona_commands as persona_cmd
+from app.bot import vision_commands as vision_cmd # 👈 ایمپورت جدید
 from app.bot.content import get_fact, get_myth, get_tip
 from app.config import get_settings
 from app.database import repository as repo
@@ -196,19 +197,19 @@ def clean_mention(text: str, bot_username: str) -> str:
 
 def main_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🎭 تغییر شخصیت", callback_data="menu_persona"), InlineKeyboardButton("🎨 تصویرسازی AI", callback_data="menu_imagine")],
-        [InlineKeyboardButton("🔍 جستجوی هوشمند", callback_data="menu_search"), InlineKeyboardButton("🌐 ترجمه", callback_data="menu_translate")],
-        [InlineKeyboardButton("🎙️ چت صوتی", callback_data="menu_voice"), InlineKeyboardButton("🎧 موسیقی COMA", callback_data="menu_koma")],
-        [InlineKeyboardButton("🎵 دانلود آهنگ", callback_data="menu_music"), InlineKeyboardButton("🎮 کوییز زنده", callback_data="menu_quiz")],
-        [InlineKeyboardButton("🏆 جدول قهرمانان", callback_data="menu_lb"), InlineKeyboardButton("🍽 برنامه غذا", callback_data="menu_plan")],
-        [InlineKeyboardButton("📅 برنامه امروز", callback_data="menu_today"), InlineKeyboardButton("🛒 فهرست خرید", callback_data="menu_shopping")],
-        [InlineKeyboardButton("🥗 ارزش غذایی", callback_data="menu_food"), InlineKeyboardButton("💡 نکته روز", callback_data="menu_tip")],
-        [InlineKeyboardButton("🍎 فکت", callback_data="menu_fact"), InlineKeyboardButton("❌ باور اشتباه", callback_data="menu_myth")],
-        [InlineKeyboardButton("🎯 تحلیل کامل", callback_data="menu_ideal"), InlineKeyboardButton("⚖️ ثبت وزن", callback_data="menu_weight")],
-        [InlineKeyboardButton("🔥 کالری", callback_data="menu_calories"), InlineKeyboardButton("🥩 پروتئین", callback_data="menu_protein")],
-        [InlineKeyboardButton("🧮 درشت‌مغذی", callback_data="menu_macros"), InlineKeyboardButton("📊 پیشرفت", callback_data="menu_progress")],
-        [InlineKeyboardButton("👤 پروفایل", callback_data="menu_profile"), InlineKeyboardButton("💬 سوال از AI", callback_data="menu_ai")],
-        [InlineKeyboardButton("📖 راهنما", callback_data="menu_help")],
+        [InlineKeyboardButton("🎭 تغییر شخصیت", callback_data="menu_persona"), InlineKeyboardButton("👁️ تحلیل عکس", callback_data="menu_vision")],
+        [InlineKeyboardButton("🎨 تصویرسازی AI", callback_data="menu_imagine"), InlineKeyboardButton("🔍 جستجوی هوشمند", callback_data="menu_search")],
+        [InlineKeyboardButton("🌐 ترجمه", callback_data="menu_translate"), InlineKeyboardButton("🎙️ چت صوتی", callback_data="menu_voice")],
+        [InlineKeyboardButton("🎧 موسیقی COMA", callback_data="menu_koma"), InlineKeyboardButton("🎵 دانلود آهنگ", callback_data="menu_music")],
+        [InlineKeyboardButton("🎮 کوییز زنده", callback_data="menu_quiz"), InlineKeyboardButton("🏆 جدول قهرمانان", callback_data="menu_lb")],
+        [InlineKeyboardButton("🍽 برنامه غذا", callback_data="menu_plan"), InlineKeyboardButton("📅 برنامه امروز", callback_data="menu_today")],
+        [InlineKeyboardButton("🛒 فهرست خرید", callback_data="menu_shopping"), InlineKeyboardButton("🥗 ارزش غذایی", callback_data="menu_food")],
+        [InlineKeyboardButton("💡 نکته روز", callback_data="menu_tip"), InlineKeyboardButton("🍎 فکت", callback_data="menu_fact")],
+        [InlineKeyboardButton("❌ باور اشتباه", callback_data="menu_myth"), InlineKeyboardButton("🎯 تحلیل کامل", callback_data="menu_ideal")],
+        [InlineKeyboardButton("⚖️ ثبت وزن", callback_data="menu_weight"), InlineKeyboardButton("🔥 کالری", callback_data="menu_calories")],
+        [InlineKeyboardButton("🥩 پروتئین", callback_data="menu_protein"), InlineKeyboardButton("🧮 درشت‌مغذی", callback_data="menu_macros")],
+        [InlineKeyboardButton("📊 پیشرفت", callback_data="menu_progress"), InlineKeyboardButton("👤 پروفایل", callback_data="menu_profile")],
+        [InlineKeyboardButton("💬 سوال از AI", callback_data="menu_ai"), InlineKeyboardButton("📖 راهنما", callback_data="menu_help")],
     ])
 
 async def ensure_user_and_group(update: Update) -> None:
@@ -309,10 +310,7 @@ async def cmd_mycard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if not is_admin:
         can_generate = await repo.check_and_mark_card_generated(user.id)
         if not can_generate: 
-            return await update.message.reply_text(
-                "⚠️ شما قبلاً کارت دیجیتال خود را دریافت کرده‌اید.\n"
-                "طبق قوانین ربات، هر کاربر فقط یک بار می‌تواند این کارت اختصاصی را بسازد."
-            )
+            return await update.message.reply_text("⚠️ شما قبلاً کارت دیجیتال خود را دریافت کرده‌اید.")
     else: await notify_owner(context, user, "درخواست ساخت کارت دیجیتال سلامت (دسترسی نامحدود)")
     db_user = await repo.get_user_by_telegram_id(user.id)
     if not db_user: return
@@ -422,7 +420,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     try: await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
     except: pass
     
-    # 👇 شخصیت انتخابی کاربر رو از حافظه می‌خونیم
     custom_prompt = context.user_data.get("persona_prompt", None)
     
     ai = get_ai_service()
@@ -431,7 +428,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         user_name=(user.first_name or "") if user else "", 
         user_profile_summary=profile_summary, 
         user_id=user.id if user else 0,
-        custom_system_prompt=custom_prompt # 👈 پرامپت شخصیت رو پاس میدیم
+        custom_system_prompt=custom_prompt 
     )
     await _send_html_safe(bot=context.bot, chat_id=update.effective_chat.id, text=reply or "پاسخی دریافت نشد.", reply_to=update.message.message_id)
 
@@ -441,8 +438,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await query.answer(); data = query.data or ""
     
     if data == "menu_persona":
-        await persona_cmd.cmd_persona(update, context)
-        return
+        await persona_cmd.cmd_persona(update, context); return
+    if data == "menu_vision":
+        await query.edit_message_text(with_signature(
+            "👁️ <b>تحلیل عکس با هوش مصنوعی</b>\n\n"
+            "یک عکس بفرست و از این دستورات استفاده کن:\n"
+            "<code>/vision</code> - تحلیل کامل عکس\n"
+            "<code>/roast</code> - مسخره کردن طنز عکس\n"
+            "<code>/ocr</code> - استخراج متن از عکس\n"
+            "<code>/food</code> - تحلیل کالری غذا"
+        ), parse_mode="HTML"); return
     
     if data == "gq_next" and update.effective_chat: 
         await gquiz.send_quiz_from_callback(context=context, chat_id=update.effective_chat.id, chat_title=update.effective_chat.title or ""); return
@@ -451,8 +456,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await query.edit_message_text(with_signature(
             "🎨 <b>تولید عکس با هوش مصنوعی</b>\n\n"
             "توصیف عکسی که می‌خوای رو بنویس:\n\n"
-            "<code>/imagine یک گربه فضانورد در مریخ</code>\n"
-            "<code>/imagine دختر در باران، سبک سینمایی</code>"
+            "<code>/imagine یک گربه فضانورد در مریخ</code>"
         ), parse_mode="HTML"); return
     if data == "menu_search": 
         await query.edit_message_text(with_signature("🔍 <b>جستجوی هوشمند</b>\n\nمثال:\n<code>/search قیمت بیت کوین</code>"), parse_mode="HTML"); return
@@ -550,8 +554,8 @@ async def cmd_advertise(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "آیا از وضعیت سلامتی و تناسب اندام خود خبر دارید؟ 🤔\n"
         "با ربات <b>تغذیه‌یار</b>، یک کارت دیجیتال اختصاصی دریافت کنید! 🪪\n\n"
         "🎨 <b>و همچنین:</b>\n"
-        "🔍 جستجوی هوشمند | 🌐 ترجمه | 🎙️ چت صوتی\n"
-        "🎧 کشف موسیقی | 🎭 تغییر شخصیت AI\n\n"
+        "👁️ تحلیل عکس با AI | 🔍 جستجوی هوشمند | 🌐 ترجمه\n"
+        "🎭 تغییر شخصیت | 🎙️ چت صوتی | 🎧 موسیقی\n\n"
         "👇 همین حالا کلیک کنید:"
     )
     keyboard = [[InlineKeyboardButton("🪪 دریافت کارت سلامت", url=f"https://t.me/{context.bot.username}?start=mycard")]]
@@ -704,6 +708,7 @@ async def post_init(application: Application) -> None:
         await application.bot.set_my_short_description(short_description=short_desc)
         full_desc = (
             "🌱 تغذیه‌یار | دستیار هوشمند شما\n\n"
+            "👁️ تحلیل عکس با AI\n"
             "🎭 تغییر شخصیت AI\n"
             "🎨 تولید عکس با AI\n"
             "🔍 جستجوی هوشمند\n"
@@ -747,9 +752,15 @@ def build_application() -> Application:
     
     app.add_handler(CommandHandler("tagall", cmd_tagall))
     
-    # 👇 ابزارهای هوشمند
-    app.add_handler(CommandHandler("persona", persona_cmd.cmd_persona)) # 👈 جدید
-    app.add_handler(CallbackQueryHandler(persona_cmd.handle_persona_callback, pattern=r"^persona_")) # 👈 جدید
+    # 👇 ابزارهای هوشمند (شخصیت، عکس، تصویرسازی، سرچ، ترجمه، ویس)
+    app.add_handler(CommandHandler("persona", persona_cmd.cmd_persona))
+    app.add_handler(CallbackQueryHandler(persona_cmd.handle_persona_callback, pattern=r"^persona_"))
+    
+    app.add_handler(CommandHandler("vision", vision_cmd.cmd_vision))
+    app.add_handler(CommandHandler("roast", vision_cmd.cmd_roast))
+    app.add_handler(CommandHandler("ocr", vision_cmd.cmd_ocr))
+    app.add_handler(CommandHandler("food", vision_cmd.cmd_food))
+    
     app.add_handler(CommandHandler("imagine", img_cmd.cmd_imagine))
     app.add_handler(CommandHandler("getconfig", conf_cmd.cmd_getconfig))
     app.add_handler(CallbackQueryHandler(conf_cmd.handle_config_callback, pattern=r"^(copy_cfg_|refresh_cfg)"))
@@ -790,6 +801,9 @@ def build_application() -> Application:
     app.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.ALL, gmanager.on_group_message), group=1)
     
     app.add_handler(MessageHandler(filters.VOICE, voice_cmd.handle_voice_message))
+    
+    # 👇 هندلر عکس‌های بدون دستور (باید آخر باشد تا با بقیه تداخل نکند)
+    app.add_handler(MessageHandler(filters.PHOTO & filters.ChatType.PRIVATE, vision_cmd.handle_photo_message))
     
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))

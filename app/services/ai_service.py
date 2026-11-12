@@ -26,7 +26,6 @@ def _check_rate_limit(user_id: int) -> tuple[bool, int]:
     q.append(now)
     return True, 0
 
-# 👇 پرامپت اصلی نرم‌تر شد تا ربات در حالت چت هم گیر نکنه
 SYSTEM_PROMPT = """تو «تغذیه‌یار» هستی، یک دستیار هوشمند، مودب و همه‌فن‌حریف.
 تخصص اصلی تو تغذیه و سلامت است، اما تو یک هوش مصنوعی جامع هستی.
 اگر کاربر سوالی عمومی، علمی یا خبری پرسید، با دانش خودت به بهترین شکل جواب بده.
@@ -76,7 +75,6 @@ class AIService:
 
         if self.mock: return ("🤖 (حالت آزمایشی)", "mock")
 
-        # استفاده از پرامپت جستجوگر در صورت وجود
         sys_prompt = custom_system_prompt if custom_system_prompt else SYSTEM_PROMPT
         messages: list[dict] = [{"role": "system", "content": sys_prompt}]
 
@@ -135,6 +133,42 @@ class AIService:
             return str(transcription).strip()
         except Exception as e:
             logger.error(f"Whisper Error: {e}"); raise e
+
+    # 👇 متد جدید برای تحلیل عکس با Groq Vision
+    async def analyze_image(self, image_base64: str, prompt: str, user_id: int = 0) -> str:
+        if self.mock:
+            return "🤖 (حالت آزمایشی) - عکس دریافت شد اما AI فعال نیست."
+
+        if user_id:
+            allowed, wait = _check_rate_limit(user_id)
+            if not allowed: return f"⏳ خیلی سریع پیام می‌دی. {wait} ثانیه صبر کن."
+
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}
+                    }
+                ]
+            }
+        ]
+
+        try:
+            client = self._get_client()
+            # استفاده از مدل Vision گروک
+            response = await client.chat.completions.create(
+                model="llama-3.2-11b-vision-preview",
+                messages=messages,
+                temperature=0.7,
+                max_tokens=1500,
+            )
+            return (response.choices[0].message.content or "").strip()
+        except Exception as e:
+            logger.error(f"Vision API error: {e}")
+            return "😔 متأسفانه در تحلیل تصویر خطایی پیش آمد. لطفاً دوباره تلاش کنید."
 
 _ai_service: Optional[AIService] = None
 def get_ai_service() -> AIService:

@@ -13,7 +13,7 @@ _RATE_WINDOW_SECONDS = 60
 _RATE_MAX_REQUESTS = 15
 _user_requests: dict[int, deque] = defaultdict(deque)
 
-PREFERRED_MODELS = ["qwen/qwen3.8-27b", "openai/gpt-oss-120b", "openai/gpt-oss-20b", "gemma2-9b-it", "llama-3.3-70b-versatile"]
+PREFERRED_MODELS = ["qwen/qwen3.8-27b", "llama-3.3-70b-versatile", "openai/gpt-oss-20b", "gemma2-9b-it"]
 
 def _check_rate_limit(user_id: int) -> tuple[bool, int]:
     now = time.time()
@@ -99,9 +99,22 @@ class AIService:
             )
             reply = (response.choices[0].message.content or "").strip()
             return reply, "ok" if reply else ("پاسخی دریافت نشد.", "error")
+            
         except Exception as e:
-            logger.error("AI API error: %s", e)
-            return ("😔 الان نمی‌تونم به سرور هوش مصنوعی وصل بشم.", "error")
+            logger.error("AI API error with primary model: %s", e)
+            
+            # 👇 حالت پشتیبان (Fallback): اگر مدل اصلی خطا داد، این بار با مدل دوم امتحان می‌کنیم
+            try:
+                fallback_model = "llama-3.3-70b-versatile"
+                response = await client.chat.completions.create(
+                    model=fallback_model, messages=messages, temperature=0.5, max_tokens=2500
+                )
+                reply = (response.choices[0].message.content or "").strip()
+                return reply, "ok"
+            except Exception as e2:
+                logger.error("Fallback AI API error: %s", e2)
+                # اگر هر دو مدل خطا دادن، متن خطا رو نشون بده تا بدونیم مشکل چیه
+                return (f"😔 خطا در اتصال به AI:\n<code>{str(e)[:150]}</code>", "error")
 
     async def translate(self, text: str, target_language: str, user_id: int = 0) -> str:
         text = (text or "").strip()[:1500]
@@ -134,7 +147,6 @@ class AIService:
         except Exception as e:
             logger.error(f"Whisper Error: {e}"); raise e
 
-    # 👇 متد اصلاح‌شده برای تحلیل عکس با مدل جدید و فعال Vision
     async def analyze_image(self, image_base64: str, prompt: str, user_id: int = 0) -> str:
         if self.mock:
             return "🤖 (حالت آزمایشی) - عکس دریافت شد اما AI فعال نیست."
@@ -158,9 +170,9 @@ class AIService:
 
         try:
             client = self._get_client()
-            # 👇 استفاده از مدل جدید و فعال qwen/qwen3.8-27b به جای مدل بازنشسته
+            # استفاده از مدل صحیح و پشتیبانی‌شده گروک برای تصویر
             response = await client.chat.completions.create(
-                model="qwen/qwen3.8-27b", 
+                model="llama-3.2-11b-vision-preview", 
                 messages=messages,
                 temperature=0.7,
                 max_tokens=1500,
@@ -168,7 +180,6 @@ class AIService:
             return (response.choices[0].message.content or "").strip()
         except Exception as e:
             logger.error(f"Vision API error: {e}")
-            # 👈 این خط رو اضافه کردم که اگر خطایی داد، دقیقاً بگه چرا
             return f"😔 متأسفانه در تحلیل تصویر خطایی پیش آمد.\n\nعلت خطا:\n<code>{str(e)[:200]}</code>"
 
 _ai_service: Optional[AIService] = None

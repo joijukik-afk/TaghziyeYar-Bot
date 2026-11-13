@@ -1,32 +1,37 @@
-"""Voice chat handler: Responds to /voice, auto-replies, and smart voice requests."""
+"""Voice chat handler: Responds to /voice and auto-replies to voice messages."""
 
 import os
 import logging
 import tempfile
 import asyncio
+import re
 import edge_tts
 from telegram import Update
 from telegram.ext import ContextTypes
-from app.services.ai_service import get_ai_service
+from app.services.ai_service import get_ai_service, VOICE_SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
 
-VOICE_SYSTEM_PROMPT = (
-    "تو یک دستیار صوتی فوق‌العاده باهوش، صمیمی و احساساتی هستی. "
-    "کاربر با تو حرف می‌زند و تو باید با لحنی طبیعی، دوستانه و پر از احساس پاسخ دهی. "
-    "پاسخ‌های تو باید کوتاه و مفید باشند (حداکثر ۳ تا ۴ جمله) چون قرار است به صدا تبدیل شوند. "
-    "از ایموجی‌ها و علامت‌های نگارشی عجیب استفاده نکن. "
-)
+def clean_text_for_tts(text: str) -> str:
+    text = re.sub(r'<[^>]+>', '', text)
+    emoji_pattern = re.compile("["
+        u"\U0001F600-\U0001F64F" u"\U0001F300-\U0001F5FF"
+        u"\U0001F680-\U0001F6FF" u"\U0001F1E0-\U0001F1FF" "]+", flags=re.UNICODE)
+    text = emoji_pattern.sub(r'', text)
+    text = text.replace("*", "").replace("#", "").replace("_", "").replace("~", "")
+    return text.strip()
 
 async def generate_and_send_voice(bot, chat_id: int, text: str, voice_type: str = "male"):
-    """تبدیل متن به صدا و ارسال به تلگرام (بدون کپشن و شلوغی)"""
     voice_id = "fa-IR-FaridNeural" if voice_type == "male" else "fa-IR-DilaraNeural"
     
     output_mp3 = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3").name
     output_ogg = output_mp3.replace(".mp3", ".ogg")
 
     try:
-        communicate = edge_tts.Communicate(text, voice_id)
+        clean_text = clean_text_for_tts(text)
+        if not clean_text: return 
+
+        communicate = edge_tts.Communicate(clean_text, voice_id)
         await communicate.save(output_mp3)
 
         process = await asyncio.create_subprocess_shell(
@@ -35,12 +40,8 @@ async def generate_and_send_voice(bot, chat_id: int, text: str, voice_type: str 
         )
         await process.communicate()
 
-        # 👈 ارسال بدون کپشن (فقط ویس خالی)
         with open(output_ogg, "rb") as voice:
-            await bot.send_voice(
-                chat_id=chat_id,
-                voice=voice
-            )
+            await bot.send_voice(chat_id=chat_id, voice=voice)
     except Exception as e:
         logger.error(f"Voice Generation Error: {e}")
     finally:
@@ -51,7 +52,6 @@ async def generate_and_send_voice(bot, chat_id: int, text: str, voice_type: str 
 
 
 async def _process_voice_and_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, voice_file_id: str, status_msg_id: int):
-    """هسته اصلی پردازش صدا برای /voice و ویس خودکار"""
     input_ogg = input_mp3 = None
     try:
         voice_file = await context.bot.get_file(voice_file_id)
@@ -86,9 +86,6 @@ async def _process_voice_and_reply(update: Update, context: ContextTypes.DEFAULT
         )
         ai_reply_text = ai_reply_tuple[0] if isinstance(ai_reply_tuple, tuple) else str(ai_reply_tuple)
 
-        # 👈 حذف شد: دیگه متن جداگانه فرستاده نمیشه، فقط ویس میره
-        
-        # ارسال ویس
         await generate_and_send_voice(context.bot, update.effective_chat.id, ai_reply_text, "male")
         
         try: await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=status_msg_id)
@@ -104,7 +101,6 @@ async def _process_voice_and_reply(update: Update, context: ContextTypes.DEFAULT
                 except: pass
 
 async def cmd_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """دستور /voice برای ریپلای روی ویس"""
     if not update.message or not update.message.reply_to_message:
         return await update.message.reply_text("⚠️ روی یک پیام صوتی (ویس) ریپلای کنید و دستور /voice را بزنید.")
     replied = update.message.reply_to_message
@@ -114,7 +110,6 @@ async def cmd_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await _process_voice_and_reply(update, context, replied.voice.file_id, status_msg.message_id)
 
 async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """جواب خودکار به ویس‌های ارسالی"""
     if not update.message or not update.message.voice: return
     status_msg = await update.message.reply_text("🎧 در حال گوش دادن...")
     await _process_voice_and_reply(update, context, update.message.voice.file_id, status_msg.message_id)

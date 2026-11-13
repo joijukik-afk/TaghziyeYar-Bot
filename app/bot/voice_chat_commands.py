@@ -23,7 +23,7 @@ def clean_text_for_tts(text: str) -> str:
     return text.strip()
 
 async def generate_and_send_voice(bot, chat_id: int, text: str, voice_type: str = "male"):
-    """تبدیل متن به صدا و ارسال (با نمایش خطا در صورت بروز مشکل)"""
+    """تبدیل متن به صدا و ارسال (با فالبک MP3 در صورت خطای FFmpeg)"""
     voice_id = "fa-IR-FaridNeural" if voice_type == "male" else "fa-IR-DilaraNeural"
     
     output_mp3 = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3").name
@@ -32,38 +32,37 @@ async def generate_and_send_voice(bot, chat_id: int, text: str, voice_type: str 
     try:
         clean_text = clean_text_for_tts(text)
         if not clean_text:
-            await bot.send_message(chat_id=chat_id, text="⚠️ متنی برای خواندن پیدا نشد.")
+            await bot.send_message(chat_id=chat_id, text="⚠️ متنی برای خواندن پیدا نشد (فقط ایموجی یا علائم بود).")
             return 
 
         # ۱. ساخت فایل صوتی
         communicate = edge_tts.Communicate(clean_text, voice_id)
         await communicate.save(output_mp3)
 
-        # ۲. تبدیل به ویس تلگرام (با ffmpeg)
+        # ۲. تلاش برای تبدیل به ویس تلگرام
         process = await asyncio.create_subprocess_shell(
             f'ffmpeg -y -i "{output_mp3}" -c:a libopus -b:a 64k "{output_ogg}"',
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         )
         stdout, stderr = await process.communicate()
 
-        if process.returncode != 0:
-            error_msg = stderr.decode('utf-8')[-200:]
-            raise Exception(f"FFmpeg Error: {error_msg}")
-
-        # ۳. ارسال
-        with open(output_ogg, "rb") as voice:
-            await bot.send_voice(chat_id=chat_id, voice=voice)
+        if process.returncode == 0 and os.path.exists(output_ogg):
+            with open(output_ogg, "rb") as voice:
+                await bot.send_voice(chat_id=chat_id, voice=voice)
+        else:
+            # 👇 فالبک: اگر تبدیل شکست خورد، MP3 بفرست
+            logger.warning(f"FFmpeg failed. Sending MP3 directly.")
+            with open(output_mp3, "rb") as audio:
+                await bot.send_audio(chat_id=chat_id, audio=audio, title="پاسخ صوتی", performer="تغذیه‌یار")
             
     except Exception as e:
         logger.error(f"Voice Generation Error: {e}")
-        # 👇 اگر خطایی داد، به کاربر نشون میده
-        await bot.send_message(chat_id=chat_id, text=f"❌ خطا در ساخت ویس:\n<code>{str(e)[:300]}</code>", parse_mode="HTML")
+        await bot.send_message(chat_id=chat_id, text=f"❌ خطا در ساخت صدا: {str(e)[:100]}")
     finally:
         for path in [output_mp3, output_ogg]:
             if path and os.path.exists(path):
                 try: os.remove(path)
                 except: pass
-
 
 async def _process_voice_and_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, voice_file_id: str, status_msg_id: int):
     """هسته پردازش صدا برای /voice و ویس خودکار"""
@@ -95,27 +94,26 @@ async def _process_voice_and_reply(update: Update, context: ContextTypes.DEFAULT
             text=f"🗣️ **شما گفتید:**\n{user_text}\n\n🧠 در حال فکر کردن..."
         )
 
-        # 👇 ۳. گرفتن اسم کاربر و حافظه مشترک
+        # 👇 ۳. گرفتن اسم و حافظه مشترک
         user = update.effective_user
         user_name = user.first_name if user else "کاربر"
         user_id = user.id if user else 0
         chat_history = context.user_data.get("chat_history", [])
 
-        # ۴. هوش مصنوعی جواب رو می‌سازه (با پاس دادن اسم و حافظه)
+        # ۴. ساخت جواب
         ai_reply_tuple = await ai_service.ask(
             user_message=user_text,
             user_name=user_name,
             user_id=user_id,
             custom_system_prompt=VOICE_SYSTEM_PROMPT,
-            chat_history=chat_history # 👈 حافظه پاس داده میشه
+            chat_history=chat_history 
         )
         ai_reply_text = ai_reply_tuple[0] if isinstance(ai_reply_tuple, tuple) else str(ai_reply_tuple)
 
         # 👇 ۵. ذخیره در حافظه مشترک
         chat_history.append({"role": "user", "content": user_text})
         chat_history.append({"role": "assistant", "content": ai_reply_text})
-        if len(chat_history) > 10:
-            chat_history = chat_history[-10:]
+        if len(chat_history) > 10: chat_history = chat_history[-10:]
         context.user_data["chat_history"] = chat_history
 
         # ۶. ساخت ویس و ارسال

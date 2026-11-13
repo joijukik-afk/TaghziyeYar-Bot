@@ -1,4 +1,4 @@
-"""Simple TTS Command (Fast with ffmpeg)."""
+"""Simple TTS Command (No Menu, Fast with ffmpeg)."""
 
 import os
 import logging
@@ -15,16 +15,10 @@ async def cmd_tts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.effective_chat: return
 
     text = ""
-
-    # ۱. متن همراه دستور: /tts سلام خوبی؟
     if context.args:
         text = " ".join(context.args)
-
-    # ۲. ریپلای روی پیام متنی
     elif update.message.reply_to_message and update.message.reply_to_message.text:
         text = update.message.reply_to_message.text
-
-    # ۳. ریپلای روی ویس (اول تبدیل به متن، بعد می‌خونه)
     elif update.message.reply_to_message and update.message.reply_to_message.voice:
         status = await update.message.reply_text("🎧 در حال گوش دادن به ویس...")
         try:
@@ -71,15 +65,12 @@ async def cmd_tts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     output_ogg = output_mp3.replace(".mp3", ".ogg")
 
     try:
-        # تولید صدا با صدای پیش‌فرض (مرد فارسی)
         communicate = edge_tts.Communicate(text, "fa-IR-FaridNeural")
         await communicate.save(output_mp3)
 
-        # تبدیل سریع به OGG
         process = await asyncio.create_subprocess_shell(
             f'ffmpeg -y -i "{output_mp3}" -c:a libopus -b:a 64k "{output_ogg}"',
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         )
         await process.communicate()
 

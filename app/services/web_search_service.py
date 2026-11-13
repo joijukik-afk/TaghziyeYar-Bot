@@ -1,8 +1,7 @@
-"""Web search service using DuckDuckGo (ddgs) and Groq for summarization."""
+"""Advanced Web search service with real-time APIs."""
 
 import logging
 import asyncio
-from typing import Optional, Dict, Any, List
 import httpx
 from bs4 import BeautifulSoup
 from ddgs import DDGS
@@ -14,21 +13,20 @@ class WebSearchService:
     def __init__(self):
         self.ai_service = get_ai_service()
 
-    async def _get_live_dollar_price(self) -> str:
-        """دریافت قیمت لحظه‌ای دلار از API نوبیتکس (تتر به تومان)"""
+    async def _get_live_prices(self) -> str:
+        prices = []
         try:
-            async with httpx.AsyncClient() as client:
-                # API نوبیتکس برای قیمت لحظه‌ای تتر (دلار)
-                resp = await client.get("https://api.nobitex.ir/v2/orderbook/USDTIRT", timeout=5.0)
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                # نوبیتکس برای قیمت تتر (دلار آزاد)
+                resp = await client.get("https://api.nobitex.ir/v2/orderbook/USDTIRT")
                 if resp.status_code == 200:
                     data = resp.json()
                     if data.get("status") == "ok":
-                        price_rial = float(data.get("lastTradePrice", 0))
-                        price_toman = int(price_rial / 10) # تبدیل ریال به تومان
-                        return f"قیمت لحظه‌ای دلار (تتر): <b>{price_toman:,} تومان</b>"
+                        toman = int(float(data.get("lastTradePrice", 0)) / 10)
+                        prices.append(f"دلار (تتر): {toman:,} تومان")
         except Exception as e:
             logger.warning(f"Live price API failed: {e}")
-        return ""
+        return "\n".join(prices)
 
     async def _extract_text_from_url(self, url: str) -> str:
         try:
@@ -42,77 +40,60 @@ class WebSearchService:
                 soup = BeautifulSoup(html_text, 'html.parser')
                 for tag in soup(['script', 'style', 'nav', 'footer', 'header', 'aside']):
                     tag.decompose()
-                main_content = soup.find('main') or soup.find('article') or soup.body
-                if not main_content: return ""
-                texts = [p.get_text(strip=True) for p in main_content.find_all(['p', 'li', 'h2', 'h3']) if len(p.get_text(strip=True)) > 20]
-                return "\n".join(texts)[:2000]
-
+                main = soup.find('main') or soup.find('article') or soup.body
+                if not main: return ""
+                texts = [p.get_text(strip=True) for p in main.find_all(['p', 'li', 'h2']) if len(p.get_text(strip=True)) > 30]
+                return "\n".join(texts)[:2500]
             return await asyncio.to_thread(parse_html, html)
         except Exception:
             return ""
 
-    async def search_text(self, query: str, max_results: int = 4) -> List[Dict[str, Any]]:
+    async def search_and_answer(self, query: str, user_id: int = 0) -> str:
+        # ۱. گرفتن قیمت لحظه‌ای در صورت نیاز
+        live_data = ""
+        if any(k in query for k in ["قیمت", "دلار", "طلا", "تتر", "بیت کوین"]):
+            live_data = await self._get_live_prices()
+
+        # ۲. جستجوی وب
         try:
-            return await asyncio.to_thread(lambda: list(DDGS().text(query, max_results=max_results)))
-        except Exception as e:
-            logger.warning(f"Text search error: {e}")
-            return []
+            results = await asyncio.to_thread(lambda: list(DDGS().text(query, max_results=4)))
+        except Exception:
+            results = []
 
-    async def search_images(self, query: str) -> List[str]:
-        """جستجوی عکس با متد مطمئن"""
-        try:
-            results = await asyncio.to_thread(lambda: list(DDGS().images(query, max_results=4)))
-            return [img.get("image") for img in results if img.get("image", "").startswith("http")]
-        except Exception as e:
-            logger.warning(f"Image search error: {e}")
-            return []
-
-    async def search_and_answer(self, query: str, user_id: int = 0) -> Dict[str, Any]:
-        # ۱. بررسی اینکه آیا کاربر قیمت دلار می‌خواهد یا نه
-        live_price_data = ""
-        if "دلار" in query and ("قیمت" in query or "چند" in query or "نرخ" in query):
-            live_price_data = await self._get_live_dollar_price()
-
-        # ۲. سرچ متنی
-        text_results = await self.search_text(query, max_results=3)
-        
-        extracted_content = ""
-        if text_results:
-            tasks = [self._extract_text_from_url(r.get("href")) for r in text_results[:2] if r.get("href")]
+        # ۳. خواندن متن سایت‌ها
+        extracted = ""
+        if results:
+            tasks = [self._extract_text_from_url(r.get("href")) for r in results[:2] if r.get("href")]
             texts = await asyncio.gather(*tasks)
-            extracted_content = "\n".join([t for t in texts if t])
+            extracted = "\n\n".join([t for t in texts if t])
 
-        # ۳. سرچ عکس
-        images = await self.search_images(query)
-
-        # ۴. ساخت Context (اطلاعات)
+        # ۴. آماده‌سازی اطلاعات
         context = ""
-        if live_price_data:
-            context += f"📌 اطلاعات لحظه‌ای از API:\n{live_price_data}\n\n"
-        if text_results:
-            context += "📌 نتایج وب:\n" + "\n".join([f"- {r.get('title')}: {r.get('body')}" for r in text_results])
-        if extracted_content:
-            context += f"\n\nمتن کامل:\n{extracted_content}"
+        if live_data:
+            context += f"📌 اطلاعات لحظه‌ای:\n{live_data}\n\n"
+        if results:
+            context += "📌 نتایج وب:\n"
+            for r in results:
+                context += f"- {r.get('title')}: {r.get('body')}\n"
+        if extracted:
+            context += f"\n📄 متن مقالات:\n{extracted}"
 
-        # ۵. پرامپت
-        search_system_prompt = (
-            "You are a smart search assistant. Answer the user's question accurately based on the context. "
-            "CRITICAL: If 'اطلاعات لحظه‌ای از API' is provided in the context, YOU MUST prioritize it and use that exact number. "
-            "If no live data is present and you use your internal knowledge, add a warning that it's an estimate. "
-            "Answer in Persian. Use HTML tags (<b>, <code>). Never use markdown."
+        if not context.strip():
+            context = "اطلاعاتی پیدا نشد. از دانش خودت استفاده کن."
+
+        # ۵. پاسخ نهایی
+        prompt = (
+            f"سوال کاربر: {query}\n\n"
+            f"اطلاعات جدید از وب:\n{context}\n\n"
+            f"🚨 قانون: اگر قیمت در متن بالا بود، دقیقاً همان را بگو. اگر اطلاعات وب ناقص بود، از دانش خودت استفاده کن و بگو شاید قدیمی باشد. "
+            f"پاسخ به فارسی روان و با تگ‌های HTML."
         )
 
-        prompt = f"سوال کاربر: {query}\n\nاطلاعات:\n{context}\n\nپاسخ:"
-
-        answer_tuple = await self.ai_service.ask(
-            user_message=prompt, user_name="جستجوگر", user_id=user_id, custom_system_prompt=search_system_prompt
+        answer, _ = await self.ai_service.ask(
+            user_message=prompt, user_name="جستجوگر", user_id=user_id,
+            custom_system_prompt="You are a smart assistant. Prioritize the provided context. Answer in Persian with HTML formatting."
         )
-        
-        return {
-            "text": answer_tuple[0] if isinstance(answer_tuple, tuple) else str(answer_tuple),
-            "images": images,
-            "sources": [r.get("href") for r in text_results[:2] if r.get("href")]
-        }
+        return answer
 
 _web_search_service = None
 def get_web_search_service() -> WebSearchService:

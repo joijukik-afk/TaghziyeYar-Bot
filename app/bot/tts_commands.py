@@ -18,7 +18,7 @@ def clean_text_for_tts(text: str) -> str:
         u"\U0001F600-\U0001F64F" u"\U0001F300-\U0001F5FF"
         u"\U0001F680-\U0001F6FF" u"\U0001F1E0-\U0001F1FF" "]+", flags=re.UNICODE)
     text = emoji_pattern.sub(r'', text)
-    text = text.replace("*", "").replace("#", "").replace("_", "").replace("~", "")
+    text = text.replace("*", "").replace("#", "").replace("_", "").replace("~", "").replace("`", "")
     return text.strip()
 
 async def cmd_tts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -89,8 +89,12 @@ async def cmd_tts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         await process.communicate()
 
-        with open(output_ogg, "rb") as voice:
-            await update.message.reply_voice(voice=voice)
+        if process.returncode == 0 and os.path.exists(output_ogg):
+            with open(output_ogg, "rb") as voice:
+                await update.message.reply_voice(voice=voice)
+        else:
+            with open(output_mp3, "rb") as audio:
+                await update.message.reply_audio(audio=audio, title="پاسخ صوتی", performer="تغذیه‌یار")
 
         await status_msg.delete()
 

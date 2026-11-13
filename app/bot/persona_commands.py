@@ -1,8 +1,9 @@
-"""AI Persona handler with more personalities."""
+"""AI Persona handler with DB Save."""
 
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
+from app.database.state_repository import save_user_state
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +34,7 @@ async def cmd_persona(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     current = context.user_data.get("persona_name", "👤 تغذیه‌یار (عادی)")
     await update.message.reply_text(
-        f"🎭 **تغییر شخصیت ربات**\n\nشخصیت فعلی من: **{current}**\n\nکدوم شخصیت رو می‌خوای؟", 
+        f"🎭 **تغییر شخصیت**\n\nشخصیت فعلی: **{current}**\n\nکدوم رو می‌خوای؟", 
         reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown"
     )
 
@@ -49,11 +50,15 @@ async def handle_persona_callback(update: Update, context: ContextTypes.DEFAULT_
     persona = PERSONAS.get(persona_key)
     if not persona: return
     
+    context.user_data["persona_key"] = persona_key
     context.user_data["persona_prompt"] = persona["prompt"]
     context.user_data["persona_name"] = persona["name"]
     context.user_data["chat_history"] = [] 
 
+    # 👇 سیو در دیتابیس
+    await save_user_state(query.from_user.id, persona_key, [])
+
     await query.edit_message_text(
-        f"✅ شخصیت با موفقیت به **{persona['name']}** تغییر کرد!\n\nحالا باهاش چت کن (دوباره /persona رو بزن تا عوضش کنی).",
+        f"✅ شخصیت به **{persona['name']}** تغییر کرد!\n\n(توی دیتابیس هم ذخیره شد).",
         parse_mode="Markdown"
     )

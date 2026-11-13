@@ -44,7 +44,8 @@ from app.config import get_settings
 from app.database import repository as repo
 from app.database.session import create_all, dispose_engine, init_engine
 from app.database.group_models import GroupMember
-from app.services.ai_service import get_ai_service
+# 👇 ایمپورت پرامپت ویس (این خط قبلاً جا افتاده بود و باعث خرابی ویس میشد)
+from app.services.ai_service import get_ai_service, VOICE_SYSTEM_PROMPT 
 from app.services.auto_content import broadcast_auto_content, post_auto_content
 from app.services.card_generator import generate_ai_health_card
 from app.services.image_generator import generate_group_cover
@@ -192,14 +193,11 @@ def is_for_me(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     
     text_lower = (update.message.text or "").lower()
     
-    # چک کردن منشن با @
     if f"@{context.bot.username or ''}".lower() in text_lower: return True
     
-    # چک کردن اسم ربات (حساس به فاصله و علائم)
     bot_names = ["تغذیه‌یار", "تغذیه یار", "taghziyeyar", "taghziye yar", "تغذیهیار"]
     if any(name in text_lower for name in bot_names): return True
     
-    # چک کردن ریپلای
     replied = update.message.reply_to_message
     return replied and replied.from_user and replied.from_user.id == context.bot.id
 
@@ -211,18 +209,11 @@ def clean_mention(text: str, bot_username: str) -> str:
     return text.strip()
 
 def remove_leading_greeting(text: str) -> str:
-    """حذف کلمه سلام از ابتدای پاسخ هوش مصنوعی"""
     if not text: return text
-    
-    # استفاده از Regex برای حذف کلمات احوال‌پرسی در ابتدای جمله
     pattern = r'^(سلام|درود|hello|hi)[\s!،.,?؟]*'
     cleaned = re.sub(pattern, '', text.strip(), flags=re.IGNORECASE).strip()
-    
-    # اگر بعد از حذف سلام، متن خالی شد (یعنی کل جواب فقط سلام بود)
     if not cleaned:
         return "چطور می‌تونم کمکت کنم؟" 
-    
-    # اول کلمه رو بزرگ کن
     return cleaned[0].upper() + cleaned[1:]
 
 def main_menu_keyboard() -> InlineKeyboardMarkup:
@@ -427,7 +418,6 @@ async def _send_reminder(context: ContextTypes.DEFAULT_TYPE) -> None:
     await context.bot.send_message(chat_id=job.chat_id, text=job.data["text"])
 
 async def cmd_remind(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """دستور /remind برای یادآوری (مثال: /remind 10m آب بخورم)"""
     if not update.message: return
     args = context.args
     if len(args) < 2:
@@ -436,7 +426,6 @@ async def cmd_remind(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     time_str = args[0]
     text = " ".join(args[1:])
     
-    # پارس کردن زمان
     match = re.match(r"(\d+)([smh])", time_str.lower())
     if not match:
         return await update.message.reply_text("⚠️ فرمت زمان اشتباه است. از `s` (ثانیه)، `m` (دقیقه) یا `h` (ساعت) استفاده کن.", parse_mode="Markdown")
@@ -448,13 +437,9 @@ async def cmd_remind(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if unit == "m": seconds = amount * 60
     elif unit == "h": seconds = amount * 3600
     
-    # زمان‌بندی با JobQueue
     context.job_queue.run_once(
-        _send_reminder,
-        when=seconds,
-        chat_id=update.effective_chat.id,
-        name=f"remind_{update.effective_user.id}",
-        data={"text": f"⏰ **یادآوری:**\n{text}"}
+        _send_reminder, when=seconds, chat_id=update.effective_chat.id,
+        name=f"remind_{update.effective_user.id}", data={"text": f"⏰ **یادآوری:**\n{text}"}
     )
     
     await update.message.reply_text(f"✅ ثبت شد! بعد از {amount}{unit} بهت یادآوری می‌کنم.")
@@ -473,7 +458,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     
     user = update.effective_user
     
-    # 👇 تشخیص اینکه آیا کاربر خودش توی این پیام سلام کرده یا نه
     greetings = ["سلام", "درود", "hi", "hello", "سلم", "سلام خوبی", "سلام خسته نباشی", "سلام چطوری", "سلام علیکم"]
     user_greeted = original_text.strip().lower() in greetings
     
@@ -503,7 +487,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             reply_context = "[کاربر روی یک پیام ریپلای کرده است] "
 
     text_lower = original_text.lower()
-    voice_triggers = ["ویس", "صوتی", "صدا", "بخون", "ضبط کن", "بگو با صدا"]
+    voice_triggers = ["ویس", "صوتی", "صدا", "بخون", "ضبط کن", "بگو با صدا", "بگو با ویس"]
     is_voice_request = any(w in text_lower for w in voice_triggers)
     
     voice_type = "male"
@@ -512,9 +496,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     clean_text = original_text
     if is_voice_request:
-        for w in ["با صدای زن", "با صدای مرد", "با صدای", "با ویس", "ویس بفرست", "صوتی بگو", "صدا بگو"]:
+        for w in ["با صدای زن", "با صدای مرد", "با صدای", "با ویس", "ویس بفرست", "ویس بده", "صوتی بگو", "صدا بگو", "بگو با صدا", "بگو با ویس"]:
             clean_text = clean_text.replace(w, "")
-        clean_text = clean_text.strip() or original_text
+        clean_text = clean_text.strip()
+        if not clean_text: clean_text = original_text
 
     profile_summary = ""
     if user and not is_group(update):
@@ -534,30 +519,34 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     chat_history = context.user_data.get("chat_history", [])
     final_input_to_ai = reply_context + clean_text
 
-    custom_prompt = context.user_data.get("persona_prompt", None)
-    ai = get_ai_service()
-    
+    # 👇 مدیریت هماهنگ شخصیت و صدا
+    persona_prompt = context.user_data.get("persona_prompt", None)
     if is_voice_request:
-        custom_prompt = f"{custom_prompt}\n\n{VOICE_SYSTEM_PROMPT}" if custom_prompt else VOICE_SYSTEM_PROMPT
+        if persona_prompt:
+            # ادغام شخصیت با پرامپت ویس (تا لحن حفظ بشه ولی تمیز باشه)
+            final_prompt = f"You are acting as: {persona_prompt}. Answer in that persona. CRITICAL: Your answer will be converted to speech, so use ONLY natural Persian text, NO emojis, NO English, NO markdown. Keep it short."
+        else:
+            final_prompt = VOICE_SYSTEM_PROMPT
+    else:
+        final_prompt = persona_prompt
 
+    ai = get_ai_service()
     reply, status = await ai.ask(
         user_message=final_input_to_ai, 
         user_name=(user.first_name or "") if user else "", 
         user_profile_summary=profile_summary, 
         user_id=user.id if user else 0,
-        custom_system_prompt=custom_prompt,
+        custom_system_prompt=final_prompt, # 👈 ارسال پرامپت نهایی
         chat_history=chat_history 
     )
     
-    # 👇 اگر کاربر خودش سلام نکرده بود، «سلام» رو از اول جواب AI حذف کن
     if reply and not user_greeted:
         reply = remove_leading_greeting(reply)
     
     chat_history.append({"role": "user", "content": clean_text})
     chat_history.append({"role": "assistant", "content": reply})
     
-    if len(chat_history) > 10:
-        chat_history = chat_history[-10:]
+    if len(chat_history) > 10: chat_history = chat_history[-10:]
     context.user_data["chat_history"] = chat_history
 
     if is_voice_request and reply:

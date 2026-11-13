@@ -390,7 +390,7 @@ async def cmd_shopping(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def cmd_food(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None: await ensure_user_and_group(update); await mcmd.cmd_food(update, context)
 
 # ---------------------------------------------------------------------------
-#  Text -> AI (Smart Voice Detection)
+#  Text -> AI (Smart Voice Detection - Separated)
 # ---------------------------------------------------------------------------
 @rate_limited
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -461,10 +461,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         custom_system_prompt=custom_prompt 
     )
     
-    await _send_html_safe(bot=context.bot, chat_id=update.effective_chat.id, text=reply or "پاسخی دریافت نشد.", reply_to=update.message.message_id)
-    
+    # 👇 اگر درخواست صدا بود، فقط ویس می‌فرستیم. وگرنه فقط متن.
     if is_voice_request and reply:
         await voice_cmd.generate_and_send_voice(context.bot, update.effective_chat.id, reply, voice_type)
+    else:
+        await _send_html_safe(bot=context.bot, chat_id=update.effective_chat.id, text=reply or "پاسخی دریافت نشد.", reply_to=update.message.message_id)
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query

@@ -34,7 +34,7 @@ from app.bot import config_commands as conf_cmd
 from app.bot import tts_commands as tts_cmd
 from app.bot import translate_commands as trans_cmd
 from app.bot import search_commands as search_cmd
-from app.bot import voice_chat_commands as voice_cmd
+from app.bot import voice_chat_commands as voice_cmd # 👈 ایمپورت شد
 from app.bot import image_commands as img_cmd
 from app.bot import persona_commands as persona_cmd
 from app.bot import vision_commands as vision_cmd 
@@ -199,7 +199,7 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🎭 تغییر شخصیت", callback_data="menu_persona"), InlineKeyboardButton("👁️ تحلیل عکس", callback_data="menu_vision")],
         [InlineKeyboardButton("🎨 تصویرسازی AI", callback_data="menu_imagine"), InlineKeyboardButton("🔍 جستجوی هوشمند", callback_data="menu_search")],
-        [InlineKeyboardButton("🌐 ترجمه", callback_data="menu_translate"), InlineKeyboardButton("🎙️ چت صوتی", callback_data="menu_voice")],
+        [InlineKeyboardButton("🌐 ترجمه", callback_data="menu_translate"), InlineKeyboardButton("🔊 تبدیل متن به صدا", callback_data="menu_tts")],
         [InlineKeyboardButton("🎧 موسیقی COMA", callback_data="menu_koma"), InlineKeyboardButton("🎵 دانلود آهنگ", callback_data="menu_music")],
         [InlineKeyboardButton("🎮 کوییز زنده", callback_data="menu_quiz"), InlineKeyboardButton("🏆 جدول قهرمانان", callback_data="menu_lb")],
         [InlineKeyboardButton("🍽 برنامه غذا", callback_data="menu_plan"), InlineKeyboardButton("📅 برنامه امروز", callback_data="menu_today")],
@@ -461,6 +461,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             "<code>/ocr</code> - استخراج متن از عکس\n"
             "<code>/food</code> - تحلیل کالری غذا"
         ), parse_mode="HTML"); return
+    if data == "menu_tts":
+        await query.edit_message_text(with_signature(
+            "🔊 <b>تبدیل متن به صدا (TTS)</b>\n\n"
+            "روش‌های استفاده:\n"
+            "<code>/tts سلام خوبی؟</code>\n"
+            "یا روی یک متن ریپلای کنید و بنویسید <code>/tts</code>"
+        ), parse_mode="HTML"); return
     
     if data == "gq_next" and update.effective_chat: 
         await gquiz.send_quiz_from_callback(context=context, chat_id=update.effective_chat.id, chat_title=update.effective_chat.title or ""); return
@@ -475,8 +482,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await query.edit_message_text(with_signature("🔍 <b>جستجوی هوشمند</b>\n\nمثال:\n<code>/search قیمت بیت کوین</code>"), parse_mode="HTML"); return
     if data == "menu_translate":
         await query.edit_message_text(with_signature("🌐 <b>ترجمه هوشمند</b>\n\nمثال:\n<code>/translate en سلام</code>"), parse_mode="HTML"); return
-    if data == "menu_voice":
-        await query.edit_message_text(with_signature("🎙️ <b>چت صوتی</b>\n\nیک ویس بفرست یا <code>/voice</code> بزن."), parse_mode="HTML"); return
     if data == "menu_koma":
         await query.edit_message_text(with_signature("🎧 <b>COMA MUSIC</b>\n\nدستور: <code>/koma</code>"), parse_mode="HTML"); return
     if data == "menu_music":
@@ -568,7 +573,7 @@ async def cmd_advertise(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "با ربات <b>تغذیه‌یار</b>، یک کارت دیجیتال اختصاصی دریافت کنید! 🪪\n\n"
         "🎨 <b>و همچنین:</b>\n"
         "👁️ تحلیل عکس با AI | 🔍 جستجوی هوشمند | 🌐 ترجمه\n"
-        "🎭 تغییر شخصیت | 🎙️ چت صوتی | 🎧 موسیقی\n\n"
+        "🎭 تغییر شخصیت | 🔊 تبدیل متن به صدا | 🎧 موسیقی\n\n"
         "👇 همین حالا کلیک کنید:"
     )
     keyboard = [[InlineKeyboardButton("🪪 دریافت کارت سلامت", url=f"https://t.me/{context.bot.username}?start=mycard")]]
@@ -725,7 +730,7 @@ async def post_init(application: Application) -> None:
             "🎭 تغییر شخصیت AI\n"
             "🎨 تولید عکس با AI\n"
             "🔍 جستجوی هوشمند\n"
-            "🌐 ترجمه و چت صوتی\n"
+            "🌐 ترجمه\n"
             "🎧 کشف موسیقی COMA\n"
             "📊 محاسبات بدنی و برنامه غذایی\n\n"
             "🚀 همه چیز در یک ربات!"
@@ -767,7 +772,6 @@ def build_application() -> Application:
     
     # 👇 ابزارهای هوشمند
     app.add_handler(CommandHandler("tts", tts_cmd.cmd_tts))
-    app.add_handler(CallbackQueryHandler(tts_cmd.handle_tts_voice_selection, pattern=r"^tts_voice_"))
     app.add_handler(CommandHandler("persona", persona_cmd.cmd_persona))
     app.add_handler(CallbackQueryHandler(persona_cmd.handle_persona_callback, pattern=r"^persona_"))
     
@@ -781,7 +785,6 @@ def build_application() -> Application:
     app.add_handler(CallbackQueryHandler(conf_cmd.handle_config_callback, pattern=r"^(copy_cfg_|refresh_cfg)"))
     app.add_handler(CommandHandler("translate", trans_cmd.cmd_translate)) 
     app.add_handler(CommandHandler("search", search_cmd.cmd_search))
-    app.add_handler(CommandHandler("voice", voice_cmd.cmd_voice))
     
     app.add_handler(CommandHandler("bmi", cmd_bmi)); app.add_handler(CommandHandler("calories", cmd_calories)); app.add_handler(CommandHandler("weight", cmd_weight))
     app.add_handler(CommandHandler("progress", cmd_progress)); app.add_handler(CommandHandler("macros", cmd_macros)); app.add_handler(CommandHandler("protein", cmd_protein))
@@ -814,7 +817,9 @@ def build_application() -> Application:
     
     app.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.ALL, gmanager.on_group_message), group=1)
     
+    # 👇 هندلر ویس‌های مستقیم (همون که می‌خواستی خودکار جواب بده)
     app.add_handler(MessageHandler(filters.VOICE, voice_cmd.handle_voice_message))
+    
     app.add_handler(MessageHandler(filters.PHOTO & filters.ChatType.PRIVATE, vision_cmd.handle_photo_message))
     
     app.add_handler(CallbackQueryHandler(handle_callback))

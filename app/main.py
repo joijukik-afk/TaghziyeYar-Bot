@@ -7,6 +7,7 @@ import os
 import re
 import time
 import threading
+import datetime
 from functools import wraps
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -188,12 +189,41 @@ def is_group(update: Update) -> bool:
 def is_for_me(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     if not is_group(update): return True
     if update.message is None: return False
-    if f"@{context.bot.username or ''}" in (update.message.text or ""): return True
+    
+    text_lower = (update.message.text or "").lower()
+    
+    # چک کردن منشن با @
+    if f"@{context.bot.username or ''}".lower() in text_lower: return True
+    
+    # چک کردن اسم ربات (حساس به فاصله و علائم)
+    bot_names = ["تغذیه‌یار", "تغذیه یار", "taghziyeyar", "taghziye yar", "تغذیهیار"]
+    if any(name in text_lower for name in bot_names): return True
+    
+    # چک کردن ریپلای
     replied = update.message.reply_to_message
     return replied and replied.from_user and replied.from_user.id == context.bot.id
 
 def clean_mention(text: str, bot_username: str) -> str: 
-    return text.replace(f"@{bot_username}", "").strip()
+    text = text.replace(f"@{bot_username}", "").strip()
+    bot_names = ["تغذیه‌یار", "تغذیه یار", "taghziyeyar", "taghziye yar", "تغذیهیار"]
+    for name in bot_names:
+        text = text.replace(name, "")
+    return text.strip()
+
+def remove_leading_greeting(text: str) -> str:
+    """حذف کلمه سلام از ابتدای پاسخ هوش مصنوعی"""
+    if not text: return text
+    
+    # استفاده از Regex برای حذف کلمات احوال‌پرسی در ابتدای جمله
+    pattern = r'^(سلام|درود|hello|hi)[\s!،.,?؟]*'
+    cleaned = re.sub(pattern, '', text.strip(), flags=re.IGNORECASE).strip()
+    
+    # اگر بعد از حذف سلام، متن خالی شد (یعنی کل جواب فقط سلام بود)
+    if not cleaned:
+        return "چطور می‌تونم کمکت کنم؟" 
+    
+    # اول کلمه رو بزرگ کن
+    return cleaned[0].upper() + cleaned[1:]
 
 def main_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
@@ -390,7 +420,47 @@ async def cmd_shopping(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def cmd_food(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None: await ensure_user_and_group(update); await mcmd.cmd_food(update, context)
 
 # ---------------------------------------------------------------------------
-#  Text -> AI (Smart Voice Detection - Separated)
+#  NEW: Smart Reminder (Jarvis Mode)
+# ---------------------------------------------------------------------------
+async def _send_reminder(context: ContextTypes.DEFAULT_TYPE) -> None:
+    job = context.job
+    await context.bot.send_message(chat_id=job.chat_id, text=job.data["text"])
+
+async def cmd_remind(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """دستور /remind برای یادآوری (مثال: /remind 10m آب بخورم)"""
+    if not update.message: return
+    args = context.args
+    if len(args) < 2:
+        return await update.message.reply_text("⚠️ فرمت صحیح:\n`/remind [زمان] [متن]`\nمثال: `/remind 10m آب بخورم`\nزمان‌ها: `10s` (ثانیه)، `10m` (دقیقه)، `10h` (ساعت)", parse_mode="Markdown")
+    
+    time_str = args[0]
+    text = " ".join(args[1:])
+    
+    # پارس کردن زمان
+    match = re.match(r"(\d+)([smh])", time_str.lower())
+    if not match:
+        return await update.message.reply_text("⚠️ فرمت زمان اشتباه است. از `s` (ثانیه)، `m` (دقیقه) یا `h` (ساعت) استفاده کن.", parse_mode="Markdown")
+    
+    amount = int(match.group(1))
+    unit = match.group(2)
+    
+    seconds = amount
+    if unit == "m": seconds = amount * 60
+    elif unit == "h": seconds = amount * 3600
+    
+    # زمان‌بندی با JobQueue
+    context.job_queue.run_once(
+        _send_reminder,
+        when=seconds,
+        chat_id=update.effective_chat.id,
+        name=f"remind_{update.effective_user.id}",
+        data={"text": f"⏰ **یادآوری:**\n{text}"}
+    )
+    
+    await update.message.reply_text(f"✅ ثبت شد! بعد از {amount}{unit} بهت یادآوری می‌کنم.")
+
+# ---------------------------------------------------------------------------
+#  Text -> AI (Smart Memory, Context & Voice)
 # ---------------------------------------------------------------------------
 @rate_limited
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -401,16 +471,22 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     original_text = clean_mention(update.message.text, context.bot.username or "")
     if not original_text: return
     
-    greetings = ["سلام", "درود", "hi", "hello", "سلم", "سلام خوبی", "سلام خسته نباشی"]
-    if original_text.strip().lower() in greetings:
+    user = update.effective_user
+    
+    # 👇 تشخیص اینکه آیا کاربر خودش توی این پیام سلام کرده یا نه
+    greetings = ["سلام", "درود", "hi", "hello", "سلم", "سلام خوبی", "سلام خسته نباشی", "سلام چطوری", "سلام علیکم"]
+    user_greeted = original_text.strip().lower() in greetings
+    
+    current_time = time.time()
+    last_interaction = context.user_data.get("last_interaction", 0)
+    
+    if user_greeted and (current_time - last_interaction > 600):
         import random
-        replies = [
-            "سلام! 👋 چطور می‌تونم امروز بهت کمک کنم؟",
-            "سلام جان! 🌱 چه خبر؟ چه کمکی از دست من برمیاد؟",
-            "درود بر تو! 🤖 امروز چی می‌خوای یاد بگیری؟",
-            "سلام! 😊 آماده‌ام برای هر کمکی."
-        ]
+        replies = ["سلام! 👋 چطور می‌تونم امروز بهت کمک کنم؟", "سلام جان! 🌱 چه خبر؟", "درود! 🤖 امروز چی می‌خوای یاد بگیری؟"]
+        context.user_data["last_interaction"] = current_time
         return await update.message.reply_text(with_signature(random.choice(replies)))
+
+    context.user_data["last_interaction"] = current_time
 
     if is_group(update):
         if context.user_data.get("awaiting_weight") or context.user_data.get("setup_step", "IDLE") != "IDLE":
@@ -418,16 +494,21 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     else:
         if await wizard.handle_setup_input(update, context) or await pcmd.handle_weight_input(update, context): return
 
-    # 👇 تشخیص هوشمند کلمات کلیدی صدا
+    reply_context = ""
+    if update.message.reply_to_message:
+        replied_user = update.message.reply_to_message.from_user
+        if replied_user:
+            reply_context = f"[کاربر در حال ریپلای کردن به {replied_user.first_name} است] "
+        else:
+            reply_context = "[کاربر روی یک پیام ریپلای کرده است] "
+
     text_lower = original_text.lower()
     voice_triggers = ["ویس", "صوتی", "صدا", "بخون", "ضبط کن", "بگو با صدا"]
     is_voice_request = any(w in text_lower for w in voice_triggers)
     
     voice_type = "male"
-    if any(w in text_lower for w in ["زن", "خانم", "دختر", "دیلارا"]):
-        voice_type = "female"
-    elif any(w in text_lower for w in ["مرد", "اقا", "آقا", "پسر", "فرید"]):
-        voice_type = "male"
+    if any(w in text_lower for w in ["زن", "خانم", "دختر", "دیلارا"]): voice_type = "female"
+    elif any(w in text_lower for w in ["مرد", "اقا", "آقا", "پسر", "فرید"]): voice_type = "male"
 
     clean_text = original_text
     if is_voice_request:
@@ -435,7 +516,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             clean_text = clean_text.replace(w, "")
         clean_text = clean_text.strip() or original_text
 
-    user = update.effective_user; profile_summary = ""
+    profile_summary = ""
     if user and not is_group(update):
         db_user = await repo.get_user_by_telegram_id(user.id)
         if db_user:
@@ -450,18 +531,35 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     try: await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
     except: pass
     
+    chat_history = context.user_data.get("chat_history", [])
+    final_input_to_ai = reply_context + clean_text
+
     custom_prompt = context.user_data.get("persona_prompt", None)
-    
     ai = get_ai_service()
+    
+    if is_voice_request:
+        custom_prompt = f"{custom_prompt}\n\n{VOICE_SYSTEM_PROMPT}" if custom_prompt else VOICE_SYSTEM_PROMPT
+
     reply, status = await ai.ask(
-        user_message=clean_text, 
+        user_message=final_input_to_ai, 
         user_name=(user.first_name or "") if user else "", 
         user_profile_summary=profile_summary, 
         user_id=user.id if user else 0,
-        custom_system_prompt=custom_prompt 
+        custom_system_prompt=custom_prompt,
+        chat_history=chat_history 
     )
     
-    # 👇 اگر درخواست صدا بود، فقط ویس می‌فرستیم. وگرنه فقط متن.
+    # 👇 اگر کاربر خودش سلام نکرده بود، «سلام» رو از اول جواب AI حذف کن
+    if reply and not user_greeted:
+        reply = remove_leading_greeting(reply)
+    
+    chat_history.append({"role": "user", "content": clean_text})
+    chat_history.append({"role": "assistant", "content": reply})
+    
+    if len(chat_history) > 10:
+        chat_history = chat_history[-10:]
+    context.user_data["chat_history"] = chat_history
+
     if is_voice_request and reply:
         await voice_cmd.generate_and_send_voice(context.bot, update.effective_chat.id, reply, voice_type)
     else:
@@ -754,6 +852,7 @@ async def post_init(application: Application) -> None:
             "🔍 جستجوی هوشمند\n"
             "🌐 ترجمه\n"
             "🎧 کشف موسیقی COMA\n"
+            "⏰ یادآور هوشمند\n"
             "📊 محاسبات بدنی و برنامه غذایی\n\n"
             "🚀 همه چیز در یک ربات!"
         )
@@ -792,10 +891,13 @@ def build_application() -> Application:
     
     app.add_handler(CommandHandler("tagall", cmd_tagall))
     
-    # 👇 ابزارهای هوشمند صوتی
+    # ابزارهای هوشمند صوتی
     app.add_handler(CommandHandler("tts", tts_cmd.cmd_tts))
     app.add_handler(CommandHandler("voice", voice_cmd.cmd_voice))
     app.add_handler(MessageHandler(filters.VOICE, voice_cmd.handle_voice_message))
+    
+    # 👇 دستور یادآور هوشمند
+    app.add_handler(CommandHandler("remind", cmd_remind))
     
     app.add_handler(CommandHandler("persona", persona_cmd.cmd_persona))
     app.add_handler(CallbackQueryHandler(persona_cmd.handle_persona_callback, pattern=r"^persona_"))

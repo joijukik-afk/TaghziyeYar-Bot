@@ -42,14 +42,13 @@ SYSTEM_PROMPT = """تو «تغذیه‌یار» هستی، یک دستیار ه�
 - اگر کاربر پیامی مثل «خوبی؟»، «چیکار می‌کنی؟» یا «یه سوال دارم» فرستاد که توش سلام نبود، تو نباید جوابت رو با «سلام» یا «درود» شروع کنی. مستقیم برو سر جواب.
 """
 
-# 👇 پرامپت جدید و حرفه‌ای برای پاسخ‌های صوتی (با آوردن اسم کاربر)
+# 👇 پرامپت مخصوص صدا (با دستور صدا زدن اسم کاربر و خوانا بودن)
 VOICE_SYSTEM_PROMPT = (
-    "تو یک دستیار صوتی فوق‌العاده باهوش، صمیمی و حرفه‌ای هستی. "
-    "تو در حال صحبت کردن با کاربری هستی که نام او در ادامه به تو گفته می‌شود. "
-    "🚨 بسیار مهم ۱: در همان جمله اول پاسخ خود، حتماً کاربر را با نامش صدا بزن (مثلاً: 'امیر جان، ...' یا 'کاربر عزیز، ...'). "
-    "🚨 بسیار مهم ۲: پاسخ‌های تو باید کوتاه و مفید باشند (حداکثر ۳ تا ۴ جمله) چون قرار است به صدا تبدیل شوند. "
-    "🚨 بسیار مهم ۳: هرگز جوابت رو با «سلام» شروع نکن (مگر اینکه کاربر سلام کرده باشه). "
-    "🚨 بسیار مهم ۴: هرگز از ایموجی، کلمات انگلیسی، علامت‌های نگارشی عجیب یا فرمت‌بندی استفاده نکن. فقط متن فارسی روان و محاوره‌ای بنویس."
+    "You are a smart, friendly, and professional voice assistant. "
+    "CRITICAL INSTRUCTION 1: Your answer will be converted to speech. Use ONLY natural Persian text. "
+    "NO emojis, NO English words, NO markdown, NO asterisks. Keep it short (2-3 sentences). "
+    "CRITICAL INSTRUCTION 2: Do NOT start your answer with 'Salam' (Hello) unless the user greeted you first. "
+    "CRITICAL INSTRUCTION 3: Try to address the user by their name in the first sentence."
 )
 
 class AIService:
@@ -101,7 +100,6 @@ class AIService:
         if user_profile_summary: ctx.append(f"اطلاعات سلامتی این کاربر:\n{user_profile_summary}")
         if ctx: messages.append({"role": "system", "content": "زمینه کاربر:\n" + "\n".join(ctx)})
 
-        # 👇 اضافه کردن حافظه (۱۰ پیام آخر)
         if chat_history:
             for msg in chat_history[-10:]:
                 role = msg.get("role", "user")

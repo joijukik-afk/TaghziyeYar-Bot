@@ -19,7 +19,7 @@ VOICE_SYSTEM_PROMPT = (
 )
 
 async def generate_and_send_voice(bot, chat_id: int, text: str, voice_type: str = "male"):
-    """تبدیل متن به صدا و ارسال به تلگرام (قابل استفاده در هر جای ربات)"""
+    """تبدیل متن به صدا و ارسال به تلگرام (بدون کپشن و شلوغی)"""
     voice_id = "fa-IR-FaridNeural" if voice_type == "male" else "fa-IR-DilaraNeural"
     
     output_mp3 = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3").name
@@ -35,11 +35,11 @@ async def generate_and_send_voice(bot, chat_id: int, text: str, voice_type: str 
         )
         await process.communicate()
 
+        # 👈 ارسال بدون کپشن (فقط ویس خالی)
         with open(output_ogg, "rb") as voice:
             await bot.send_voice(
                 chat_id=chat_id,
-                voice=voice,
-                caption=f"🔊 **جواب صوتی:**"
+                voice=voice
             )
     except Exception as e:
         logger.error(f"Voice Generation Error: {e}")
@@ -86,12 +86,7 @@ async def _process_voice_and_reply(update: Update, context: ContextTypes.DEFAULT
         )
         ai_reply_text = ai_reply_tuple[0] if isinstance(ai_reply_tuple, tuple) else str(ai_reply_tuple)
 
-        # ارسال متن
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text=f"🤖 **جواب من:**\n{ai_reply_text}",
-            reply_to_message_id=update.message.message_id
-        )
+        # 👈 حذف شد: دیگه متن جداگانه فرستاده نمیشه، فقط ویس میره
         
         # ارسال ویس
         await generate_and_send_voice(context.bot, update.effective_chat.id, ai_reply_text, "male")

@@ -34,7 +34,7 @@ from app.bot import config_commands as conf_cmd
 from app.bot import tts_commands as tts_cmd
 from app.bot import translate_commands as trans_cmd
 from app.bot import search_commands as search_cmd
-from app.bot import voice_chat_commands as voice_cmd # 👈 ایمپورت شد
+from app.bot import voice_chat_commands as voice_cmd
 from app.bot import image_commands as img_cmd
 from app.bot import persona_commands as persona_cmd
 from app.bot import vision_commands as vision_cmd 
@@ -390,18 +390,19 @@ async def cmd_shopping(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def cmd_food(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None: await ensure_user_and_group(update); await mcmd.cmd_food(update, context)
 
 # ---------------------------------------------------------------------------
-#  Text -> AI
+#  Text -> AI (Smart Voice Detection)
 # ---------------------------------------------------------------------------
 @rate_limited
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.message.text: return
     await ensure_user_and_group(update)
     if not is_for_me(update, context): return
-    text = clean_mention(update.message.text, context.bot.username or "")
-    if not text: return
+    
+    original_text = clean_mention(update.message.text, context.bot.username or "")
+    if not original_text: return
     
     greetings = ["سلام", "درود", "hi", "hello", "سلم", "سلام خوبی", "سلام خسته نباشی"]
-    if text.strip().lower() in greetings:
+    if original_text.strip().lower() in greetings:
         import random
         replies = [
             "سلام! 👋 چطور می‌تونم امروز بهت کمک کنم؟",
@@ -416,6 +417,23 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             await update.message.reply_text("🛡️ ثبت اطلاعات در گروه ممنوع است.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔒 چت خصوصی", url=f"https://t.me/{context.bot.username}?start=private_setup")]])); return
     else:
         if await wizard.handle_setup_input(update, context) or await pcmd.handle_weight_input(update, context): return
+
+    # 👇 تشخیص هوشمند کلمات کلیدی صدا
+    text_lower = original_text.lower()
+    voice_triggers = ["ویس", "صوتی", "صدا", "بخون", "ضبط کن", "بگو با صدا"]
+    is_voice_request = any(w in text_lower for w in voice_triggers)
+    
+    voice_type = "male"
+    if any(w in text_lower for w in ["زن", "خانم", "دختر", "دیلارا"]):
+        voice_type = "female"
+    elif any(w in text_lower for w in ["مرد", "اقا", "آقا", "پسر", "فرید"]):
+        voice_type = "male"
+
+    clean_text = original_text
+    if is_voice_request:
+        for w in ["با صدای زن", "با صدای مرد", "با صدای", "با ویس", "ویس بفرست", "صوتی بگو", "صدا بگو"]:
+            clean_text = clean_text.replace(w, "")
+        clean_text = clean_text.strip() or original_text
 
     user = update.effective_user; profile_summary = ""
     if user and not is_group(update):
@@ -436,7 +454,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     
     ai = get_ai_service()
     reply, status = await ai.ask(
-        user_message=text, 
+        user_message=clean_text, 
         user_name=(user.first_name or "") if user else "", 
         user_profile_summary=profile_summary, 
         user_id=user.id if user else 0,
@@ -444,6 +462,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     )
     
     await _send_html_safe(bot=context.bot, chat_id=update.effective_chat.id, text=reply or "پاسخی دریافت نشد.", reply_to=update.message.message_id)
+    
+    if is_voice_request and reply:
+        await voice_cmd.generate_and_send_voice(context.bot, update.effective_chat.id, reply, voice_type)
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
@@ -770,8 +791,11 @@ def build_application() -> Application:
     
     app.add_handler(CommandHandler("tagall", cmd_tagall))
     
-    # 👇 ابزارهای هوشمند
+    # 👇 ابزارهای هوشمند صوتی
     app.add_handler(CommandHandler("tts", tts_cmd.cmd_tts))
+    app.add_handler(CommandHandler("voice", voice_cmd.cmd_voice))
+    app.add_handler(MessageHandler(filters.VOICE, voice_cmd.handle_voice_message))
+    
     app.add_handler(CommandHandler("persona", persona_cmd.cmd_persona))
     app.add_handler(CallbackQueryHandler(persona_cmd.handle_persona_callback, pattern=r"^persona_"))
     
@@ -816,9 +840,6 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("advertise", cmd_advertise))
     
     app.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.ALL, gmanager.on_group_message), group=1)
-    
-    # 👇 هندلر ویس‌های مستقیم (همون که می‌خواستی خودکار جواب بده)
-    app.add_handler(MessageHandler(filters.VOICE, voice_cmd.handle_voice_message))
     
     app.add_handler(MessageHandler(filters.PHOTO & filters.ChatType.PRIVATE, vision_cmd.handle_photo_message))
     

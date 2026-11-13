@@ -37,7 +37,8 @@ from app.bot import search_commands as search_cmd
 from app.bot import voice_chat_commands as voice_cmd
 from app.bot import image_commands as img_cmd
 from app.bot import persona_commands as persona_cmd
-from app.bot import vision_commands as vision_cmd # 👈 ایمپورت جدید
+from app.bot import vision_commands as vision_cmd 
+from app.bot import multi_voice_commands as mvoice_cmd # 👈 ایمپورت جدید
 from app.bot.content import get_fact, get_myth, get_tip
 from app.config import get_settings
 from app.database import repository as repo
@@ -399,6 +400,19 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if not is_for_me(update, context): return
     text = clean_mention(update.message.text, context.bot.username or "")
     if not text: return
+    
+    # فیلتر خوش‌آمدگویی فوری
+    greetings = ["سلام", "درود", "hi", "hello", "سلم", "سلام خوبی", "سلام خسته نباشی"]
+    if text.strip().lower() in greetings:
+        import random
+        replies = [
+            "سلام! 👋 چطور می‌تونم امروز بهت کمک کنم؟",
+            "سلام جان! 🌱 چه خبر؟ چه کمکی از دست من برمیاد؟",
+            "درود بر تو! 🤖 امروز چی می‌خوای یاد بگیری؟",
+            "سلام! 😊 آماده‌ام برای هر کمکی."
+        ]
+        return await update.message.reply_text(with_signature(random.choice(replies)))
+
     if is_group(update):
         if context.user_data.get("awaiting_weight") or context.user_data.get("setup_step", "IDLE") != "IDLE":
             await update.message.reply_text("🛡️ ثبت اطلاعات در گروه ممنوع است.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔒 چت خصوصی", url=f"https://t.me/{context.bot.username}?start=private_setup")]])); return
@@ -423,13 +437,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     custom_prompt = context.user_data.get("persona_prompt", None)
     
     ai = get_ai_service()
-    reply, _ = await ai.ask(
+    reply, status = await ai.ask(
         user_message=text, 
         user_name=(user.first_name or "") if user else "", 
         user_profile_summary=profile_summary, 
         user_id=user.id if user else 0,
         custom_system_prompt=custom_prompt 
     )
+    
     await _send_html_safe(bot=context.bot, chat_id=update.effective_chat.id, text=reply or "پاسخی دریافت نشد.", reply_to=update.message.message_id)
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -712,7 +727,7 @@ async def post_init(application: Application) -> None:
             "🎭 تغییر شخصیت AI\n"
             "🎨 تولید عکس با AI\n"
             "🔍 جستجوی هوشمند\n"
-            "🌐 ترجمه و چت صوتی\n"
+            "🌐 ترجمه و چت صوتی (چند صدایی)\n"
             "🎧 کشف موسیقی COMA\n"
             "📊 محاسبات بدنی و برنامه غذایی\n\n"
             "🚀 همه چیز در یک ربات!"
@@ -752,14 +767,16 @@ def build_application() -> Application:
     
     app.add_handler(CommandHandler("tagall", cmd_tagall))
     
-    # 👇 ابزارهای هوشمند (شخصیت، عکس، تصویرسازی، سرچ، ترجمه، ویس)
+    # 👇 ابزارهای هوشمند
+    app.add_handler(CommandHandler("say", mvoice_cmd.cmd_say)) # 👈 جدید
+    app.add_handler(CallbackQueryHandler(mvoice_cmd.handle_voice_selection, pattern=r"^voicegen_")) # 👈 جدید
     app.add_handler(CommandHandler("persona", persona_cmd.cmd_persona))
     app.add_handler(CallbackQueryHandler(persona_cmd.handle_persona_callback, pattern=r"^persona_"))
     
     app.add_handler(CommandHandler("vision", vision_cmd.cmd_vision))
     app.add_handler(CommandHandler("roast", vision_cmd.cmd_roast))
     app.add_handler(CommandHandler("ocr", vision_cmd.cmd_ocr))
-    app.add_handler(CommandHandler("food", vision_cmd.cmd_food))
+    app.add_handler(CommandHandler("food_vision", vision_cmd.cmd_food)) # تغییر نام دادم که با food اصلی تداخل نکنه
     
     app.add_handler(CommandHandler("imagine", img_cmd.cmd_imagine))
     app.add_handler(CommandHandler("getconfig", conf_cmd.cmd_getconfig))
@@ -801,8 +818,6 @@ def build_application() -> Application:
     app.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.ALL, gmanager.on_group_message), group=1)
     
     app.add_handler(MessageHandler(filters.VOICE, voice_cmd.handle_voice_message))
-    
-    # 👇 هندلر عکس‌های بدون دستور (باید آخر باشد تا با بقیه تداخل نکند)
     app.add_handler(MessageHandler(filters.PHOTO & filters.ChatType.PRIVATE, vision_cmd.handle_photo_message))
     
     app.add_handler(CallbackQueryHandler(handle_callback))

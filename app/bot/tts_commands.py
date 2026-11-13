@@ -74,11 +74,9 @@ async def cmd_tts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         await process.communicate()
 
+        # 👈 ارسال بدون کپشن
         with open(output_ogg, "rb") as voice:
-            await update.message.reply_voice(
-                voice=voice,
-                caption=f"🔊 {text[:100]}..."
-            )
+            await update.message.reply_voice(voice=voice)
 
         await status_msg.delete()
 

@@ -1,15 +1,25 @@
-"""Simple TTS Command (No Menu, Fast with ffmpeg)."""
+"""Simple TTS Command (No Menu, Fast with ffmpeg + Clean Text)."""
 
 import os
 import logging
 import tempfile
 import asyncio
+import re
 import edge_tts
 from telegram import Update
 from telegram.ext import ContextTypes
 from app.services.ai_service import get_ai_service
 
 logger = logging.getLogger(__name__)
+
+def clean_text_for_tts(text: str) -> str:
+    text = re.sub(r'<[^>]+>', '', text)
+    emoji_pattern = re.compile("["
+        u"\U0001F600-\U0001F64F" u"\U0001F300-\U0001F5FF"
+        u"\U0001F680-\U0001F6FF" u"\U0001F1E0-\U0001F1FF" "]+", flags=re.UNICODE)
+    text = emoji_pattern.sub(r'', text)
+    text = text.replace("*", "").replace("#", "").replace("_", "").replace("~", "")
+    return text.strip()
 
 async def cmd_tts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.effective_chat: return
@@ -65,7 +75,12 @@ async def cmd_tts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     output_ogg = output_mp3.replace(".mp3", ".ogg")
 
     try:
-        communicate = edge_tts.Communicate(text, "fa-IR-FaridNeural")
+        clean_text = clean_text_for_tts(text)
+        if not clean_text:
+            await status_msg.delete()
+            return
+
+        communicate = edge_tts.Communicate(clean_text, "fa-IR-FaridNeural")
         await communicate.save(output_mp3)
 
         process = await asyncio.create_subprocess_shell(
@@ -74,7 +89,6 @@ async def cmd_tts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         await process.communicate()
 
-        # 👈 ارسال بدون کپشن
         with open(output_ogg, "rb") as voice:
             await update.message.reply_voice(voice=voice)
 

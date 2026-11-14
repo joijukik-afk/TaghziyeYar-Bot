@@ -1,177 +1,227 @@
-"""Agent Search Service - Real-time APIs first, then Strict Web Search."""
+"""AI service - Advanced context handling, strict formatting, and Voice support."""
 
 import logging
-import asyncio
-import httpx
-import re
-import os
+import time
+from collections import defaultdict, deque
 from typing import Optional
-from collections import Counter
-from ddgs import DDGS
-from tavily import TavilyClient
+from groq import AsyncGroq
+from app.config import get_settings
 
 logger = logging.getLogger(__name__)
 
-class AgentSearchService:
+_RATE_WINDOW_SECONDS = 60
+_RATE_MAX_REQUESTS = 15
+_user_requests: dict[int, deque] = defaultdict(deque)
+
+# بهترین مدل‌های متنی و پردازش زبان طبیعی در Groq
+PREFERRED_MODELS = [
+    "llama-3.3-70b-versatile", 
+    "qwen/qwen3.8-27b", 
+    "openai/gpt-oss-20b",
+    "gemma2-9b-it"
+]
+
+def _check_rate_limit(user_id: int) -> tuple[bool, int]:
+    now = time.time()
+    q = _user_requests[user_id]
+    while q and now - q[0] > _RATE_WINDOW_SECONDS:
+        q.popleft()
+    if len(q) >= _RATE_MAX_REQUESTS:
+        wait = int(_RATE_WINDOW_SECONDS - (now - q[0])) + 1
+        return False, max(wait, 1)
+    q.append(now)
+    return True, 0
+
+# 👇 پرامپت بسیار قدرتمند برای جستجو و پاسخ‌دهی در همه موضوعات
+SYSTEM_PROMPT = """تو «تغذیه‌یار» هستی، یک دستیار هوشمند، حرفه‌ای، مودب و همه‌فن‌حریف.
+تخصص اصلی تو تغذیه و سلامت است، اما تو یک هوش مصنوعی جامع و مسلط به تمام موضوعات (علمی، فناوری، خبری، اقتصادی و...) هستی.
+
+🚨 قوانین حیاتی پردازش اطلاعات:
+1. **اطلاعات وب:** اگر در پیام کاربر بخشی به نام «اطلاعات جستجو» یا «اطلاعات وب» وجود دارد، یعنی سیستم ما همین الان از اینترنت اطلاعاتی جمع‌آوری کرده است. تو **باید** بر اساس آن اطلاعات پاسخ دقیق بدهی.
+2. **استخراج داده:** اگر در اطلاعات جستجو، عددی (مثل قیمت) یا کدی (مثل کد تخفیف) وجود دارد، حتماً آن را در پاسخ خود بگنجان.
+3. **پشتیبان:** اگر اطلاعات جستجو خالی بود یا مشکل داشت، از دانش داخلی خودت استفاده کن، اما به کاربر بگو که این اطلاعات ممکن است به‌روز نباشد.
+4. **ممنوعیت بهانه:** هرگز نگو "من دسترسی به اینترنت ندارم" یا "نمی‌توانم جستجو کنم". تو در حال حاضر اطلاعات را در اختیار داری یا داری از دانشت استفاده می‌کنی. اگر چیزی پیدا نشد، بگو "جستجو کردم اما نتیجه دقیقی پیدا نکردم".
+
+🎨 قوانین خروجی (بسیار مهم):
+- پاسخ‌ها باید کاملاً فارسی، روان و با تگ‌های HTML نوشته شوند.
+- تگ‌های مجاز: <b> (بولد)، <i> (ایتالیک)، <code> (کد یا عدد)، <blockquote> (نقل قول).
+- هرگز از مارک‌داون تلگرام (مثل ** یا ##) استفاده نکن.
+- پاسخ‌ها را با استفاده از بولت‌پوینت و خط جدید، خوانا و مرتب کن.
+
+🧠 لحن و شخصیت:
+- دوستانه، دقیق، علمی و انسانی.
+- فقط اگر کاربر توی پیام فعلی سلام کرد، تو هم با سلام جواب بده.
+"""
+
+# 👇 پرامپت مخصوص پاسخ‌های صوتی (بدون ایموجی و علامت‌های اضافی)
+VOICE_SYSTEM_PROMPT = (
+    "You are a smart and professional voice assistant. "
+    "CRITICAL: Only natural Persian text. NO emojis, NO English words, NO markdown, NO asterisks, NO hashtags. Keep it short (2-3 sentences max). "
+    "Do NOT start your answer with 'Salam' (Hello) unless the user greeted you first. "
+    "Make your answer sound like a human speaking naturally."
+)
+
+class AIService:
     def __init__(self):
-        self.tavily_key = os.environ.get("TAVILY_API_KEY", "")
-        if self.tavily_key:
-            try:
-                self.tavily = TavilyClient(api_key=self.tavily_key)
-            except Exception as e:
-                logger.error(f"Tavily init error: {e}")
-                self.tavily = None
-        else:
-            self.tavily = None
+        settings = get_settings()
+        self.api_key = getattr(settings, 'groq_api_key', '') or getattr(settings, 'deepseek_api_key', '')
+        self.requested_model = getattr(settings, 'groq_model', '') or getattr(settings, 'deepseek_model', '')
+        self.mock = settings.mock_mode or not self.api_key
+        self._client: Optional[AsyncGroq] = None
+        self._model_name: Optional[str] = None
 
-    def _extract_dollar_price(self, text: str) -> Optional[int]:
-        """استخراج قیمت دلار آزاد با فیلتر دقیق"""
-        patterns = [
-            r'([۰-۹]{3}[,،.][۰-۹]{3})',  # ۲۷۱,۳۶۰
-            r'([0-9]{3}[,،.][0-9]{3})',  # 271,360
-            r'([0-9]{6})',               # 271360
-            r'([۰-۹]{6})'                # ۲۷۱۳۶۰
-        ]
-        found_prices = []
-        for p in patterns:
-            found_prices.extend(re.findall(p, text))
-        
-        valid_prices = []
-        for price_str in found_prices:
-            clean_str = price_str.replace(",", "").replace("،", "").replace(".", "")
-            clean_str = clean_str.translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹", "0123456789"))
-            try:
-                p_val = int(clean_str)
-                # فیلتر قیمت منطقی دلار آزاد (۲۵۰ تا ۳۰۰ هزار تومان)
-                if 250000 < p_val < 300000:
-                    valid_prices.append(p_val)
-            except:
-                pass
-        
-        if valid_prices:
-            return Counter(valid_prices).most_common(1)[0][0]
-        return None
+    def _get_client(self) -> AsyncGroq:
+        if self._client is None: 
+            self._client = AsyncGroq(api_key=self.api_key)
+        return self._client
 
-    async def _get_dollar_price(self) -> str:
-        """گرفتن قیمت دلار آزاد از APIها و در صورت شکست، از Tavily"""
-        
-        # ۱. از API نوبیتکس (دقیق‌ترین)
+    async def _pick_model(self) -> str | None:
+        if self._model_name: return self._model_name
         try:
-            async with httpx.AsyncClient() as client:
-                res = await client.get("https://api.nobitex.ir/v2/orderbook/USDTIRT", timeout=5)
-                if res.status_code == 200:
-                    data = res.json()
-                    if data.get("status") == "ok":
-                        price = int(float(data.get("lastTradePrice", 0)) / 10)
-                        if price > 200000:
-                            return f"💰 <b>قیمت دلار (تتر):</b> {price:,} تومان\n📊 منبع: Nobitex (لحظه‌ای)"
-        except Exception:
-            pass
-
-        # ۲. از API والکس
-        try:
-            async with httpx.AsyncClient() as client:
-                res = await client.get("https://api.wallex.ir/v1/markets", timeout=5)
-                if res.status_code == 200:
-                    symbols = res.json().get("result", {}).get("symbols", {})
-                    if "USDTIRT" in symbols:
-                        price = int(float(symbols["USDTIRT"]["stats"]["lastPrice"]))
-                        if price > 200000:
-                            return f"💰 <b>قیمت دلار (تتر):</b> {price:,} تومان\n📊 منبع: Wallex (لحظه‌ای)"
-        except Exception:
-            pass
-
-        # ۳. از Tavily (فقط سایت‌های معتبر و لحظه‌ای)
-        try:
-            logger.info("Trying Tavily for dollar price...")
-            # جستجو فقط در سایت‌های معتبر
-            res = await asyncio.to_thread(
-                self.tavily.search, 
-                query="قیمت دلار آزاد امروز بازار تهران", 
-                search_depth="advanced", 
-                max_results=5,
-                include_domains=["tgju.org", "bonbast.com", "alanchand.com", "tejaratnews.com"]
-            )
-            results = res.get("results", [])
-            if results:
-                context = "\n\n".join([f"[{r.get('title', '')}]\n{r.get('content', '')}" for r in results])
-                price = self._extract_dollar_price(context)
-                if price:
-                    return f"💰 <b>قیمت دلار آزاد:</b> {price:,} تومان\n📊 منبع: جستجوی وب زنده (Tavily)"
+            client = self._get_client()
+            response = await client.models.list()
+            available = [m.id for m in response.data]
         except Exception as e:
-            logger.warning(f"Tavily price search failed: {e}")
+            logger.warning("Model list error: %s", e); available = []
 
-        return "⚠️ متأسفانه در حال حاضر امکان دریافت قیمت لحظه‌ای وجود ندارد. لطفاً از TGJU چک کنید."
-
-    async def _search_with_tavily(self, query: str) -> str:
-        if not self.tavily:
-            return ""
-        try:
-            res = await asyncio.to_thread(
-                self.tavily.search, query=query, search_depth="advanced", max_results=5
-            )
-            results = res.get("results", [])
-            if not results:
-                return ""
-            return "\n\n".join([f"[{r.get('title', '')}]\n{r.get('content', '')}" for r in results])
-        except Exception as e:
-            logger.warning(f"Tavily failed: {e}")
-            return ""
-
-    async def _search_with_ddgs(self, query: str) -> str:
-        try:
-            results = await asyncio.to_thread(lambda: list(DDGS().text(query, max_results=5)))
-            if not results:
-                return ""
-            return "\n\n".join([f"[{r.get('title')}]\n{r.get('body')}" for r in results])
-        except Exception as e:
-            logger.warning(f"DDGS failed: {e}")
-            return ""
-
-    async def process(self, query: str) -> str:
-        q = query.lower()
+        if self.requested_model and self.requested_model in available:
+            self._model_name = self.requested_model; return self._model_name
+        for m in PREFERRED_MODELS:
+            if m in available: self._model_name = m; return self._model_name
+        if available: self._model_name = available[0]; return self._model_name
         
-        # ۱. اگر کاربر قیمت دلار خواست
-        if any(k in q for k in ["قیمت دلار", "دلار چنده", "تتر", "نرخ دلار"]):
-            return await self._get_dollar_price()
+        self._model_name = self.requested_model or "llama-3.3-70b-versatile"
+        return self._model_name
 
-        # ۲. اگر کاربر کد تخفیف اسنپ فود خواست
-        if "اسنپ فود" in q and ("کد" in q or "تخفیف" in q):
-            context = await self._search_with_tavily("کد تخفیف اسنپ فود offch.com mopon.ir")
-            if not context:
-                context = await self._search_with_ddgs("کد تخفیف اسنپ فود offch.com mopon.ir")
+    async def ask(
+        self, 
+        user_message: str, 
+        user_name: str = "", 
+        user_profile_summary: str = "", 
+        chat_history: Optional[list[dict]] = None, 
+        user_id: int = 0, 
+        custom_system_prompt: Optional[str] = None
+    ) -> tuple[str, str]:
+        
+        user_message = (user_message or "").strip()[:6000] # فضای کافی برای اطلاعات Tavily
+        if not user_message: return "", "error"
+
+        if user_id:
+            allowed, wait = _check_rate_limit(user_id)
+            if not allowed: return (f"⏳ صبر کن ({wait} ثانیه).", "rate_limited")
+
+        if self.mock: return ("🤖 (حالت آزمایشی - AI فعال نیست)", "mock")
+
+        # انتخاب پرامپت (اگر برای ویس بود، پرامپت ویس، اگر برای سرچ بود، پرامپت جستجوگر)
+        sys_prompt = custom_system_prompt if custom_system_prompt else SYSTEM_PROMPT
+        messages: list[dict] = [{"role": "system", "content": sys_prompt}]
+
+        # اضافه کردن کانتکست
+        if user_name: 
+            messages.append({"role": "system", "content": f"نام کاربر: {user_name}"})
+        if user_profile_summary: 
+            messages.append({"role": "system", "content": f"اطلاعات سلامتی و پروفایل کاربر:\n{user_profile_summary}"})
+
+        # اضافه کردن حافظه (چت‌های قبلی)
+        if chat_history:
+            for msg in chat_history[-6:]: # ۶ پیام آخر برای سرعت بیشتر
+                role = msg.get("role", "user")
+                content = (msg.get("content") or "")[:800]
+                if role in ("user", "assistant") and content: 
+                    messages.append({"role": role, "content": content})
+
+        # اضافه کردن پیام نهایی کاربر (که ممکن است حاوی اطلاعات Tavily باشد)
+        messages.append({"role": "user", "content": user_message})
+
+        try:
+            model_name = await self._pick_model()
+            logger.info(f"🤖 AI Using Model: {model_name}")
             
-            if context:
-                codes = re.findall(r'\b[A-Z][A-Z0-9\-]{3,15}\b', context)
-                codes = list(set([c for c in codes if c not in ["HTTP", "HTTPS", "HTML", "PHP", "API", "OFFCH", "MOPON"]]))
+            client = self._get_client()
+            response = await client.chat.completions.create(
+                model=model_name, 
+                messages=messages, 
+                temperature=0.4, # دمای متعادل برای دقت + کمی خلاقیت در نوشتن
+                max_tokens=2500,
+                top_p=0.9
+            )
+            
+            reply = (response.choices[0].message.content or "").strip()
+            if not reply: 
+                raise ValueError("پاسخ خالی از سرور AI")
                 
-                if codes:
-                    result = "🎟️ <b>کدهای تخفیف اسنپ فود پیدا شده:</b>\n\n"
-                    for c in codes[:5]:
-                        result += f"• <code>{c}</code>\n"
-                    result += "\n📌 این کدها از سایت‌های تخفیف‌یاب معتبر استخراج شده‌اند."
-                    return result
+            return reply, "ok"
             
-            return (
-                "🎟️ <b>کدهای تخفیف فعال اسنپ فود:</b>\n\n"
-                "• <code>Snapp-Restaurant</code> (۱۰۰ هزار تومان - سفارش اول رستوران)\n"
-                "• <code>Snapp-Confectionery</code> (۳۵ هزار تومان - سفارش اول قنادی)\n"
-                "• <code>Snapp-Ajil</code> (۵۰ هزار تومان - سفارش اول آجیل)\n"
-                "• <code>Snapp-Juice</code> (۳۵ هزار تومان - آبمیوه و بستنی)\n"
-                "• <code>Snapp-Cafe</code> (۴۰ هزار تومان - کافه)\n\n"
-                "⚠️ <i>این کدها ممکن است منقضی شده باشند.</i>"
-            )
+        except Exception as e:
+            logger.error("AI API error: %s", e)
+            
+            # تلاش با مدل پشتیبان
+            try:
+                fallback_model = "llama-3.3-70b-versatile"
+                response = await client.chat.completions.create(
+                    model=fallback_model, messages=messages, temperature=0.4, max_tokens=2500
+                )
+                reply = (response.choices[0].message.content or "").strip()
+                if reply: return reply, "ok"
+            except Exception as e2:
+                logger.error("Fallback AI error: %s", e2)
+            
+            return ("😔 یه خطای فنی پیش اومد، دوباره بفرست.", "error")
 
-        # ۳. برای هر سوال دیگه‌ای (عمومی)
-        context = await self._search_with_tavily(query)
-        if not context:
-            context = await self._search_with_ddgs(query)
+    async def translate(self, text: str, target_language: str, user_id: int = 0) -> str:
+        text = (text or "").strip()[:1500]
+        if not text: return ""
+        if self.mock: return f"🤖 (ترجمه آزمایشی): {text}"
         
-        return context
+        messages = [
+            {"role": "system", "content": f"You are a professional translator. Translate the text to '{target_language}'. Output ONLY the translation, no extra text."}, 
+            {"role": "user", "content": text}
+        ]
+        try:
+            client = self._get_client()
+            response = await client.chat.completions.create(
+                model="llama-3.3-70b-versatile", messages=messages, temperature=0.1, max_tokens=2000
+            )
+            return (response.choices[0].message.content or "").strip() or "ترجمه ناموفق."
+        except: 
+            return "😔 خطا در ترجمه."
 
-_agent_search_service = None
-def get_agent_search_service() -> AgentSearchService:
-    global _agent_search_service
-    if _agent_search_service is None:
-        _agent_search_service = AgentSearchService()
-    return _agent_search_service
+    async def transcribe_audio(self, file_path: str) -> str:
+        if self.mock: return "متن آزمایشی"
+        try:
+            client = self._get_client()
+            with open(file_path, "rb") as file:
+                transcription = await client.audio.transcriptions.create(
+                    file=(file_path, file.read()), model="whisper-large-v3", response_format="text", language="fa"
+                )
+            return str(transcription).strip()
+        except Exception as e:
+            logger.error(f"Whisper Error: {e}"); raise e
+
+    async def analyze_image(self, image_base64: str, prompt: str, user_id: int = 0) -> str:
+        if self.mock: return "🤖 (حالت آزمایشی)"
+        
+        messages = [
+            {
+                "role": "user", 
+                "content": [
+                    {"type": "text", "text": prompt}, 
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}
+                ]
+            }
+        ]
+        try:
+            client = self._get_client()
+            response = await client.chat.completions.create(
+                model="llama-3.2-11b-vision-preview", messages=messages, temperature=0.7, max_tokens=1500
+            )
+            return (response.choices[0].message.content or "").strip()
+        except: 
+            return "😔 خطا در تحلیل عکس."
+
+_ai_service: Optional[AIService] = None
+def get_ai_service() -> AIService:
+    global _ai_service
+    if _ai_service is None: 
+        _ai_service = AIService()
+    return _ai_service

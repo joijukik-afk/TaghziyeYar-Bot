@@ -4,7 +4,7 @@ import logging
 from telegram import Update
 from telegram.error import BadRequest
 from telegram.ext import ContextTypes
-from app.services.agent_search_service import get_agent_search_service
+from app.services.ai_service import get_ai_service
 
 logger = logging.getLogger(__name__)
 
@@ -21,13 +21,19 @@ async def cmd_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     status_msg = await update.message.reply_text(f"🧠 در حال جستجو برای: <b>{query[:50]}...</b>", parse_mode="HTML")
 
     try:
-        agent = get_agent_search_service()
-        answer = await agent.execute_agentic_search(query=query, user_id=update.effective_user.id)
+        ai = get_ai_service()
+        # مستقیم به مدل Compound میفرستیم، خودش سرچ میکنه
+        prompt = f"سوال کاربر: {query}\n\n(با استفاده از جستجوی اینترنتی خودت، دقیق‌ترین جواب رو بده.)"
         
-        # 👇 اگه جواب خالی بود، پیام مناسب بده
+        answer, _ = await ai.ask(
+            user_message=prompt,
+            user_name=update.effective_user.first_name or "کاربر",
+            user_id=update.effective_user.id
+        )
+
         if not answer or not answer.strip():
-            answer = "🔍 متأسفانه اطلاعات دقیقی از منابع آنلاین دریافت نشد.\n\n💡 لطفاً دوباره تلاش کن یا سوالت رو دقیق‌تر بپرس."
-        
+            answer = "🔍 متأسفانه اطلاعات دقیقی پیدا نشد. لطفاً دوباره تلاش کن."
+
         try: 
             await status_msg.edit_text(answer, parse_mode="HTML", disable_web_page_preview=True)
         except BadRequest: 
@@ -35,5 +41,4 @@ async def cmd_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     except Exception as e:
         logger.error(f"Search command error: {e}", exc_info=True)
-        # 👇 نمایش متن واقعی خطا برای دیباگ
         await status_msg.edit_text(f"❌ خطا در جستجو:\n\n<code>{str(e)[:300]}</code>", parse_mode="HTML")

@@ -1,9 +1,10 @@
-"""Search commands handler."""
+"""Search commands handler with real web searching."""
 
 import logging
 from telegram import Update
 from telegram.error import BadRequest
 from telegram.ext import ContextTypes
+from app.services.agent_search_service import get_agent_search_service
 from app.services.ai_service import get_ai_service
 
 logger = logging.getLogger(__name__)
@@ -18,12 +19,30 @@ async def cmd_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if not query.strip():
         return await update.message.reply_text("🔍 <b>راهنما:</b>\n<code>/search قیمت دلار</code>", parse_mode="HTML")
 
-    status_msg = await update.message.reply_text(f"🧠 در حال جستجو برای: <b>{query[:50]}...</b>", parse_mode="HTML")
+    status_msg = await update.message.reply_text(f"🔍 در حال جستجوی زنده در وب برای: <b>{query[:50]}...</b>", parse_mode="HTML")
 
     try:
+        # ۱. جستجوی واقعی در وب با DDGS
+        agent = get_agent_search_service()
+        result = await agent.search(query)
+        
+        # ۲. ساخت متن اطلاعات برای هوش مصنوعی
+        search_context = ""
+        if result.get("snippets"):
+            search_context = (
+                f"📌 نتایج جستجو:\n{result['snippets'][:3000]}\n\n"
+                f"💰 اعداد قیمت پیدا شده: {', '.join(result['prices']) if result['prices'] else 'هیچ'}\n"
+                f"🎟️ کدهای تخفیف پیدا شده: {', '.join(result['codes']) if result['codes'] else 'هیچ'}\n"
+                f"🔗 منابع: {', '.join(result['urls'][:3])}"
+            )
+        
+        # ۳. ارسال به هوش مصنوعی همراه با اطلاعات
         ai = get_ai_service()
-        # مستقیم به مدل Compound میفرستیم، خودش سرچ میکنه
-        prompt = f"سوال کاربر: {query}\n\n(با استفاده از جستجوی اینترنتی خودت، دقیق‌ترین جواب رو بده.)"
+        prompt = (
+            f"اطلاعات جستجو (از اینترنت):\n{search_context}\n\n"
+            f"سوال کاربر: {query}\n\n"
+            f"⚠️ دستور: تو باید بر اساس اطلاعات بالا جواب بدهی. اگر در اطلاعات عددی یا کدی وجود دارد، آن را در پاسخ خود ذکر کن. هرگز نگو 'دسترسی ندارم'."
+        )
         
         answer, _ = await ai.ask(
             user_message=prompt,
@@ -32,7 +51,7 @@ async def cmd_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         )
 
         if not answer or not answer.strip():
-            answer = "🔍 متأسفانه اطلاعات دقیقی پیدا نشد. لطفاً دوباره تلاش کن."
+            answer = "🔍 متأسفانه اطلاعات دقیقی پیدا نشد. لطفاً دوباره تلاش کن یا سوالت رو دقیق‌تر بپرس."
 
         try: 
             await status_msg.edit_text(answer, parse_mode="HTML", disable_web_page_preview=True)

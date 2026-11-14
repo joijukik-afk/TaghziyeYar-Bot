@@ -51,6 +51,7 @@ from app.services.auto_content import broadcast_auto_content, post_auto_content
 from app.services.card_generator import generate_ai_health_card
 from app.services.image_generator import generate_group_cover
 from app.services.news_service import get_global_magazine_news
+from app.services.agent_search_service import get_agent_search_service
 from app.utils.message_formatter import with_signature
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=get_settings().log_level)
@@ -469,7 +470,7 @@ async def cmd_remind(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     await update.message.reply_text(f"✅ ثبت شد! بعد از {amount}{unit} یادآوری می‌کنم.")
 
 # ---------------------------------------------------------------------------
-#  Text -> AI (Smart Agent Search)
+#  Text -> AI (Real Search)
 # ---------------------------------------------------------------------------
 async def _process_ai_response(update: Update, context: ContextTypes.DEFAULT_TYPE, user_text: str, reply_context: str):
     user = update.effective_user
@@ -495,12 +496,39 @@ async def _process_ai_response(update: Update, context: ContextTypes.DEFAULT_TYP
                 clean_text = clean_text.replace(w, "")
             clean_text = clean_text.strip() or user_text
 
-        # 👇👇👇 جادوی متفکرانه: هوش مصنوعی خودش سرچ میکنه 👇👇👇
-        # ما دیگه اینجا سرچ نمیکنیم! خود AI (مدل compound) این کارو میکنه.
+        # 👇 جستجوی واقعی و دستی 👇
+        search_context = ""
+        casual_chats = ["خوبی", "چطوری", "چه خبر", "خسته نباشی", "مرسی", "ممنون", "سلام"]
+        is_casual = any(chat == clean_text.lower().strip() for chat in casual_chats)
         
+        if not is_casual and not is_voice_request and len(clean_text) > 3:
+            try:
+                status_msg = await context.bot.send_message(chat_id=chat_id, text="🔍 در حال جستجوی زنده در اینترنت...")
+                agent = get_agent_search_service()
+                result = await agent.search(clean_text)
+                await status_msg.delete()
+                
+                if result["snippets"]:
+                    search_context = f"""
+📌 نتایج جستجو:
+{result["snippets"][:3000]}
+
+💰 اعداد قیمت پیدا شده: {', '.join(result["prices"]) if result["prices"] else "هیچ"}
+🎟️ کدهای تخفیف پیدا شده: {', '.join(result["codes"]) if result["codes"] else "هیچ"}
+🔗 منابع: {', '.join(result["urls"][:3])}
+"""
+            except Exception as e:
+                logger.error(f"Search error: {e}")
+
         final_input = f"{reply_context}{clean_text}"
         
-        # اگر درخواست صدا بود، پرامپت صدا رو میفرستیم
+        if search_context:
+            final_input = (
+                f"اطلاعات جستجو (از اینترنت):\n{search_context}\n\n"
+                f"سوال کاربر: {clean_text}\n\n"
+                f"⚠️ دستور: تو باید بر اساس اطلاعات بالا جواب بدهی. اگر در اطلاعات عددی یا کدی وجود دارد، آن را در پاسخ خود ذکر کن. هرگز نگو 'دسترسی ندارم'."
+            )
+
         if is_voice_request:
             final_prompt = f"You are acting as: {persona_prompt}. CRITICAL: Only natural Persian text, NO emojis, NO English, NO markdown." if persona_prompt else VOICE_SYSTEM_PROMPT
         else:
@@ -529,9 +557,9 @@ async def _process_ai_response(update: Update, context: ContextTypes.DEFAULT_TYP
             await _send_html_safe(bot=context.bot, chat_id=chat_id, text=reply or "پاسخی دریافت نشد.", reply_to=message_id)
             
     except Exception as e:
-        logger.error(f"AI Processing Error: {e}")
+        logger.error(f"AI Processing Error: {e}", exc_info=True)
         try:
-            await context.bot.send_message(chat_id=chat_id, text="❌ خطایی پیش آمد. دوباره تلاش کنید.")
+            await context.bot.send_message(chat_id=chat_id, text=f"❌ خطا: {str(e)[:100]}")
         except: pass
 
 @rate_limited

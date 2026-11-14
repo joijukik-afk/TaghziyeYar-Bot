@@ -497,11 +497,10 @@ async def _process_ai_response(update: Update, context: ContextTypes.DEFAULT_TYP
                 clean_text = clean_text.replace(w, "")
             clean_text = clean_text.strip() or user_text
 
-        # 👇👇👇 لیست بسیار گسترده کلمات کلیدی برای سرچ خودکار 👇👇👇
         search_triggers = [
             "قیمت", "دلار", "طلا", "بیت کوین", "اخبار", "امروز", "جدید", "چیست", "چیه", 
             "تخفیف", "کد", "اسنپ فود", "اسنپ‌فود", "دیجی کالا", "دیجی‌کالا", "رستوران", 
-            "نتیجه بازی", "فیلم", "سریال", "بازی", "آب و هوا", "شغل", "استخدام", "کجا", "چطور"
+            "نتیجه بازی", "فیلم", "سریال", "بازی", "آب و هوا", "شغل", "استخدام"
         ]
         needs_search = any(w in text_lower for w in search_triggers) and not is_voice_request
         
@@ -590,5 +589,358 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     asyncio.create_task(_process_ai_response(update, context, original_text, reply_context))
 
-# ... (بقیه کدها: handle_callback, cmd_addadmin, cmd_remind, post_init و ... دقیقاً مثل فایل قبلی که فرستادم) ...
-# (برای جلوگیری از طولانی شدن، فقط توابع تغییر یافته رو گذاشتم. بقیه فایل main.py رو همون قبلی بذار)
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if not query: return
+    await query.answer(); data = query.data or ""
+    
+    if data == "menu_persona": await persona_cmd.cmd_persona(update, context); return
+    if data == "menu_vision":
+        await query.edit_message_text(with_signature("👁️ <b>تحلیل عکس</b>\n\nیک عکس بفرست و بزن:\n<code>/vision</code>\n<code>/roast</code>\n<code>/ocr</code>\n<code>/food</code>"), parse_mode="HTML"); return
+    if data == "menu_tts":
+        await query.edit_message_text(with_signature("🔊 <b>TTS</b>\n\nروش‌ها:\n<code>/tts سلام خوبی؟</code>\nیا روی متن ریپلای کن و بزن <code>/tts</code>"), parse_mode="HTML"); return
+    if data == "menu_imagine":
+        await query.edit_message_text(with_signature("🎨 <b>تولید عکس</b>\n\n<code>/imagine یک گربه فضانورد</code>"), parse_mode="HTML"); return
+    if data == "menu_search": 
+        await query.edit_message_text(with_signature("🔍 <b>جستجو</b>\n\n<code>/search قیمت دلار</code>"), parse_mode="HTML"); return
+    if data == "menu_translate":
+        await query.edit_message_text(with_signature("🌐 <b>ترجمه</b>\n\n<code>/translate en سلام</code>"), parse_mode="HTML"); return
+    if data == "menu_koma":
+        await query.edit_message_text(with_signature("🎧 <b>COMA</b>\n\n<code>/koma</code>"), parse_mode="HTML"); return
+    if data == "menu_music":
+        await query.edit_message_text(with_signature("🎵 <b>دانلود آهنگ</b>\n\n<code>/music نام آهنگ</code>"), parse_mode="HTML"); return
+    
+    if data == "menu_quiz": await query.edit_message_text(with_signature("🎮 /quiz")); return
+    if data == "menu_lb": await query.edit_message_text(with_signature("🏆 /leaderboard")); return
+    if data == "menu_help": await query.edit_message_text(with_signature(msg.HELP)); return
+    if data == "menu_tip": await query.edit_message_text(with_signature(f"💡 {get_tip()}")); return
+    if data == "menu_fact": await query.edit_message_text(with_signature(f"🍎 {get_fact()}")); return
+    if data == "menu_myth": m, t = get_myth(); await query.edit_message_text(with_signature(f"❌ {m}\n\n✅ {t}")); return
+    
+    hints = {"menu_plan": "🍽 /plan", "menu_today": "📅 /today", "menu_shopping": "🛒 /shopping", "menu_food": "🥗 /food", "menu_ideal": "🎯 /ideal (پیوی)", "menu_weight": "⚖️ /weight (پیوی)", "menu_calories": "🔥 /calories (پیوی)", "menu_protein": "🥩 /protein (پیوی)", "menu_macros": "🧮 /macros (پیوی)", "menu_progress": "📊 /progress (پیوی)", "menu_profile": "👤 /profile (پیوی)", "menu_ai": "💬 پیام بفرست."}
+    text = hints.get(data, msg.UNKNOWN_COMMAND)
+    
+    if is_group(update) and data in ["menu_weight", "menu_calories", "menu_protein", "menu_macros", "menu_progress", "menu_profile", "menu_ideal"]:
+        kb = [[InlineKeyboardButton("🔒 ورود به چت خصوصی", url=f"https://t.me/{context.bot.username}?start=private_setup")]]
+        await query.edit_message_text(with_signature("🛡️ این بخش خصوصی است."), reply_markup=InlineKeyboardMarkup(kb)); return
+    
+    await query.edit_message_text(with_signature(text))
+
+async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logger.exception("Exception", exc_info=context.error)
+
+# ---------------------------------------------------------------------------
+#  Admin Management Commands
+# ---------------------------------------------------------------------------
+async def cmd_addadmin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    if not user or not get_settings().is_admin(user.id): 
+        return await update.message.reply_text("⛔️ این دستور فقط برای صاحب ربات است.")
+    target_id, target_name = None, "کاربر"
+    if update.message.reply_to_message:
+        replied = update.message.reply_to_message
+        target_id = replied.from_user.id
+        target_name = replied.from_user.first_name or "کاربر"
+    elif context.args:
+        arg = context.args[0]
+        if arg.startswith("@"):
+            db_user = await repo.get_user_by_username(arg)
+            if db_user: target_id, target_name = db_user.telegram_id, db_user.first_name or db_user.username
+        else:
+            try: target_id, target_name = int(arg), str(arg)
+            except: pass
+    if not target_id: return await update.message.reply_text("⚠️ راهنما:\n`/addadmin 123456789`", parse_mode="Markdown")
+    await repo.add_dynamic_admin(target_id)
+    await update.message.reply_text(f"✅ کاربر <b>{target_name}</b> ادمین شد.", parse_mode="HTML")
+
+async def cmd_removeadmin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    if not user or not get_settings().is_admin(user.id): 
+        return await update.message.reply_text("⛔️ این دستور فقط برای صاحب ربات است.")
+    target_id = None
+    if update.message.reply_to_message:
+        target_id = update.message.reply_to_message.from_user.id
+    elif context.args:
+        arg = context.args[0]
+        if arg.startswith("@"):
+            db_user = await repo.get_user_by_username(arg)
+            if db_user: target_id = db_user.telegram_id
+        else:
+            try: target_id = int(arg)
+            except: pass
+    if not target_id: return await update.message.reply_text("⚠️ راهنما:\n`/removeadmin 123456789`", parse_mode="Markdown")
+    await repo.remove_dynamic_admin(target_id)
+    await update.message.reply_text(f"✅ دسترسی ادمینی برداشته شد.", parse_mode="HTML")
+
+async def cmd_admins(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    if not user or not get_settings().is_admin(user.id): 
+        return await update.message.reply_text("⛔️ این دستور فقط برای صاحب ربات است.")
+    dyn_admins = await repo.get_dynamic_admins()
+    if not dyn_admins: return await update.message.reply_text("📋 هیچ ادمین داینامیکی ثبت نشده است.")
+    text = "👑 <b>لیست ادمین‌های ربات:</b>\n\n"
+    for adm in dyn_admins: text += f"• <code>{adm}</code>\n"
+    await update.message.reply_text(text, parse_mode="HTML")
+
+async def cmd_advertise(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    if not user or not await is_admin_user(user.id): return
+    await notify_owner(context, user, "ارسال کمپین تبلیغاتی به گروه‌ها")
+    groups = await repo.list_all_groups()
+    if not groups: return await update.message.reply_text("⚠️ ربات در هیچ گروهی عضو نیست.")
+    status_msg = await update.message.reply_text(f"⏳ در حال ارسال تبلیغ...")
+    ad_text = (
+        "🌟 <b>تغذیه‌یار | دستیار هوشمند شما</b> 🌟\n\n"
+        "آیا از وضعیت سلامتی و تناسب اندام خود خبر دارید؟ 🤔\n"
+        "با ربات <b>تغذیه‌یار</b>، یک کارت دیجیتال اختصاصی دریافت کنید! 🪪\n\n"
+        "🎨 <b>و همچنین:</b>\n"
+        "👁️ تحلیل عکس با AI | 🔍 جستجوی هوشمند | 🌐 ترجمه\n"
+        "🎭 تغییر شخصیت | 🔊 تبدیل متن به صدا | 🎧 موسیقی\n\n"
+        "👇 همین حالا کلیک کنید:"
+    )
+    keyboard = [[InlineKeyboardButton("🪪 دریافت کارت سلامت", url=f"https://t.me/{context.bot.username}?start=mycard")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    success, fail = 0, 0
+    for g in groups:
+        try:
+            await context.bot.send_message(chat_id=g.chat_id, text=ad_text, parse_mode="HTML", reply_markup=reply_markup)
+            success += 1; await asyncio.sleep(1) 
+        except Forbidden: await repo.deactivate_group(chat_id=g.chat_id); fail += 1
+        except Exception: fail += 1
+    await status_msg.edit_text(f"✅ تبلیغ به {success} گروه ارسال شد.\n❌ {fail} ناموفق.")
+
+async def cmd_broadcast_covers(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    if not user or not await is_admin_user(user.id): return
+    groups = await repo.list_all_groups()
+    if not groups: return await update.message.reply_text("هیچ گروهی نیست.")
+    status_msg = await update.message.reply_text(f"⏳ در حال ساخت کاور برای {len(groups)} گروه...")
+    success, dead = 0, 0
+    for g in groups:
+        try:
+            photo = await generate_group_cover(g.title or "Nutrition Group")
+            await context.bot.send_photo(chat_id=g.chat_id, photo=photo, caption=f"🎨 کاور اختصاصی گروه <b>{g.title}</b>", parse_mode="HTML")
+            success += 1; await asyncio.sleep(3) 
+        except Forbidden: await repo.deactivate_group(chat_id=g.chat_id); dead += 1
+        except Exception: pass
+    await status_msg.edit_text(f"✅ کاور برای {success} گروه ارسال شد.\n🧹 {dead} گروه حذف شد.")
+
+async def cmd_leave_group(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user, chat = update.effective_user, update.effective_chat
+    if not user or not await is_admin_user(user.id): return
+    if chat.type == ChatType.PRIVATE:
+        if not context.args: return await update.message.reply_text("⚠️ مثال: `/leavegroup Asli`", parse_mode="Markdown")
+        query = " ".join(context.args).strip(); groups = await repo.list_all_groups()
+        target = next((g for g in groups if str(g.chat_id) == query or (g.title and query.lower() in g.title.lower())), None)
+        if not target: return await update.message.reply_text("❌ گروه پیدا نشد.")
+        try:
+            await context.bot.leave_chat(chat_id=target.chat_id); await repo.deactivate_group(chat_id=target.chat_id)
+            await update.message.reply_text(f"✅ ربات از «{target.title}» خارج شد.")
+        except Exception as e: await update.message.reply_text(f"❌ خطا: {e}")
+    else:
+        await update.message.reply_text("🚪 در حال خروج...")
+        try: await context.bot.leave_chat(chat_id=chat.id); await repo.deactivate_group(chat_id=chat.id)
+        except: pass
+
+async def cmd_send_to_group(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    if not user or not await is_admin_user(user.id): return
+    if not update.message.reply_to_message: return await update.message.reply_text("⚠️ روی پیام ریپلای کنید.")
+    if not context.args: return await update.message.reply_text("⚠️ مثال: `/sendto Asli`", parse_mode="Markdown")
+    query = " ".join(context.args).strip(); groups = await repo.list_all_groups()
+    target = next((g for g in groups if str(g.chat_id) == query or (g.title and query.lower() in g.title.lower())), None)
+    if not target: return await update.message.reply_text("❌ گروه پیدا نشد.")
+    try:
+        await context.bot.copy_message(chat_id=target.chat_id, from_chat_id=update.message.chat_id, message_id=update.message.reply_to_message.message_id)
+        await update.message.reply_text(f"✅ پیام ارسال شد.")
+    except Forbidden: await repo.deactivate_group(chat_id=target.chat_id); await update.message.reply_text(f"❌ ربات در گروه نیست.")
+    except Exception as e: await update.message.reply_text(f"❌ خطا: {e}")
+
+async def cmd_global_news(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    if not user or not await is_admin_user(user.id): return
+    if not context.args: return await update.message.reply_text("⚠️ مثال: `/globalnews Asli`", parse_mode="Markdown")
+    query = " ".join(context.args).strip(); groups = await repo.list_all_groups()
+    target = next((g for g in groups if str(g.chat_id) == query or (g.title and query.lower() in g.title.lower())), None)
+    if not target: return await update.message.reply_text("❌ گروه پیدا نشد.")
+    status_msg = await update.message.reply_text("⏳ در حال استخراج...")
+    result = await get_global_magazine_news()
+    if not result: return await status_msg.edit_text("❌ خبری دریافت نشد.")
+    text, image_url = result; await status_msg.edit_text("⏳ در حال ارسال...")
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(image_url); resp.raise_for_status()
+            photo = io.BytesIO(resp.content); photo.name = 'news.jpg'
+        await context.bot.send_photo(chat_id=target.chat_id, photo=photo, caption=text, parse_mode="HTML")
+        await status_msg.edit_text(f"✅ خبر منتشر شد.")
+    except Exception as e:
+        try: await context.bot.send_message(chat_id=target.chat_id, text=text, parse_mode="HTML"); await status_msg.edit_text("✅ خبر ارسال شد (بدون عکس).")
+        except Exception as e2: await status_msg.edit_text(f"❌ خطا: {e2}")
+
+async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    if not user or not await is_admin_user(user.id): return
+    target_id, target_name, group_to_notify = None, "کاربر", None
+    if update.message.reply_to_message:
+        replied = update.message.reply_to_message
+        if replied.forward_from: target_id, target_name = replied.forward_from.id, replied.forward_from.first_name or "کاربر"
+        elif replied.from_user: target_id, target_name = replied.from_user.id, replied.from_user.first_name or "کاربر"
+    if not target_id and context.args:
+        arg = context.args[0]
+        if arg.startswith("@"):
+            db_user = await repo.get_user_by_username(arg)
+            if db_user: target_id, target_name = db_user.telegram_id, db_user.first_name or db_user.username or "کاربر"
+        else:
+            try: target_id, target_name = int(arg), str(arg)
+            except: pass
+    if not target_id: return await update.message.reply_text("⚠️ راهنما:\n`/ban @username`", parse_mode="Markdown")
+    try:
+        await repo.ban_user(target_id, "نقض قوانین")
+        await update.message.reply_text(f"✅ کاربر <b>{target_name}</b> مسدود شد.", parse_mode="HTML")
+        try: await context.bot.send_message(chat_id=target_id, text="🚫 <b>دسترسی شما مسدود شد</b>", parse_mode="HTML")
+        except: pass
+    except Exception as e: await update.message.reply_text(f"❌ خطای دیتابیسی: `{e}`", parse_mode="Markdown")
+
+async def cmd_unban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    if not user or not await is_admin_user(user.id): return
+    if not context.args: return await update.message.reply_text("⚠️ `/unban 123456789`", parse_mode="Markdown")
+    arg = context.args[0]; target_id = None
+    if arg.startswith("@"):
+        db_user = await repo.get_user_by_username(arg)
+        if db_user: target_id = db_user.telegram_id
+    else:
+        try: target_id = int(arg)
+        except: pass
+    if not target_id: return await update.message.reply_text("❌ کاربر پیدا نشد.")
+    await repo.unban_user(target_id)
+    await update.message.reply_text(f"✅ مسدودی `{target_id}` برداشته شد.", parse_mode="Markdown")
+
+async def cmd_forcepost(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    if not user or not await is_admin_user(user.id): return
+    status = await update.message.reply_text("🔄 در حال ساخت پست فوری...")
+    try:
+        sent = await broadcast_auto_content(context.bot)
+        if sent > 0:
+            await repo.set_last_post_time(time.time())
+            await status.edit_text(f"✅ پست فوری به {sent} گروه ارسال شد.")
+        else:
+            await status.edit_text("⚠️ متأسفانه پست ساخته نشد.")
+    except Exception as e:
+        await status.edit_text(f"❌ خطای فنی: {e}")
+
+# ---------------------------------------------------------------------------
+#  Lifecycle
+# ---------------------------------------------------------------------------
+async def post_init(application: Application) -> None:
+    init_engine()
+    import app.database.models
+    import app.database.quiz_models 
+    import app.database.music_models
+    import app.database.group_models
+    import app.database.state_models # 👈 مهم! برای ساخت جدول حافظه
+    await create_all()
+    
+    me = await application.bot.get_me()
+    logger.info("Bot started as @%s", me.username)
+    
+    try:
+        from app.bot.commands_setup import setup_commands
+        await setup_commands(application.bot)
+    except: pass
+    
+    if application.job_queue is not None:
+        try: first = int(os.environ.get("AUTO_POST_FIRST_DELAY", "600")) 
+        except: first = 600
+        application.job_queue.run_repeating(_auto_post_job, interval=600, first=first, name="auto_nutrition_post")
+
+async def post_shutdown(application: Application) -> None: 
+    await dispose_engine()
+
+def build_application() -> Application:
+    settings = get_settings()
+    app = (ApplicationBuilder().token(settings.telegram_bot_token).post_init(post_init).post_shutdown(post_shutdown).build())
+    
+    app.add_handler(TypeHandler(Update, check_user_ban), group=-1)
+    app.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.ALL, save_member_handler), group=-2)
+    app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS & filters.ChatType.GROUPS, track_new_members), group=-2)
+
+    app.add_handler(CommandHandler("start", cmd_start)); app.add_handler(CommandHandler("help", cmd_help)); app.add_handler(CommandHandler("menu", cmd_menu))
+    app.add_handler(CommandHandler("about", cmd_about)); app.add_handler(CommandHandler("privacy", cmd_privacy)); app.add_handler(CommandHandler("settings", cmd_settings))
+    
+    app.add_handler(CommandHandler("profile", cmd_profile))
+    app.add_handler(CommandHandler("mycard", cmd_mycard))
+    app.add_handler(CommandHandler("setup", cmd_setup)); app.add_handler(CommandHandler("cancel", cmd_cancel))
+    
+    app.add_handler(CommandHandler("tagall", cmd_tagall))
+    
+    app.add_handler(CommandHandler("tts", tts_cmd.cmd_tts))
+    app.add_handler(CommandHandler("voice", voice_cmd.cmd_voice))
+    app.add_handler(MessageHandler(filters.VOICE, voice_cmd.handle_voice_message))
+    app.add_handler(CommandHandler("remind", cmd_remind))
+    
+    app.add_handler(CommandHandler("persona", persona_cmd.cmd_persona))
+    app.add_handler(CallbackQueryHandler(persona_cmd.handle_persona_callback, pattern=r"^persona_"))
+    
+    app.add_handler(CommandHandler("vision", vision_cmd.cmd_vision))
+    app.add_handler(CommandHandler("roast", vision_cmd.cmd_roast))
+    app.add_handler(CommandHandler("ocr", vision_cmd.cmd_ocr))
+    app.add_handler(CommandHandler("food_vision", vision_cmd.cmd_food)) 
+    
+    app.add_handler(CommandHandler("imagine", img_cmd.cmd_imagine))
+    app.add_handler(CommandHandler("getconfig", conf_cmd.cmd_getconfig))
+    app.add_handler(CallbackQueryHandler(conf_cmd.handle_config_callback, pattern=r"^(copy_cfg_|refresh_cfg)"))
+    app.add_handler(CommandHandler("translate", trans_cmd.cmd_translate)) 
+    app.add_handler(CommandHandler("search", search_cmd.cmd_search))
+    
+    app.add_handler(CommandHandler("bmi", cmd_bmi)); app.add_handler(CommandHandler("calories", cmd_calories)); app.add_handler(CommandHandler("weight", cmd_weight))
+    app.add_handler(CommandHandler("progress", cmd_progress)); app.add_handler(CommandHandler("macros", cmd_macros)); app.add_handler(CommandHandler("protein", cmd_protein))
+    app.add_handler(CommandHandler("ideal", cmd_ideal)); app.add_handler(CommandHandler("bodyfat", cmd_bodyfat)); app.add_handler(CommandHandler("bmr", cmd_bmr))
+    app.add_handler(CommandHandler("tip", cmd_tip)); app.add_handler(CommandHandler("fact", cmd_fact)); app.add_handler(CommandHandler("myth", cmd_myth)); app.add_handler(CommandHandler("water", cmd_water))
+    app.add_handler(CommandHandler("plan", cmd_plan)); app.add_handler(CommandHandler("today", cmd_today)); app.add_handler(CommandHandler("shopping", cmd_shopping)); app.add_handler(CommandHandler("food", cmd_food))
+    app.add_handler(CommandHandler("quiz", gquiz.cmd_quiz)); app.add_handler(CommandHandler("leaderboard", gquiz.cmd_leaderboard)); app.add_handler(CommandHandler("mystats", gquiz.cmd_mystats))
+    app.add_handler(PollAnswerHandler(gquiz.on_poll_answer)); app.add_handler(CallbackQueryHandler(gquiz.on_inline_answer, pattern=r"^gq_\d+$"))
+    
+    app.add_handler(CommandHandler("snake", snake_game.cmd_snake)); app.add_handler(CallbackQueryHandler(snake_game.handle_snake, pattern=r"^snake_"))
+    app.add_handler(CommandHandler("koma", kcmd.cmd_koma)); app.add_handler(CommandHandler("music", kcmd.cmd_music))
+    app.add_handler(CommandHandler("proxy", prox_cmd.cmd_proxy)); app.add_handler(CallbackQueryHandler(prox_cmd.handle_proxy_callback, pattern=r"^proxy_"))
+    
+    app.add_handler(ChatMemberHandler(gmanager.on_bot_added, ChatMemberHandler.MY_CHAT_MEMBER))
+    app.add_handler(CommandHandler("setgroup", gmanager.cmd_setgroup)); app.add_handler(CommandHandler("groups", gmanager.cmd_groups)); app.add_handler(CommandHandler("unsetgroup", gmanager.cmd_unsetgroup))
+    
+    app.add_handler(CommandHandler("addadmin", cmd_addadmin))
+    app.add_handler(CommandHandler("removeadmin", cmd_removeadmin))
+    app.add_handler(CommandHandler("admins", cmd_admins))
+    
+    app.add_handler(CommandHandler("broadcast_covers", cmd_broadcast_covers)); app.add_handler(CommandHandler("leave", cmd_leave_group)); app.add_handler(CommandHandler("leavegroup", cmd_leave_group))
+    app.add_handler(CommandHandler("sendto", cmd_send_to_group)); app.add_handler(CommandHandler("globalnews", cmd_global_news)); app.add_handler(CommandHandler("ban", cmd_ban)); app.add_handler(CommandHandler("unban", cmd_unban))
+    app.add_handler(CommandHandler("forcepost", cmd_forcepost))
+    app.add_handler(CommandHandler("advertise", cmd_advertise))
+    
+    app.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.ALL, gmanager.on_group_message), group=1)
+    
+    app.add_handler(MessageHandler(filters.PHOTO & filters.ChatType.PRIVATE, vision_cmd.handle_photo_message))
+    
+    app.add_handler(CallbackQueryHandler(handle_callback))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    app.add_error_handler(on_error)
+    return app
+
+def main() -> None:
+    settings = get_settings(); application = build_application()
+    render_url = os.environ.get("RENDER_EXTERNAL_URL", "").strip()
+    if render_url:
+        port = int(os.environ.get("PORT", "8080")); url_path = application.bot.token; secret = settings.webhook_secret_token
+        application.run_webhook(
+            listen="0.0.0.0", port=port, url_path=url_path, 
+            webhook_url=f"{render_url}/{url_path}", 
+            allowed_updates=Update.ALL_TYPES, drop_pending_updates=True, 
+            secret_token=secret if secret else None
+        )
+    else:
+        _start_health_server()
+        application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+
+if __name__ == "__main__":
+    main()

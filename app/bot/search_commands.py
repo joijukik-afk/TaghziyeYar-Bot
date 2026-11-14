@@ -1,3 +1,5 @@
+"""Search commands handler with API + Tavily."""
+
 import logging
 from telegram import Update
 from telegram.error import BadRequest
@@ -23,26 +25,28 @@ async def cmd_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         agent = get_agent_search_service()
         result_text = await agent.process(query)
         
-        # 👇👇👇 اینجا اگر جواب مستقیم بود (مثل قیمت دلار یا کد تخفیف)، دیگه به AI نمیدیم
-        if result_text.startswith(("💰", "🎟️", "📝", "⚠️")):
+        # اگر جواب مستقیم بود (قیمت یا کد تخفیف)، همون رو بفرست
+        if result_text.startswith(("💰", "🎟️", "⚠️")):
             await status_msg.edit_text(result_text, parse_mode="HTML")
             return
             
-        # در غیر این صورت (سوال عمومی)، به AI میدیم
+        # اگر سوال عمومی بود، به AI بده
+        if not result_text:
+            await status_msg.edit_text("⚠️ متأسفانه اطلاعاتی پیدا نشد. لطفاً دوباره تلاش کنید.")
+            return
+
         ai = get_ai_service()
         prompt = (
-            f"اطلاعات جستجو:\n{result_text}\n\n"
+            f"اطلاعات جستجو (از اینترنت):\n{result_text}\n\n"
             f"سوال کاربر: {query}\n\n"
-            f"پاسخ را بر اساس اطلاعات بالا بده."
+            f"⚠️ دستور: تو باید بر اساس اطلاعات بالا جواب بدهی. اگر در اطلاعات عددی یا کدی وجود دارد، آن را در پاسخ خود ذکر کن. هرگز نگو 'دسترسی ندارم'."
         )
+        
         answer, _ = await ai.ask(
             user_message=prompt,
             user_name=update.effective_user.first_name or "کاربر",
             user_id=update.effective_user.id
         )
-
-        if not answer or not answer.strip():
-            answer = "🔍 متأسفانه اطلاعات دقیقی پیدا نشد."
 
         try: 
             await status_msg.edit_text(answer, parse_mode="HTML", disable_web_page_preview=True)
@@ -50,5 +54,5 @@ async def cmd_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             await status_msg.edit_text(answer, disable_web_page_preview=True)
 
     except Exception as e:
-        logger.error(f"Search command error: {e}", exc_info=True)
+        logger.error(f"Search error: {e}", exc_info=True)
         await status_msg.edit_text(f"❌ خطا: <code>{str(e)[:200]}</code>", parse_mode="HTML")

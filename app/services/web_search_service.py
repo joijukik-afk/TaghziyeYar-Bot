@@ -1,4 +1,4 @@
-"""Advanced Web search service with real-time APIs."""
+"""Advanced Web search service with Deep Scraping and strict extraction."""
 
 import logging
 import asyncio
@@ -17,7 +17,6 @@ class WebSearchService:
         prices = []
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
-                # نوبیتکس برای قیمت تتر (دلار آزاد)
                 resp = await client.get("https://api.nobitex.ir/v2/orderbook/USDTIRT")
                 if resp.status_code == 200:
                     data = resp.json()
@@ -30,22 +29,31 @@ class WebSearchService:
 
     async def _extract_text_from_url(self, url: str) -> str:
         try:
-            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-            async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
+            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+            async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
                 resp = await client.get(url, headers=headers)
                 resp.raise_for_status()
                 html = resp.text
 
             def parse_html(html_text):
                 soup = BeautifulSoup(html_text, 'html.parser')
-                for tag in soup(['script', 'style', 'nav', 'footer', 'header', 'aside']):
+                # حذف تگ‌های غیرضروری
+                for tag in soup(['script', 'style', 'nav', 'footer', 'header', 'aside', 'iframe', 'noscript']):
                     tag.decompose()
-                main = soup.find('main') or soup.find('article') or soup.body
-                if not main: return ""
-                texts = [p.get_text(strip=True) for p in main.find_all(['p', 'li', 'h2']) if len(p.get_text(strip=True)) > 30]
-                return "\n".join(texts)[:2500]
+                
+                # 👇 استخراج تمام متن‌های خالص (این متد بهترین روش برای پیدا کردن کدهای مخفی است)
+                texts = list(soup.stripped_strings)
+                
+                # حذف متن‌های خیلی کوتاه (مثل منوها) اما نگه داشتن کدها
+                filtered_texts = [t for t in texts if len(t) > 3 and len(t) < 200]
+                
+                # حذف تکراری‌ها
+                unique_texts = list(dict.fromkeys(filtered_texts))
+                return "\n".join(unique_texts)[:4000] # ۴۰۰۰ کاراکتر از هر سایت
+
             return await asyncio.to_thread(parse_html, html)
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Scraping error for {url}: {e}")
             return ""
 
     async def search_and_answer(self, query: str, user_id: int = 0) -> str:
@@ -55,43 +63,45 @@ class WebSearchService:
             live_data = await self._get_live_prices()
 
         # ۲. جستجوی وب
+        results = []
         try:
-            results = await asyncio.to_thread(lambda: list(DDGS().text(query, max_results=4)))
-        except Exception:
-            results = []
+            results = await asyncio.to_thread(lambda: list(DDGS().text(query, max_results=5)))
+        except Exception as e:
+            logger.warning(f"DDGS search error: {e}")
 
-        # ۳. خواندن متن سایت‌ها
+        # ۳. خواندن متن کامل از ۲ سایت اول
         extracted = ""
         if results:
             tasks = [self._extract_text_from_url(r.get("href")) for r in results[:2] if r.get("href")]
             texts = await asyncio.gather(*tasks)
             extracted = "\n\n".join([t for t in texts if t])
 
-        # ۴. آماده‌سازی اطلاعات
+        # ۴. ساخت کانتکست
         context = ""
         if live_data:
-            context += f"📌 اطلاعات لحظه‌ای:\n{live_data}\n\n"
+            context += f"📌 قیمت لحظه‌ای:\n{live_data}\n\n"
         if results:
-            context += "📌 نتایج وب:\n"
+            context += "📌 خلاصه نتایج وب:\n"
             for r in results:
                 context += f"- {r.get('title')}: {r.get('body')}\n"
         if extracted:
-            context += f"\n📄 متن مقالات:\n{extracted}"
+            context += f"\n📄 متن کامل استخراج شده از سایت‌ها (کدها و جزئیات اینجاست):\n{extracted}"
 
         if not context.strip():
-            context = "اطلاعاتی پیدا نشد. از دانش خودت استفاده کن."
+            context = "هیچ نتیجه‌ای از وب پیدا نشد."
 
-        # ۵. پاسخ نهایی
+        # ۵. پرامپت استخراج (اجبار به استفاده از متن)
         prompt = (
             f"سوال کاربر: {query}\n\n"
-            f"اطلاعات جدید از وب:\n{context}\n\n"
-            f"🚨 قانون: اگر قیمت در متن بالا بود، دقیقاً همان را بگو. اگر اطلاعات وب ناقص بود، از دانش خودت استفاده کن و بگو شاید قدیمی باشد. "
-            f"پاسخ به فارسی روان و با تگ‌های HTML."
+            f"اطلاعات جدیدی که همین الان از اینترنت به دست آوردم:\n{context}\n\n"
+            f"🚨 قانون آهنین: تو همین الان این اطلاعات رو از اینترنت گرفتی. اگر در متن بالا کد تخفیف یا قیمتی وجود داره، باید دقیقاً همون رو به کاربر بدی. هرگز نگو 'من دسترسی به اینترنت ندارم'. اگر واقعاً کدی پیدا نکردی، بگو 'جستجو کردم اما کد فعالی پیدا نکردم'. پاسخ رو به فارسی روان بنویس."
         )
 
         answer, _ = await self.ai_service.ask(
-            user_message=prompt, user_name="جستجوگر", user_id=user_id,
-            custom_system_prompt="You are a smart assistant. Prioritize the provided context. Answer in Persian with HTML formatting."
+            user_message=prompt, 
+            user_name="جستجوگر", 
+            user_id=user_id,
+            custom_system_prompt="You are a real-time search assistant. You have the latest web data provided to you. NEVER say you don't have internet access. Answer accurately in Persian using HTML."
         )
         return answer
 

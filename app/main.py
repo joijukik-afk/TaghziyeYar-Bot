@@ -51,7 +51,6 @@ from app.services.auto_content import broadcast_auto_content, post_auto_content
 from app.services.card_generator import generate_ai_health_card
 from app.services.image_generator import generate_group_cover
 from app.services.news_service import get_global_magazine_news
-from app.services.agent_search_service import get_agent_search_service
 from app.utils.message_formatter import with_signature
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=get_settings().log_level)
@@ -282,7 +281,6 @@ async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if update.message: await update.message.reply_text(with_signature(msg.SETTINGS_TEXT))
 
 async def cmd_tagall(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logger.info("🚨 TAGALL RECEIVED!")
     if not update.message or not update.effective_chat: return
     chat = update.effective_chat
     user = update.effective_user
@@ -312,7 +310,7 @@ async def cmd_tagall(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
 
     if not members:
-        await status_msg.edit_text("⚠️ <b>هیچ عضوی توی دیتابیس پیدا نشد.</b>\n\nربات فقط اعضایی رو می‌شناسه که پیام دادن.", parse_mode="HTML")
+        await status_msg.edit_text("⚠️ <b>هیچ عضوی توی دیتابیس پیدا نشد.</b>", parse_mode="HTML")
         return
 
     mentions = []
@@ -497,32 +495,12 @@ async def _process_ai_response(update: Update, context: ContextTypes.DEFAULT_TYP
                 clean_text = clean_text.replace(w, "")
             clean_text = clean_text.strip() or user_text
 
-        # فراخوانی Agent Search
-        casual_chats = ["خوبی", "چطوری", "چه خبر", "خسته نباشی", "مرسی", "ممنون", "دوست دارم"]
-        is_casual = any(chat in text_lower for chat in casual_chats) and len(clean_text) < 20
+        # 👇👇👇 جادوی متفکرانه: هوش مصنوعی خودش سرچ میکنه 👇👇👇
+        # ما دیگه اینجا سرچ نمیکنیم! خود AI (مدل compound) این کارو میکنه.
         
-        search_context = ""
-        if not is_casual and not is_voice_request and len(clean_text) > 4:
-            try:
-                status_msg = await context.bot.send_message(chat_id=chat_id, text="🧠 در حال تحلیل و جستجوی زنده...")
-                agent = get_agent_search_service()
-                search_context = await agent.execute_agentic_search(clean_text, user.id)
-                await status_msg.delete()
-            except Exception as e:
-                logger.error(f"Agent Search error: {e}")
-
         final_input = f"{reply_context}{clean_text}"
         
-        if search_context:
-            final_input = f"اطلاعات جمع‌آوری شده از منابع ایرانی:\n{search_context}\n\nسوال کاربر: {clean_text}\n\n(پاسخ نهایی را با توجه به اطلاعات بالا بده)"
-        else:
-            final_input = (
-                f"سوال: {clean_text}\n\n"
-                f"⚠️ جستجوی اینترنتی در این لحظه پاسخ نداد. تو باید از دانش داخلی خودت استفاده کنی و بهترین پاسخ تقریبی را بدهی. "
-                f"اگر درباره قیمت است، بگو 'بر اساس آخرین دانش من، قیمت تقریبی X است. برای قیمت دقیق به TGJU مراجعه کن.' "
-                f"هرگز نگو 'پیدا نکردم'."
-            )
-
+        # اگر درخواست صدا بود، پرامپت صدا رو میفرستیم
         if is_voice_request:
             final_prompt = f"You are acting as: {persona_prompt}. CRITICAL: Only natural Persian text, NO emojis, NO English, NO markdown." if persona_prompt else VOICE_SYSTEM_PROMPT
         else:

@@ -1,4 +1,4 @@
-"""AI service - Forces use of provided search context."""
+"""AI service - Forces use of provided search context + Voice support."""
 
 import logging
 import time
@@ -37,6 +37,13 @@ SYSTEM_PROMPT = """تو «تغذیه‌یار» هستی، یک دستیار ه�
 اگر هیچ اطلاعات جستجویی وجود نداشت، از دانش خودت استفاده کن اما بگو "تقریبی".
 پاسخ فارسی، کوتاه و با HTML.
 """
+
+# 👇 این متغیر جا افتاده بود که باعث ارور میشد
+VOICE_SYSTEM_PROMPT = (
+    "You are a smart and professional voice assistant. "
+    "CRITICAL: Only natural Persian text. NO emojis, NO English words, NO markdown. Keep it short (2-3 sentences). "
+    "Do NOT start your answer with 'Salam' unless the user greeted you first."
+)
 
 class AIService:
     def __init__(self):

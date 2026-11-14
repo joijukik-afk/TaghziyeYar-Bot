@@ -1,4 +1,4 @@
-"""Agent Search Service - API + Tavily + DDGS."""
+"""Agent Search Service - Real-time APIs first, then Strict Web Search."""
 
 import logging
 import asyncio
@@ -14,7 +14,6 @@ logger = logging.getLogger(__name__)
 
 class AgentSearchService:
     def __init__(self):
-        # کلید Tavily از محیط خوانده می‌شود
         self.tavily_key = os.environ.get("TAVILY_API_KEY", "")
         if self.tavily_key:
             try:
@@ -25,69 +24,86 @@ class AgentSearchService:
         else:
             self.tavily = None
 
-    async def _get_dollar_price(self) -> str:
-        """گرفتن قیمت دلار از APIها و در صورت شکست، از Tavily"""
-        # ۱. از API قیمت‌یاب (PriceDB)
-        try:
-            async with httpx.AsyncClient() as client:
-                res = await client.get("https://api.priceto.day/v1/latest/irr/usd", timeout=10)
-                if res.status_code == 200:
-                    price = res.json().get("price")
-                    if price:
-                        return f"💰 <b>قیمت دلار:</b> {int(price):,} تومان\n📊 منبع: PriceDB (لحظه‌ای)"
-        except Exception:
-            pass
+    def _extract_dollar_price(self, text: str) -> Optional[int]:
+        """استخراج قیمت دلار آزاد با فیلتر دقیق"""
+        patterns = [
+            r'([۰-۹]{3}[,،.][۰-۹]{3})',  # ۲۷۱,۳۶۰
+            r'([0-9]{3}[,،.][0-9]{3})',  # 271,360
+            r'([0-9]{6})',               # 271360
+            r'([۰-۹]{6})'                # ۲۷۱۳۶۰
+        ]
+        found_prices = []
+        for p in patterns:
+            found_prices.extend(re.findall(p, text))
+        
+        valid_prices = []
+        for price_str in found_prices:
+            clean_str = price_str.replace(",", "").replace("،", "").replace(".", "")
+            clean_str = clean_str.translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹", "0123456789"))
+            try:
+                p_val = int(clean_str)
+                # فیلتر قیمت منطقی دلار آزاد (۲۵۰ تا ۳۰۰ هزار تومان)
+                if 250000 < p_val < 300000:
+                    valid_prices.append(p_val)
+            except:
+                pass
+        
+        if valid_prices:
+            return Counter(valid_prices).most_common(1)[0][0]
+        return None
 
-        # ۲. از نوبیتکس (قیمت تتر)
+    async def _get_dollar_price(self) -> str:
+        """گرفتن قیمت دلار آزاد از APIها و در صورت شکست، از Tavily"""
+        
+        # ۱. از API نوبیتکس (دقیق‌ترین)
         try:
             async with httpx.AsyncClient() as client:
-                res = await client.get("https://api.nobitex.ir/v2/orderbook/USDTIRT", timeout=10)
+                res = await client.get("https://api.nobitex.ir/v2/orderbook/USDTIRT", timeout=5)
                 if res.status_code == 200:
                     data = res.json()
                     if data.get("status") == "ok":
                         price = int(float(data.get("lastTradePrice", 0)) / 10)
-                        return f"💰 <b>قیمت دلار (تتر):</b> {price:,} تومان\n📊 منبع: Nobitex"
+                        if price > 200000:
+                            return f"💰 <b>قیمت دلار (تتر):</b> {price:,} تومان\n📊 منبع: Nobitex (لحظه‌ای)"
         except Exception:
             pass
 
-        # ۳. اگر APIها جواب ندادن، از Tavily (جستجوی وب) استفاده کن
+        # ۲. از API والکس
+        try:
+            async with httpx.AsyncClient() as client:
+                res = await client.get("https://api.wallex.ir/v1/markets", timeout=5)
+                if res.status_code == 200:
+                    symbols = res.json().get("result", {}).get("symbols", {})
+                    if "USDTIRT" in symbols:
+                        price = int(float(symbols["USDTIRT"]["stats"]["lastPrice"]))
+                        if price > 200000:
+                            return f"💰 <b>قیمت دلار (تتر):</b> {price:,} تومان\n📊 منبع: Wallex (لحظه‌ای)"
+        except Exception:
+            pass
+
+        # ۳. از Tavily (فقط سایت‌های معتبر و لحظه‌ای)
         try:
             logger.info("Trying Tavily for dollar price...")
-            context = await self._search_with_tavily("قیمت دلار آزاد امروز بازار تهران")
-            if context:
-                patterns = [
-                    r'([۰-۹]{2,3}[,،.][۰-۹]{3})',
-                    r'([0-9]{2,3}[,،.][0-9]{3})',
-                    r'([0-9]{5,7})',
-                    r'([۰-۹]{5,7})'
-                ]
-                found_prices = []
-                for p in patterns:
-                    found_prices.extend(re.findall(p, context))
-                
-                if found_prices:
-                    valid_prices = []
-                    for price_str in found_prices:
-                        clean_str = price_str.replace(",", "").replace("،", "").replace(".", "")
-                        clean_str = clean_str.translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹", "0123456789"))
-                        try:
-                            p_val = int(clean_str)
-                            if 50000 < p_val < 200000: # فیلتر قیمت منطقی دلار (۵۰ تا ۲۰۰ هزار تومان)
-                                valid_prices.append(p_val)
-                        except:
-                            pass
-                    
-                    if valid_prices:
-                        most_common_price = Counter(valid_prices).most_common(1)[0][0]
-                        return f"💰 <b>قیمت دلار:</b> {most_common_price:,} تومان\n📊 منبع: جستجوی وب زنده (Tavily)"
+            # جستجو فقط در سایت‌های معتبر
+            res = await asyncio.to_thread(
+                self.tavily.search, 
+                query="قیمت دلار آزاد امروز بازار تهران", 
+                search_depth="advanced", 
+                max_results=5,
+                include_domains=["tgju.org", "bonbast.com", "alanchand.com", "tejaratnews.com"]
+            )
+            results = res.get("results", [])
+            if results:
+                context = "\n\n".join([f"[{r.get('title', '')}]\n{r.get('content', '')}" for r in results])
+                price = self._extract_dollar_price(context)
+                if price:
+                    return f"💰 <b>قیمت دلار آزاد:</b> {price:,} تومان\n📊 منبع: جستجوی وب زنده (Tavily)"
         except Exception as e:
             logger.warning(f"Tavily price search failed: {e}")
 
-        # ۴. اگر هیچ‌کدام جواب نداد
         return "⚠️ متأسفانه در حال حاضر امکان دریافت قیمت لحظه‌ای وجود ندارد. لطفاً از TGJU چک کنید."
 
     async def _search_with_tavily(self, query: str) -> str:
-        """جستجوی عمیق با Tavily"""
         if not self.tavily:
             return ""
         try:
@@ -97,15 +113,12 @@ class AgentSearchService:
             results = res.get("results", [])
             if not results:
                 return ""
-            
-            context = "\n\n".join([f"[{r.get('title', '')}]\n{r.get('content', '')}" for r in results])
-            return context
+            return "\n\n".join([f"[{r.get('title', '')}]\n{r.get('content', '')}" for r in results])
         except Exception as e:
             logger.warning(f"Tavily failed: {e}")
             return ""
 
     async def _search_with_ddgs(self, query: str) -> str:
-        """جستجوی پشتیبان با DuckDuckGo"""
         try:
             results = await asyncio.to_thread(lambda: list(DDGS().text(query, max_results=5)))
             if not results:
@@ -116,7 +129,6 @@ class AgentSearchService:
             return ""
 
     async def process(self, query: str) -> str:
-        """مدیریت درخواست‌ها و انتخاب منبع مناسب"""
         q = query.lower()
         
         # ۱. اگر کاربر قیمت دلار خواست
@@ -147,10 +159,10 @@ class AgentSearchService:
                 "• <code>Snapp-Ajil</code> (۵۰ هزار تومان - سفارش اول آجیل)\n"
                 "• <code>Snapp-Juice</code> (۳۵ هزار تومان - آبمیوه و بستنی)\n"
                 "• <code>Snapp-Cafe</code> (۴۰ هزار تومان - کافه)\n\n"
-                "⚠️ <i>این کدها ممکن است منقضی شده باشند. برای کدهای لحظه‌ای، اپلیکیشن اسنپ فود را چک کنید.</i>"
+                "⚠️ <i>این کدها ممکن است منقضی شده باشند.</i>"
             )
 
-        # ۳. برای هر سوال دیگه‌ای (عمومی)، از Tavily استفاده کن
+        # ۳. برای هر سوال دیگه‌ای (عمومی)
         context = await self._search_with_tavily(query)
         if not context:
             context = await self._search_with_ddgs(query)

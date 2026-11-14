@@ -51,7 +51,7 @@ from app.services.auto_content import broadcast_auto_content, post_auto_content
 from app.services.card_generator import generate_ai_health_card
 from app.services.image_generator import generate_group_cover
 from app.services.news_service import get_global_magazine_news
-from app.services.web_search_service import get_web_search_service
+from app.services.agent_search_service import get_agent_search_service
 from app.utils.message_formatter import with_signature
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=get_settings().log_level)
@@ -471,7 +471,7 @@ async def cmd_remind(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     await update.message.reply_text(f"✅ ثبت شد! بعد از {amount}{unit} یادآوری می‌کنم.")
 
 # ---------------------------------------------------------------------------
-#  Text -> AI (Smart Memory, Context & Voice)
+#  Text -> AI (Smart Agent Search)
 # ---------------------------------------------------------------------------
 async def _process_ai_response(update: Update, context: ContextTypes.DEFAULT_TYPE, user_text: str, reply_context: str):
     user = update.effective_user
@@ -497,26 +497,23 @@ async def _process_ai_response(update: Update, context: ContextTypes.DEFAULT_TYP
                 clean_text = clean_text.replace(w, "")
             clean_text = clean_text.strip() or user_text
 
-        search_triggers = [
-            "قیمت", "دلار", "طلا", "بیت کوین", "اخبار", "امروز", "جدید", "چیست", "چیه", 
-            "تخفیف", "کد", "اسنپ فود", "اسنپ‌فود", "دیجی کالا", "دیجی‌کالا", "رستوران", 
-            "نتیجه بازی", "فیلم", "سریال", "بازی", "آب و هوا", "شغل", "استخدام"
-        ]
-        needs_search = any(w in text_lower for w in search_triggers) and not is_voice_request
+        # 👇 فراخوانی Agent Search
+        casual_chats = ["خوبی", "چطوری", "چه خبر", "خسته نباشی", "مرسی", "ممنون", "دوست دارم"]
+        is_casual = any(chat in text_lower for chat in casual_chats) and len(clean_text) < 20
         
         search_context = ""
-        if needs_search:
+        if not is_casual and not is_voice_request and len(clean_text) > 4:
             try:
-                status_msg = await context.bot.send_message(chat_id=chat_id, text="🔍 دارم از اینترنت چک می‌کنم...")
-                search_service = get_web_search_service()
-                search_context = await search_service.search_and_answer(clean_text, user.id)
+                status_msg = await context.bot.send_message(chat_id=chat_id, text="🧠 در حال تحلیل و جستجوی زنده در اینترنت...")
+                agent = get_agent_search_service()
+                search_context = await agent.execute_agentic_search(clean_text, user.id)
                 await status_msg.delete()
             except Exception as e:
-                logger.error(f"Search error: {e}")
+                logger.error(f"Agent Search error: {e}")
 
         final_input = f"{reply_context}{clean_text}"
         if search_context:
-            final_input = f"اطلاعات جدید از وب:\n{search_context}\n\nسوال: {clean_text}\n\n(با توجه به اطلاعات جدید جواب بده)"
+            final_input = f"اطلاعات جمع‌آوری شده از وب:\n{search_context}\n\nسوال کاربر: {clean_text}\n\n(پاسخ نهایی را با توجه به اطلاعات بالا بده)"
 
         if is_voice_request:
             final_prompt = f"You are acting as: {persona_prompt}. CRITICAL: Only natural Persian text, NO emojis, NO English, NO markdown." if persona_prompt else VOICE_SYSTEM_PROMPT
@@ -589,6 +586,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     asyncio.create_task(_process_ai_response(update, context, original_text, reply_context))
 
+# ---------------------------------------------------------------------------
+#  Callback Handler
+# ---------------------------------------------------------------------------
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     if not query: return
@@ -839,7 +839,7 @@ async def post_init(application: Application) -> None:
     import app.database.quiz_models 
     import app.database.music_models
     import app.database.group_models
-    import app.database.state_models # 👈 مهم! برای ساخت جدول حافظه
+    import app.database.state_models
     await create_all()
     
     me = await application.bot.get_me()

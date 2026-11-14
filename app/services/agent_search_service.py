@@ -6,6 +6,7 @@ import httpx
 import re
 import os
 from typing import Optional
+from collections import Counter
 from ddgs import DDGS
 from tavily import TavilyClient
 
@@ -25,7 +26,7 @@ class AgentSearchService:
             self.tavily = None
 
     async def _get_dollar_price(self) -> str:
-        """گرفتن قیمت دلار از APIهای معتبر (بدون فیلترشکن)"""
+        """گرفتن قیمت دلار از APIها و در صورت شکست، از Tavily"""
         # ۱. از API قیمت‌یاب (PriceDB)
         try:
             async with httpx.AsyncClient() as client:
@@ -49,14 +50,47 @@ class AgentSearchService:
         except Exception:
             pass
 
-        return "⚠️ متأسفانه در حال حاضر امکان دریافت قیمت دلار وجود ندارد. لطفاً از TGJU چک کنید."
+        # ۳. اگر APIها جواب ندادن، از Tavily (جستجوی وب) استفاده کن
+        try:
+            logger.info("Trying Tavily for dollar price...")
+            context = await self._search_with_tavily("قیمت دلار آزاد امروز بازار تهران")
+            if context:
+                patterns = [
+                    r'([۰-۹]{2,3}[,،.][۰-۹]{3})',
+                    r'([0-9]{2,3}[,،.][0-9]{3})',
+                    r'([0-9]{5,7})',
+                    r'([۰-۹]{5,7})'
+                ]
+                found_prices = []
+                for p in patterns:
+                    found_prices.extend(re.findall(p, context))
+                
+                if found_prices:
+                    valid_prices = []
+                    for price_str in found_prices:
+                        clean_str = price_str.replace(",", "").replace("،", "").replace(".", "")
+                        clean_str = clean_str.translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹", "0123456789"))
+                        try:
+                            p_val = int(clean_str)
+                            if 50000 < p_val < 200000: # فیلتر قیمت منطقی دلار (۵۰ تا ۲۰۰ هزار تومان)
+                                valid_prices.append(p_val)
+                        except:
+                            pass
+                    
+                    if valid_prices:
+                        most_common_price = Counter(valid_prices).most_common(1)[0][0]
+                        return f"💰 <b>قیمت دلار:</b> {most_common_price:,} تومان\n📊 منبع: جستجوی وب زنده (Tavily)"
+        except Exception as e:
+            logger.warning(f"Tavily price search failed: {e}")
+
+        # ۴. اگر هیچ‌کدام جواب نداد
+        return "⚠️ متأسفانه در حال حاضر امکان دریافت قیمت لحظه‌ای وجود ندارد. لطفاً از TGJU چک کنید."
 
     async def _search_with_tavily(self, query: str) -> str:
         """جستجوی عمیق با Tavily"""
         if not self.tavily:
             return ""
         try:
-            # جستجوی پیشرفته برای گرفتن متن کامل سایت‌ها
             res = await asyncio.to_thread(
                 self.tavily.search, query=query, search_depth="advanced", max_results=5
             )
@@ -91,13 +125,11 @@ class AgentSearchService:
 
         # ۲. اگر کاربر کد تخفیف اسنپ فود خواست
         if "اسنپ فود" in q and ("کد" in q or "تخفیف" in q):
-            # اول با Tavily در سایت‌های تخصصی تخفیف‌یاب می‌گردیم
             context = await self._search_with_tavily("کد تخفیف اسنپ فود offch.com mopon.ir")
             if not context:
                 context = await self._search_with_ddgs("کد تخفیف اسنپ فود offch.com mopon.ir")
             
             if context:
-                # استخراج کدهای شبیه به کد تخفیف (حروف بزرگ و اعداد)
                 codes = re.findall(r'\b[A-Z][A-Z0-9\-]{3,15}\b', context)
                 codes = list(set([c for c in codes if c not in ["HTTP", "HTTPS", "HTML", "PHP", "API", "OFFCH", "MOPON"]]))
                 
@@ -105,10 +137,9 @@ class AgentSearchService:
                     result = "🎟️ <b>کدهای تخفیف اسنپ فود پیدا شده:</b>\n\n"
                     for c in codes[:5]:
                         result += f"• <code>{c}</code>\n"
-                    result += "\n📌 این کدها از سایت‌های تخفیف‌یاب معتبر استخراج شده‌اند. قبل از استفاده، اعتبار آن‌ها را چک کنید."
+                    result += "\n📌 این کدها از سایت‌های تخفیف‌یاب معتبر استخراج شده‌اند."
                     return result
             
-            # اگر Tavily کدی پیدا نکرد، لیست پیش‌فرض کدهای فعال را نشان می‌دهیم
             return (
                 "🎟️ <b>کدهای تخفیف فعال اسنپ فود:</b>\n\n"
                 "• <code>Snapp-Restaurant</code> (۱۰۰ هزار تومان - سفارش اول رستوران)\n"

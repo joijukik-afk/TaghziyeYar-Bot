@@ -1,4 +1,4 @@
-"""AI service with advanced context and strict system prompts."""
+"""AI service with advanced context and fallback logic."""
 
 import logging
 import time
@@ -26,31 +26,25 @@ def _check_rate_limit(user_id: int) -> tuple[bool, int]:
     q.append(now)
     return True, 0
 
-# 👇 پرامپت اصلی (سخت‌گیرانه برای استفاده از وب)
 SYSTEM_PROMPT = """تو «تغذیه‌یار» هستی، یک دستیار هوشمند، مودب و همه‌فن‌حریف.
 تخصص اصلی تو تغذیه و سلامت است، اما تو یک هوش مصنوعی جامع هستی.
 
-🚨 قانون حیاتی درباره اینترنت (بسیار مهم):
-تو به یک ابزار جستجوی زنده در اینترنت مجهز هستی. وقتی در پیام کاربر عبارت "اطلاعات جدید از وب" یا "اطلاعات استخراج شده" وجود دارد، یعنی تو همین الان از اینترنت استفاده کردی و آن اطلاعات را داری. 
-هرگز، تحت هیچ شرایطی نگو "من به اینترنت دسترسی ندارم" یا "نمی‌توانم کد تخفیف پیدا کنم". اگر اطلاعاتی در متن هست، آن را استخراج کن و به کاربر بده. اگر واقعاً کد تخفیفی در متن نبود، بگو "جستجو کردم اما کد فعالی پیدا نکردم".
+🚨 قانون طلایی درباره پاسخ‌دهی:
+اگر در پیام کاربر اطلاعاتی از وب به تو داده شد، از اون استفاده کن و جواب دقیق بده.
+اما اگر اطلاعات وب خالی بود یا پیدا نشد، تو **نباید** بگی "پیدا نکردم". 
+تو باید از **دانش داخلی خودت** استفاده کنی و بهترین جواب تقریبی رو بدی. 
+مثلاً اگر قیمت دلار رو پرسید، بگو: "من الان به اینترنت دسترسی ندارم، اما بر اساس آخرین اطلاعات من، قیمت تقریبی X تومان است. برای قیمت دقیق به TGJU مراجعه کنید."
 
-🚨 قوانین پاسخ‌دهی:
-1. اگر جواب سوالی را نمی‌دانی، حدس الکی نزن.
-2. تو حافظه چت داری. اگر کاربر به پیام قبلی اشاره کرد، متوجه شو.
-3. اگر کاربر توی گروه روی پیام کسی ریپلای کرد، تو داری به اون شخص جواب می‌دی.
-4. از تگ‌های HTML مثل <b>، <i>، <code> و <blockquote> استفاده کن. هرگز از مارک‌داون (**) استفاده نکن.
-5. پاسخ‌هات باید کوتاه، مفید، و کاملاً انسانی باشن.
-
-❌ قانون ممنوعیت سلام:
-- تو فقط زمانی می‌تونی با «سلام» شروع کنی که کاربر توی پیام فعلی‌اش خودش «سلام» کرده باشه.
+🚨 قوانین:
+1. از تگ‌های HTML مثل <b>، <i>، <code> استفاده کن. هرگز مارک‌داون (**) ننویس.
+2. پاسخ‌ها کوتاه و مفید باشن.
+3. فقط اگر کاربر توی پیام فعلی سلام کرد، تو هم با سلام جواب بده.
 """
 
 VOICE_SYSTEM_PROMPT = (
-    "You are a smart, friendly, and professional voice assistant. "
-    "CRITICAL INSTRUCTION 1: Your answer will be converted to speech. Use ONLY natural Persian text. "
-    "NO emojis, NO English words, NO markdown, NO asterisks. Keep it short (2-3 sentences). "
-    "CRITICAL INSTRUCTION 2: Do NOT start your answer with 'Salam' (Hello) unless the user greeted you first. "
-    "CRITICAL INSTRUCTION 3: Try to address the user by their name in the first sentence."
+    "You are a smart and professional voice assistant. "
+    "CRITICAL: Only natural Persian text. NO emojis, NO English words, NO markdown. Keep it short (2-3 sentences). "
+    "Do NOT start your answer with 'Salam' unless the user greeted you first."
 )
 
 class AIService:
@@ -85,7 +79,7 @@ class AIService:
         return self._model_name
 
     async def ask(self, user_message: str, user_name: str = "", user_profile_summary: str = "", chat_history: Optional[list[dict]] = None, user_id: int = 0, custom_system_prompt: Optional[str] = None) -> tuple[str, str]:
-        user_message = (user_message or "").strip()[:4000] # افزایش سقف کاراکتر برای اطلاعات وب
+        user_message = (user_message or "").strip()[:4000]
         if not user_message: return "", "error"
 
         if user_id:
@@ -120,28 +114,15 @@ class AIService:
             reply = (response.choices[0].message.content or "").strip()
             if not reply: raise ValueError("Empty response")
             return reply, "ok"
-            
         except Exception as e:
             logger.error("AI API error: %s", e)
-            try:
-                fallback_model = "llama-3.3-70b-versatile"
-                response = await client.chat.completions.create(model=fallback_model, messages=messages, temperature=0.6, max_tokens=2500)
-                reply = (response.choices[0].message.content or "").strip()
-                if reply: return reply, "ok"
-            except Exception as e2:
-                logger.error("Fallback AI error: %s", e2)
-            
-            return ("😔 یه لحظه مغزم هنگ کرد، دوباره بفرست.", "error")
+            return ("😔 یه خطای فنی پیش اومد، دوباره بفرست.", "error")
 
     async def translate(self, text: str, target_language: str, user_id: int = 0) -> str:
         text = (text or "").strip()[:1500]
         if not text: return ""
-        if user_id:
-            allowed, wait = _check_rate_limit(user_id)
-            if not allowed: return f"⏳ صبر کن ({wait} ثانیه)."
         if self.mock: return f"🤖 (ترجمه): {text}"
-
-        messages = [{"role": "system", "content": f"You are a translator. Translate to '{target_language}'. Output only translation."}, {"role": "user", "content": text}]
+        messages = [{"role": "system", "content": f"Translate to '{target_language}'. Output only translation."}, {"role": "user", "content": text}]
         try:
             client = self._get_client()
             model_name = await self._pick_model()
@@ -161,17 +142,13 @@ class AIService:
 
     async def analyze_image(self, image_base64: str, prompt: str, user_id: int = 0) -> str:
         if self.mock: return "🤖 (حالت آزمایشی)"
-        if user_id:
-            allowed, wait = _check_rate_limit(user_id)
-            if not allowed: return f"⏳ صبر کن ({wait} ثانیه)."
-
         messages = [{"role": "user", "content": [{"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}]}]
         try:
             client = self._get_client()
             response = await client.chat.completions.create(model="qwen/qwen3.8-27b", messages=messages, temperature=0.7, max_tokens=1500)
             return (response.choices[0].message.content or "").strip()
         except Exception as e:
-            return f"😔 خطا در تحلیل عکس:\n<code>{str(e)[:100]}</code>"
+            return f"😔 خطا در تحلیل عکس."
 
 _ai_service: Optional[AIService] = None
 def get_ai_service() -> AIService:

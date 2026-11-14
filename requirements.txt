@@ -18,4 +18,4 @@ edge-tts
 beautifulsoup4==4.12.3
 pydub==0.25.1
 curl_cffi==0.7.4
-PyPasser==1.0.3
+PyPasser==1.1.0

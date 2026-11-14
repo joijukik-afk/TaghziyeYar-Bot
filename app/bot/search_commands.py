@@ -1,5 +1,3 @@
-"""Search commands handler with API + DDGS."""
-
 import logging
 from telegram import Update
 from telegram.error import BadRequest
@@ -23,30 +21,20 @@ async def cmd_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     try:
         agent = get_agent_search_service()
-        result = await agent.search(query)
+        result_text = await agent.process(query)
         
-        # 👇 اگه API جواب داده بود، مستقیم بفرست
-        if result.get("api_result"):
-            await status_msg.edit_text(result["api_result"], parse_mode="HTML")
+        # 👇👇👇 اینجا اگر جواب مستقیم بود (مثل قیمت دلار یا کد تخفیف)، دیگه به AI نمیدیم
+        if result_text.startswith(("💰", "🎟️", "📝", "⚠️")):
+            await status_msg.edit_text(result_text, parse_mode="HTML")
             return
-        
-        # در غیر این صورت، از AI استفاده کن
-        search_context = ""
-        if result.get("snippets"):
-            search_context = (
-                f"📌 نتایج جستجو:\n{result['snippets'][:3000]}\n\n"
-                f"💰 اعداد قیمت پیدا شده: {', '.join(result['prices']) if result['prices'] else 'هیچ'}\n"
-                f"🎟️ کدهای تخفیف پیدا شده: {', '.join(result['codes']) if result['codes'] else 'هیچ'}\n"
-                f"🔗 منابع: {', '.join(result['urls'][:3])}"
-            )
-        
+            
+        # در غیر این صورت (سوال عمومی)، به AI میدیم
         ai = get_ai_service()
         prompt = (
-            f"اطلاعات جستجو (از اینترنت):\n{search_context}\n\n"
+            f"اطلاعات جستجو:\n{result_text}\n\n"
             f"سوال کاربر: {query}\n\n"
-            f"⚠️ دستور: تو باید بر اساس اطلاعات بالا جواب بدهی. اگر در اطلاعات عددی یا کدی وجود دارد، آن را در پاسخ خود ذکر کن. هرگز نگو 'دسترسی ندارم'."
+            f"پاسخ را بر اساس اطلاعات بالا بده."
         )
-        
         answer, _ = await ai.ask(
             user_message=prompt,
             user_name=update.effective_user.first_name or "کاربر",
@@ -54,7 +42,7 @@ async def cmd_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         )
 
         if not answer or not answer.strip():
-            answer = "🔍 متأسفانه اطلاعات دقیقی پیدا نشد. لطفاً دوباره تلاش کن."
+            answer = "🔍 متأسفانه اطلاعات دقیقی پیدا نشد."
 
         try: 
             await status_msg.edit_text(answer, parse_mode="HTML", disable_web_page_preview=True)
@@ -63,4 +51,4 @@ async def cmd_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     except Exception as e:
         logger.error(f"Search command error: {e}", exc_info=True)
-        await status_msg.edit_text(f"❌ خطا در جستجو:\n\n<code>{str(e)[:300]}</code>", parse_mode="HTML")
+        await status_msg.edit_text(f"❌ خطا: <code>{str(e)[:200]}</code>", parse_mode="HTML")

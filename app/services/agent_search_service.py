@@ -1,121 +1,118 @@
-"""Agent Search Service - Multi-Source (API + Scraping + DDGS)."""
-
-import logging
 import asyncio
-import httpx
+import logging
 import re
-from typing import Optional, List, Dict
+import httpx
+from curl_cffi import requests as curl_requests
+from bs4 import BeautifulSoup
 from ddgs import DDGS
-from app.services.ai_service import get_ai_service
 
 logger = logging.getLogger(__name__)
 
 class AgentSearchService:
     def __init__(self):
-        self.ai_service = get_ai_service()
+        pass
 
-    async def _get_price_from_api(self) -> Optional[str]:
-        """گرفتن قیمت دلار از APIهای رایگان و معتبر"""
-        # منبع ۱: api.priceto.day (بدون کلید، هر ۳۰ دقیقه آپدیت)
+    async def _fetch(self, url: str) -> str:
         try:
-            async with httpx.AsyncClient(timeout=8.0) as client:
-                resp = await client.get("https://api.priceto.day/v1/latest/irr/usd")
-                if resp.status_code == 200:
-                    data = resp.json()
-                    price = data.get("price")
-                    if price:
-                        return f"💰 <b>قیمت دلار:</b> {int(price):,} تومان\n📊 منبع: PriceDB (لحظه‌ای)"
+            res = await asyncio.to_thread(
+                curl_requests.get, url, impersonate="chrome120", timeout=10
+            )
+            if res.status_code == 200:
+                return res.text
         except Exception as e:
-            logger.warning(f"PriceDB API failed: {e}")
+            logger.warning(f"Fetch error {url}: {e}")
+        return ""
 
-        # منبع ۲: tgju-mcp (اگه در دسترس باشه)
+    async def _get_dollar_price(self) -> str:
+        # ۱. از API رسمی TGJU
         try:
-            async with httpx.AsyncClient(timeout=8.0) as client:
-                resp = await client.get("http://localhost:8000/tj_market_summary")
-                if resp.status_code == 200:
-                    data = resp.json()
-                    # ساختار فرضی: {"dollar": {"value": 270000}}
-                    dollar = data.get("dollar", {}).get("value")
-                    if dollar:
-                        return f"💰 <b>قیمت دلار:</b> {int(dollar):,} تومان\n📊 منبع: TGJU (لحظه‌ای)"
+            res = await asyncio.to_thread(
+                curl_requests.get, "https://api.tgju.org/v1/market/indicator/summary-table-data", impersonate="chrome120", timeout=10
+            )
+            if res.status_code == 200:
+                data = res.json()
+                for item in data.get("data", []):
+                    if item.get("symbol") == "price_dollar_rl":
+                        price = item.get("value")
+                        if price:
+                            return f"💰 <b>قیمت دلار:</b> {int(price):,} تومان\n📊 منبع: TGJU (لحظه‌ای)"
+        except Exception as e:
+            logger.warning(f"TGJU API failed: {e}")
+
+        # ۲. اسکرپینگ سایت Bonbast
+        html = await self._fetch("https://www.bonbast.com/")
+        if html:
+            try:
+                soup = BeautifulSoup(html, 'html.parser')
+                usd_row = soup.find('td', string=re.compile(r'US Dollar', re.I))
+                if usd_row:
+                    sell = usd_row.find_next_sibling('td').find_next_sibling('td')
+                    price = int(re.sub(r'\D', '', sell.text))
+                    return f"💰 <b>قیمت دلار:</b> {price:,} تومان\n📊 منبع: Bonbast.com"
+            except Exception as e:
+                logger.warning(f"Bonbast parse error: {e}")
+
+        # ۳. از API نوبیتکس (تتر)
+        try:
+            async with httpx.AsyncClient() as client:
+                res = await client.get("https://api.nobitex.ir/v2/orderbook/USDTIRT", timeout=10)
+                if res.status_code == 200:
+                    data = res.json()
+                    if data.get("status") == "ok":
+                        price = int(float(data.get("lastTradePrice", 0)) / 10)
+                        return f"💰 <b>قیمت دلار (تتر):</b> {price:,} تومان\n📊 منبع: Nobitex"
         except Exception:
             pass
 
-        return None
+        return "⚠️ متأسفانه در حال حاضر امکان دریافت قیمت دلار وجود ندارد. لطفاً از سایت‌های معتبر (TGJU, Bonbast) چک کنید."
 
-    async def _get_discount_codes(self, query: str) -> Optional[str]:
-        """گرفتن کد تخفیف از سایت‌های تخصصی (Mopon, Offch)"""
-        # این یک نمونه است. در عمل باید اسکرپینگ انجام بشه.
-        # برای سادگی، فعلاً از DDGS استفاده می‌کنیم ولی با کوئری دقیق‌تر
-        return None
-
-    def _extract_prices(self, text: str) -> List[str]:
-        """استخراج اعداد قیمت (فارسی و انگلیسی)"""
-        patterns = [
-            r'([۰-۹]{2,3}[,،.][۰-۹]{3})',
-            r'([0-9]{2,3}[,،.][0-9]{3})',
-            r'([0-9]{5,7})',
-            r'([۰-۹]{5,7})'
+    async def _get_snapp_discounts(self) -> str:
+        urls = [
+            "https://www.offch.com/shops/snappfood",
+            "https://www.mopon.ir/%DA%A9%D8%AF-%D8%AA%D8%AE%D9%81%DB%8C%D9%81-%D8%A7%D8%B3%D9%86%D9%BE-%D9%81%D9%88%D8%AF/%D8%B3%D9%81%D8%A7%D8%B1%D8%B4-%D8%BA%D8%B0%D8%A7/%DA%A9%D9%88%D9%BE%D9%86"
         ]
-        found = []
-        for p in patterns:
-            found.extend(re.findall(p, text))
-        return list(dict.fromkeys(found))[:10]
+        text = ""
+        for url in urls:
+            html = await self._fetch(url)
+            if html:
+                try:
+                    soup = BeautifulSoup(html, 'html.parser')
+                    text += soup.get_text(separator=' ', strip=True) + "\n"
+                except: pass
 
-    def _extract_codes(self, text: str) -> List[str]:
-        """استخراج کدهای تخفیف"""
-        pattern = r'\b[A-Z][A-Z0-9]{3,11}\b'
-        codes = re.findall(pattern, text)
-        blacklist = ["HTTP", "HTTPS", "HTML", "PHP", "TRUE", "FALSE", "NULL"]
-        return list(dict.fromkeys([c for c in codes if c not in blacklist]))[:10]
+        if text:
+            codes = re.findall(r'\b[A-Z0-9]{4,10}\b', text)
+            codes = list(set([c for c in codes if c not in ["HTTP", "HTTPS", "HTML", "PHP", "API"]]))
+            if codes:
+                result = "🎟️ <b>کدهای تخفیف اسنپ فود پیدا شد:</b>\n\n"
+                for c in codes[:5]:
+                    result += f"• <code>{c}</code>\n"
+                result += "\n📌 این کدها از سایت‌های معتبر تخفیف‌یاب استخراج شده‌اند."
+                return result
+            else:
+                return "📝 متأسفانه کد فعالی در سایت‌های منبع پیدا نشد. معمولاً کدها شخصی هستند یا منقضی شده‌اند."
 
-    async def search(self, query: str) -> Dict[str, any]:
-        """جستجوی جامع: اول API، بعد DDGS"""
-        logger.info(f"🔍 Searching for: {query}")
-        
-        # ۱. اگه درباره قیمت دلار/طلاست، اول از API بگیر
-        if any(k in query.lower() for k in ["قیمت دلار", "دلار چنده", "نرخ دلار", "تتر", "طلا", "سکه"]):
-            api_price = await self._get_price_from_api()
-            if api_price:
-                return {
-                    "snippets": "",
-                    "prices": [],
-                    "codes": [],
-                    "urls": [],
-                    "api_result": api_price
-                }
+        return "⚠️ خطا در دریافت کدهای تخفیف."
 
-        # ۲. در غیر این صورت، از DDGS استفاده کن
-        queries = [query]
-        if "کد" in query or "تخفیف" in query:
-            queries.append("کد تخفیف اسنپ فود امروز")
-            queries.append("کد تخفیف دیجی کالا جدید")
+    async def _search_general(self, query: str) -> str:
+        try:
+            results = await asyncio.to_thread(lambda: list(DDGS().text(query, max_results=5)))
+            if not results:
+                return "نتیجه‌ای پیدا نشد."
+            context = "\n".join([f"- {r.get('title')}: {r.get('body')}" for r in results])
+            return context
+        except Exception as e:
+            logger.error(f"DDGS error: {e}")
+            return "خطا در جستجو."
 
-        all_snippets = []
-        all_urls = []
-        
-        for q in queries:
-            try:
-                results = await asyncio.to_thread(lambda q=q: list(DDGS().text(q, max_results=5)))
-                for r in results:
-                    body = r.get("body", "")
-                    title = r.get("title", "")
-                    href = r.get("href", "")
-                    if body:
-                        all_snippets.append(f"[{title}] {body}")
-                        all_urls.append(href)
-            except Exception as e:
-                logger.warning(f"DDGS failed for '{q}': {e}")
-
-        combined_text = "\n".join(all_snippets)
-        
-        return {
-            "snippets": combined_text,
-            "prices": self._extract_prices(combined_text),
-            "codes": self._extract_codes(combined_text),
-            "urls": all_urls[:5],
-            "api_result": None
-        }
+    async def process(self, query: str) -> str:
+        q = query.lower()
+        if "قیمت دلار" in q or "دلار چنده" in q or "تتر" in q:
+            return await self._get_dollar_price()
+        elif "تخفیف اسنپ" in q or "کد تخفیف" in q:
+            return await self._get_snapp_discounts()
+        else:
+            return await self._search_general(query)
 
 _agent_search_service = None
 def get_agent_search_service() -> AgentSearchService:

@@ -496,7 +496,7 @@ async def _process_ai_response(update: Update, context: ContextTypes.DEFAULT_TYP
                 clean_text = clean_text.replace(w, "")
             clean_text = clean_text.strip() or user_text
 
-        # 👇 جستجوی واقعی و دستی 👇
+        # جستجوی واقعی
         search_context = ""
         casual_chats = ["خوبی", "چطوری", "چه خبر", "خسته نباشی", "مرسی", "ممنون", "سلام"]
         is_casual = any(chat == clean_text.lower().strip() for chat in casual_chats)
@@ -505,18 +505,15 @@ async def _process_ai_response(update: Update, context: ContextTypes.DEFAULT_TYP
             try:
                 status_msg = await context.bot.send_message(chat_id=chat_id, text="🔍 در حال جستجوی زنده در اینترنت...")
                 agent = get_agent_search_service()
-                result = await agent.search(clean_text)
+                result = await agent.process(clean_text)
                 await status_msg.delete()
                 
-                if result["snippets"]:
-                    search_context = f"""
-📌 نتایج جستجو:
-{result["snippets"][:3000]}
-
-💰 اعداد قیمت پیدا شده: {', '.join(result["prices"]) if result["prices"] else "هیچ"}
-🎟️ کدهای تخفیف پیدا شده: {', '.join(result["codes"]) if result["codes"] else "هیچ"}
-🔗 منابع: {', '.join(result["urls"][:3])}
-"""
+                if result and not result.startswith(("💰", "🎟️", "⚠️")):
+                    search_context = result
+                elif result:
+                    # اگر جواب مستقیم بود (قیمت یا کد تخفیف)، مستقیم بفرست
+                    await _send_html_safe(bot=context.bot, chat_id=chat_id, text=result, reply_to=message_id)
+                    return
             except Exception as e:
                 logger.error(f"Search error: {e}")
 

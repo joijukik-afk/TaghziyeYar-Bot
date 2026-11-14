@@ -1,4 +1,4 @@
-"""Search commands handler with real web searching."""
+"""Search commands handler with API + DDGS."""
 
 import logging
 from telegram import Update
@@ -19,14 +19,18 @@ async def cmd_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if not query.strip():
         return await update.message.reply_text("🔍 <b>راهنما:</b>\n<code>/search قیمت دلار</code>", parse_mode="HTML")
 
-    status_msg = await update.message.reply_text(f"🔍 در حال جستجوی زنده در وب برای: <b>{query[:50]}...</b>", parse_mode="HTML")
+    status_msg = await update.message.reply_text(f"🔍 در حال جستجو برای: <b>{query[:50]}...</b>", parse_mode="HTML")
 
     try:
-        # ۱. جستجوی واقعی در وب با DDGS
         agent = get_agent_search_service()
         result = await agent.search(query)
         
-        # ۲. ساخت متن اطلاعات برای هوش مصنوعی
+        # 👇 اگه API جواب داده بود، مستقیم بفرست
+        if result.get("api_result"):
+            await status_msg.edit_text(result["api_result"], parse_mode="HTML")
+            return
+        
+        # در غیر این صورت، از AI استفاده کن
         search_context = ""
         if result.get("snippets"):
             search_context = (
@@ -36,7 +40,6 @@ async def cmd_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
                 f"🔗 منابع: {', '.join(result['urls'][:3])}"
             )
         
-        # ۳. ارسال به هوش مصنوعی همراه با اطلاعات
         ai = get_ai_service()
         prompt = (
             f"اطلاعات جستجو (از اینترنت):\n{search_context}\n\n"
@@ -51,7 +54,7 @@ async def cmd_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         )
 
         if not answer or not answer.strip():
-            answer = "🔍 متأسفانه اطلاعات دقیقی پیدا نشد. لطفاً دوباره تلاش کن یا سوالت رو دقیق‌تر بپرس."
+            answer = "🔍 متأسفانه اطلاعات دقیقی پیدا نشد. لطفاً دوباره تلاش کن."
 
         try: 
             await status_msg.edit_text(answer, parse_mode="HTML", disable_web_page_preview=True)

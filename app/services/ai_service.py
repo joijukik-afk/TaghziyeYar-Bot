@@ -1,4 +1,4 @@
-"""AI service with advanced context and fallback logic."""
+"""AI service with advanced context and web search (Groq Compound)."""
 
 import logging
 import time
@@ -13,7 +13,15 @@ _RATE_WINDOW_SECONDS = 60
 _RATE_MAX_REQUESTS = 15
 _user_requests: dict[int, deque] = defaultdict(deque)
 
-PREFERRED_MODELS = ["qwen/qwen3.8-27b", "llama-3.3-70b-versatile", "openai/gpt-oss-20b", "gemma2-9b-it"]
+# 👇 مدل Compound در اولویت اول قرار گرفت (جستجوی داخلی دارد)
+PREFERRED_MODELS = [
+    "groq/compound",
+    "qwen/qwen3.8-27b", 
+    "llama-3.3-70b-versatile", 
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b", 
+    "gemma2-9b-it"
+]
 
 def _check_rate_limit(user_id: int) -> tuple[bool, int]:
     now = time.time()
@@ -27,23 +35,22 @@ def _check_rate_limit(user_id: int) -> tuple[bool, int]:
     return True, 0
 
 SYSTEM_PROMPT = """تو «تغذیه‌یار» هستی، یک دستیار هوشمند، مودب و همه‌فن‌حریف.
-تخصص اصلی تو تغذیه و سلامت است، اما تو یک هوش مصنوعی جامع هستی.
+تخصص اصلی تو تغذیه و سلامت است، اما تو یک هوش مصنوعی جامع با دسترسی به اینترنت (جستجوی وب) هستی.
 
-🚨 قانون طلایی درباره پاسخ‌دهی:
-اگر در پیام کاربر اطلاعاتی از وب به تو داده شد، از اون استفاده کن و جواب دقیق بده.
-اما اگر اطلاعات وب خالی بود یا پیدا نشد، تو **نباید** بگی "پیدا نکردم". 
-تو باید از **دانش داخلی خودت** استفاده کنی و بهترین جواب تقریبی رو بدی. 
-مثلاً اگر قیمت دلار رو پرسید، بگو: "من الان به اینترنت دسترسی ندارم، اما بر اساس آخرین اطلاعات من، قیمت تقریبی X تومان است. برای قیمت دقیق به TGJU مراجعه کنید."
+🚨 قانون طلایی جستجو:
+تو به صورت خودکار به اینترنت دسترسی داری. اگر سوالی از تو پرسیده شد که نیاز به اطلاعات لحظه‌ای، قیمت، یا اخبار جدید دارد، حتماً از جستجوی داخلی خودت استفاده کن و دقیق‌ترین جواب را بده. 
+هرگز نگو "من به اینترنت دسترسی ندارم". اگر اطلاعاتی پیدا نکردی، بگو "جستجو کردم اما کد فعالی پیدا نکردم".
 
-🚨 قوانین:
+🚨 قوانین پاسخ‌دهی:
 1. از تگ‌های HTML مثل <b>، <i>، <code> استفاده کن. هرگز مارک‌داون (**) ننویس.
 2. پاسخ‌ها کوتاه و مفید باشن.
-3. فقط اگر کاربر توی پیام فعلی سلام کرد، تو هم با سلام جواب بده.
+3. منابعی که پیدا کردی (مثل سایت‌ها) رو در انتها ذکر کن.
+4. فقط اگر کاربر توی پیام فعلی سلام کرد، تو هم با سلام جواب بده.
 """
 
 VOICE_SYSTEM_PROMPT = (
-    "You are a smart and professional voice assistant. "
-    "CRITICAL: Only natural Persian text. NO emojis, NO English words, NO markdown. Keep it short (2-3 sentences). "
+    "You are a smart voice assistant with internet access. "
+    "CRITICAL: Only natural Persian text. NO emojis, NO English words, NO markdown, NO citations like [1]. Keep it short (2-3 sentences). "
     "Do NOT start your answer with 'Salam' unless the user greeted you first."
 )
 
@@ -108,14 +115,26 @@ class AIService:
         try:
             model_name = await self._pick_model()
             client = self._get_client()
+            
+            # مدل compound خودش سرچ میکنه و جواب نهایی رو میده
             response = await client.chat.completions.create(
                 model=model_name, messages=messages, temperature=0.6, max_tokens=2500, top_p=0.9
             )
             reply = (response.choices[0].message.content or "").strip()
             if not reply: raise ValueError("Empty response")
             return reply, "ok"
+            
         except Exception as e:
             logger.error("AI API error: %s", e)
+            # اگر مدل compound ارور داد، با مدل پشتیبان امتحان میکنیم
+            try:
+                fallback_model = "llama-3.3-70b-versatile"
+                response = await client.chat.completions.create(model=fallback_model, messages=messages, temperature=0.6, max_tokens=2500)
+                reply = (response.choices[0].message.content or "").strip()
+                if reply: return reply, "ok"
+            except Exception as e2:
+                logger.error("Fallback AI error: %s", e2)
+            
             return ("😔 یه خطای فنی پیش اومد، دوباره بفرست.", "error")
 
     async def translate(self, text: str, target_language: str, user_id: int = 0) -> str:
@@ -125,8 +144,8 @@ class AIService:
         messages = [{"role": "system", "content": f"Translate to '{target_language}'. Output only translation."}, {"role": "user", "content": text}]
         try:
             client = self._get_client()
-            model_name = await self._pick_model()
-            response = await client.chat.completions.create(model=model_name, messages=messages, temperature=0.1, max_tokens=2000)
+            # برای ترجمه از مدل سبک‌تر استفاده میکنیم
+            response = await client.chat.completions.create(model="llama-3.3-70b-versatile", messages=messages, temperature=0.1, max_tokens=2000)
             return (response.choices[0].message.content or "").strip() or "ترجمه‌ای دریافت نشد."
         except Exception: return "😔 خطا در ترجمه."
 
@@ -145,7 +164,8 @@ class AIService:
         messages = [{"role": "user", "content": [{"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}]}]
         try:
             client = self._get_client()
-            response = await client.chat.completions.create(model="qwen/qwen3.8-27b", messages=messages, temperature=0.7, max_tokens=1500)
+            # مدل Vision گروک
+            response = await client.chat.completions.create(model="llama-3.2-11b-vision-preview", messages=messages, temperature=0.7, max_tokens=1500)
             return (response.choices[0].message.content or "").strip()
         except Exception as e:
             return f"😔 خطا در تحلیل عکس."

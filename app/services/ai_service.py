@@ -38,7 +38,6 @@ SYSTEM_PROMPT = """تو «تغذیه‌یار» هستی، یک دستیار ه�
 پاسخ فارسی، کوتاه و با HTML.
 """
 
-# 👇 این متغیر جا افتاده بود که باعث ارور میشد
 VOICE_SYSTEM_PROMPT = (
     "You are a smart and professional voice assistant. "
     "CRITICAL: Only natural Persian text. NO emojis, NO English words, NO markdown. Keep it short (2-3 sentences). "

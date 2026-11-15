@@ -28,9 +28,11 @@ def init_engine() -> None:
 
     url = settings.database_url
 
-    # 👈 ۱. غیرفعال کردن کش درایور asyncpg
-    # statement_cache_size=0 باعث می‌شود asyncpg برای هر کوئری، هر بار از نو برنامه‌ریزی کند
-    connect_args = {"statement_cache_size": 0}
+    # 👈 کلید اصلی حل مشکل: غیرفعال کردن هر دو کش asyncpg
+    connect_args = {
+        "statement_cache_size": 0,
+        "prepared_statement_cache_size": 0,
+    }
 
     # Normalize postgres:// and postgresql:// to asyncpg format
     if url.startswith("postgres://"):
@@ -38,39 +40,34 @@ def init_engine() -> None:
     elif url.startswith("postgresql://") and "+asyncpg" not in url:
         url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
 
-    # 👈 ۲. غیرفعال کردن کش در سطح SQLAlchemy (با اضافه کردن پارامتر به URL)
-    # این کار باعث می‌شود SQLAlchemy هم کوئری‌های تولیدی خود را کش نکند
+    # مدیریت SSL و حذف پارامترهای اضافی از URL
     if "?" in url:
         parsed = urlparse(url)
         query_params = parse_qs(parsed.query)
-        
-        # مدیریت SSL
+
         if "sslmode" in query_params:
             ssl_mode = query_params["sslmode"][0]
             if ssl_mode in ("require", "verify-ca", "verify-full"):
                 connect_args["ssl"] = ssl_mode
-                
+
         url = url.split("?")[0]
 
-    # 👈 ۳. اضافه کردن پارامتر غیرفعال‌سازی کش به URL
-    url = f"{url}?prepared_statement_cache_size=0"
-
-    # 👈 ۴. استفاده از NullPool برای اطمینان از عدم نگهداری اتصالات قدیمی
+    # 👈 استفاده از NullPool برای جلوگیری از نگهداری اتصالات قدیمی
     _engine = create_async_engine(
         url,
         echo=False,
         future=True,
-        poolclass=NullPool,  # 👈 استفاده از NullPool به جای pool_pre_ping
+        poolclass=NullPool,
         connect_args=connect_args,
     )
-    
+
     _session_factory = async_sessionmaker(
         bind=_engine,
         class_=AsyncSession,
         expire_on_commit=False,
         autoflush=False,
     )
-    logger.info("Database engine initialized with caching disabled.")
+    logger.info("Database engine initialized with all statement caches disabled.")
 
 
 async def create_all() -> None:

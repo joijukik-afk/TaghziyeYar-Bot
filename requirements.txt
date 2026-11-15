@@ -14,7 +14,7 @@ arabic-reshaper==3.0.0
 python-bidi==0.4.2
 feedparser==6.0.11
 yt-dlp==2024.11.4
-edge-tts==6.1.17
+edge-tts==7.3.0
 beautifulsoup4==4.12.3
 pydub==0.25.1
 curl_cffi==0.7.4

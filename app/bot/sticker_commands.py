@@ -13,29 +13,17 @@ from PIL import Image, ImageDraw, ImageFont
 
 logger = logging.getLogger(__name__)
 
-FONT_PATH = "Vazirmatn-Bold.ttf"
-# تغییر لینک به raw.githubusercontent برای دانلود مطمئن‌تر
-FONT_URL = "https://raw.githubusercontent.com/rastikerdar/vazirmatn/master/fonts/ttf/Vazirmatn-Bold.ttf"
+# پیدا کردن مسیر دقیق فونت (از داخل پوشه app/bot به روت پروژه)
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+FONT_PATH = os.path.join(BASE_DIR, "Vazirmatn-Bold.ttf")
 
 async def _ensure_font_exists() -> bool:
-    """دانلود خودکار فونت در صورت نبودن. در صورت خطا False برمی‌گرداند"""
-    if not os.path.exists(FONT_PATH):
-        logger.info("Font not found. Downloading Vazirmatn-Bold.ttf...")
-        try:
-            async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
-                response = await client.get(FONT_URL)
-                if response.status_code == 200:
-                    with open(FONT_PATH, "wb") as f:
-                        f.write(response.content)
-                    logger.info("✅ Font downloaded successfully.")
-                    return True
-                else:
-                    logger.error(f"Failed to download font. Status: {response.status_code}")
-                    return False
-        except Exception as e:
-            logger.error(f"Failed to download font: {e}")
-            return False
-    return True
+    """چک کردن وجود فونت در پروژه"""
+    if os.path.exists(FONT_PATH):
+        return True
+    else:
+        logger.error(f"Font NOT found at: {FONT_PATH}")
+        return False
 
 def _create_gradient_background(width: int, height: int, color1: tuple, color2: tuple) -> Image.Image:
     """ساخت پس‌زمینه گرادیانت زیبا"""
@@ -69,10 +57,10 @@ async def cmd_sticker(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     status_msg = await update.message.reply_text("🎨 در حال طراحی استیکر...")
 
     try:
-        # ۱. چک کردن و دانلود فونت
+        # ۱. چک کردن فونت
         font_ok = await _ensure_font_exists()
         if not font_ok:
-            return await status_msg.edit_text("❌ خطا در دانلود فونت.\nلطفاً اتصال اینترنت سرور (یا فیلترشکن رندر) را بررسی کنید. (گیت‌هاب مسدود است)")
+            return await status_msg.edit_text("❌ فایل فونت پیدا نشد!\nمطمئن شو فایل Vazirmatn-Bold.ttf کنار requirements.txt هست.")
 
         # ۲. ساخت بوم
         size = (512, 512)
@@ -83,19 +71,20 @@ async def cmd_sticker(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         try:
             font = ImageFont.truetype(FONT_PATH, 50)
         except IOError:
-            return await status_msg.edit_text("❌ فایل فونت پیدا نشد. لطفاً دوباره تلاش کنید.")
+            return await status_msg.edit_text("❌ فونت خراب است یا خوانده نمی‌شود.")
 
-        # ۴. شکستن متن به خطوط (تغییر مهم: اول متن اصلی رو می‌شکنیم، بعد برعکس می‌کنیم)
+        # ۴. شکستن متن به خطوط
         wrapped_lines = textwrap.wrap(text, width=20)
         
-        # محاسبه ارتفاع برای وسط‌چین شدن عمودی
         line_heights = []
         bidi_lines = []
         
         for line in wrapped_lines:
+            # چسباندن حروف فارسی و سپس اصلاح جهت (راست‌چین)
             reshaped = arabic_reshaper.reshape(line)
             bidi_line = get_display(reshaped)
             bidi_lines.append(bidi_line)
+            
             bbox = draw.textbbox((0, 0), bidi_line, font=font)
             line_heights.append(bbox[3] - bbox[1])
             
@@ -126,4 +115,4 @@ async def cmd_sticker(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     except Exception as e:
         logger.error(f"Sticker generation error: {e}", exc_info=True)
-        await status_msg.edit_text(f"❌ متأسفانه در ساخت استیکر خطایی پیش آمد.\nخطا: `{str(e)[:50]}`", parse_mode="Markdown")
+        await status_msg.edit_text(f"❌ متأسفانه خطایی پیش آمد:\n`{str(e)[:100]}`", parse_mode="Markdown")

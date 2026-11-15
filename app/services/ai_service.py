@@ -86,9 +86,15 @@ VOICE_SYSTEM_PROMPT = (
 class AIService:
     def __init__(self):
         settings = get_settings()
+        # 👈 خواندن کلید از هر دو متغیر (اگر GROQ نبود، DEEPSEEK را می‌خواند)
         self.api_key = getattr(settings, 'groq_api_key', '') or getattr(settings, 'deepseek_api_key', '')
         self.requested_model = getattr(settings, 'groq_model', '') or getattr(settings, 'deepseek_model', '')
+        
+        # 👈 چک کردن اینکه آیا کلید معتبر است یا نه (جلوگیری از حالت Mock)
         self.mock = settings.mock_mode or not self.api_key
+        if not self.api_key:
+            logger.warning("⚠️ هشدار: هیچ کلید API (GROQ یا DEEPSEEK) در تنظیمات یافت نشد. ربات در حالت آزمایشی است.")
+            
         self._client: Optional[AsyncGroq] = None
         self._model_name: Optional[str] = None
 
@@ -142,7 +148,7 @@ class AIService:
                 return (f"⏳ صبر کن ({wait} ثانیه).", "rate_limited")
 
         if self.mock:
-            return ("🤖 (حالت آزمایشی - AI فعال نیست)", "mock")
+            return ("🤖 (حالت آزمایشی - کلید API در تنظیمات رندر وجود ندارد)", "mock")
 
         sys_prompt = custom_system_prompt if custom_system_prompt else SYSTEM_PROMPT
         messages: list[dict] = [{"role": "system", "content": sys_prompt}]
@@ -183,6 +189,7 @@ class AIService:
         except Exception as e:
             logger.error("AI API error: %s", e, exc_info=True)
 
+            # تلاش با مدل پشتیبان (Fallback)
             try:
                 if 'client' not in locals():
                     client = self._get_client()
@@ -211,6 +218,7 @@ class AIService:
         ]
         try:
             client = self._get_client()
+            # 👈 استفاده از مدل پیش‌فرض معتبر برای ترجمه
             response = await client.chat.completions.create(
                 model=TEXT_MODEL_DEFAULT, messages=messages, temperature=0.1, max_tokens=2000
             )

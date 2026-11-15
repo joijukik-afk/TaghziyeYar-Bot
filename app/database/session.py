@@ -3,7 +3,7 @@
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
@@ -28,31 +28,33 @@ def init_engine() -> None:
 
     url = settings.database_url
 
-    # 👈 کلید اصلی حل مشکل: غیرفعال کردن هر دو کش asyncpg
+    # 👈 خاموش کردن کش در لایه اول (کتابخانه asyncpg)
     connect_args = {
         "statement_cache_size": 0,
         "prepared_statement_cache_size": 0,
     }
 
-    # Normalize postgres:// and postgresql:// to asyncpg format
+    # اصلاح آدرس دیتابیس
     if url.startswith("postgres://"):
         url = url.replace("postgres://", "postgresql+asyncpg://", 1)
     elif url.startswith("postgresql://") and "+asyncpg" not in url:
         url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
 
-    # مدیریت SSL و حذف پارامترهای اضافی از URL
-    if "?" in url:
-        parsed = urlparse(url)
-        query_params = parse_qs(parsed.query)
+    # مدیریت SSL
+    parsed = urlparse(url)
+    query_params = parse_qs(parsed.query)
+    
+    if "sslmode" in query_params:
+        ssl_mode = query_params["sslmode"][0]
+        if ssl_mode in ("require", "verify-ca", "verify-full"):
+            connect_args["ssl"] = ssl_mode
 
-        if "sslmode" in query_params:
-            ssl_mode = query_params["sslmode"][0]
-            if ssl_mode in ("require", "verify-ca", "verify-full"):
-                connect_args["ssl"] = ssl_mode
+    # 👈 خاموش کردن کش در لایه دوم (کتابخانه SQLAlchemy)
+    clean_query = {k: v for k, v in query_params.items() if k != "prepared_statement_cache_size"}
+    clean_query["prepared_statement_cache_size"] = ["0"]
+    new_query = urlencode(clean_query, doseq=True)
+    url = urlunparse(parsed._replace(query=new_query))
 
-        url = url.split("?")[0]
-
-    # 👈 استفاده از NullPool برای جلوگیری از نگهداری اتصالات قدیمی
     _engine = create_async_engine(
         url,
         echo=False,
@@ -60,18 +62,18 @@ def init_engine() -> None:
         poolclass=NullPool,
         connect_args=connect_args,
     )
-
+    
     _session_factory = async_sessionmaker(
         bind=_engine,
         class_=AsyncSession,
         expire_on_commit=False,
         autoflush=False,
     )
-    logger.info("Database engine initialized with all statement caches disabled.")
+    logger.info("Database engine initialized with ALL statement caches disabled.")
 
 
 async def create_all() -> None:
-    """Create all tables if they do not exist (Only for development)."""
+    """Create all tables if they do not exist."""
     if _engine is None:
         init_engine()
     assert _engine is not None

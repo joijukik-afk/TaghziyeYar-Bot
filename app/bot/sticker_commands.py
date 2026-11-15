@@ -14,21 +14,28 @@ from PIL import Image, ImageDraw, ImageFont
 logger = logging.getLogger(__name__)
 
 FONT_PATH = "Vazirmatn-Bold.ttf"
-FONT_URL = "https://github.com/rastikerdar/vazirmatn/raw/master/fonts/ttf/Vazirmatn-Bold.ttf"
+# تغییر لینک به raw.githubusercontent برای دانلود مطمئن‌تر
+FONT_URL = "https://raw.githubusercontent.com/rastikerdar/vazirmatn/master/fonts/ttf/Vazirmatn-Bold.ttf"
 
-async def _ensure_font_exists():
-    """دانلود خودکار فونت در صورت نبودن"""
+async def _ensure_font_exists() -> bool:
+    """دانلود خودکار فونت در صورت نبودن. در صورت خطا False برمی‌گرداند"""
     if not os.path.exists(FONT_PATH):
         logger.info("Font not found. Downloading Vazirmatn-Bold.ttf...")
         try:
-            async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
                 response = await client.get(FONT_URL)
                 if response.status_code == 200:
                     with open(FONT_PATH, "wb") as f:
                         f.write(response.content)
                     logger.info("✅ Font downloaded successfully.")
+                    return True
+                else:
+                    logger.error(f"Failed to download font. Status: {response.status_code}")
+                    return False
         except Exception as e:
             logger.error(f"Failed to download font: {e}")
+            return False
+    return True
 
 def _create_gradient_background(width: int, height: int, color1: tuple, color2: tuple) -> Image.Image:
     """ساخت پس‌زمینه گرادیانت زیبا"""
@@ -63,54 +70,60 @@ async def cmd_sticker(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     try:
         # ۱. چک کردن و دانلود فونت
-        await _ensure_font_exists()
+        font_ok = await _ensure_font_exists()
+        if not font_ok:
+            return await status_msg.edit_text("❌ خطا در دانلود فونت.\nلطفاً اتصال اینترنت سرور (یا فیلترشکن رندر) را بررسی کنید. (گیت‌هاب مسدود است)")
 
-        # ۲. آماده‌سازی متن (اصلاح حروف و راست‌چین)
-        reshaped_text = arabic_reshaper.reshape(text)
-        bidi_text = get_display(reshaped_text)
-
-        # ۳. ساخت بوم
+        # ۲. ساخت بوم
         size = (512, 512)
         img = _create_gradient_background(size[0], size[1], (28, 30, 60), (70, 30, 90))
         draw = ImageDraw.Draw(img)
 
-        # ۴. بارگذاری فونت
+        # ۳. بارگذاری فونت
         try:
             font = ImageFont.truetype(FONT_PATH, 50)
         except IOError:
-            font = ImageFont.load_default()
+            return await status_msg.edit_text("❌ فایل فونت پیدا نشد. لطفاً دوباره تلاش کنید.")
 
-        # ۵. شکستن متن به خطوط
-        wrapped_lines = textwrap.wrap(bidi_text, width=20)
+        # ۴. شکستن متن به خطوط (تغییر مهم: اول متن اصلی رو می‌شکنیم، بعد برعکس می‌کنیم)
+        wrapped_lines = textwrap.wrap(text, width=20)
         
         # محاسبه ارتفاع برای وسط‌چین شدن عمودی
-        line_heights = [draw.textbbox((0, 0), line, font=font)[3] for line in wrapped_lines]
-        total_text_height = sum(line_heights) + (len(wrapped_lines) - 1) * 15
+        line_heights = []
+        bidi_lines = []
         
+        for line in wrapped_lines:
+            reshaped = arabic_reshaper.reshape(line)
+            bidi_line = get_display(reshaped)
+            bidi_lines.append(bidi_line)
+            bbox = draw.textbbox((0, 0), bidi_line, font=font)
+            line_heights.append(bbox[3] - bbox[1])
+            
+        total_text_height = sum(line_heights) + (len(wrapped_lines) - 1) * 15
         y_start = (512 - total_text_height) / 2
 
-        # ۶. نوشتن متن
-        for i, line in enumerate(wrapped_lines):
-            bbox = draw.textbbox((0, 0), line, font=font)
+        # ۵. نوشتن متن
+        for i, bidi_line in enumerate(bidi_lines):
+            bbox = draw.textbbox((0, 0), bidi_line, font=font)
             text_width = bbox[2] - bbox[0]
             x = (512 - text_width) / 2
             
             # سایه
-            draw.text((x + 2, y_start + 2), line, font=font, fill=(0, 0, 0, 180))
+            draw.text((x + 2, y_start + 2), bidi_line, font=font, fill=(0, 0, 0, 180))
             # متن اصلی
-            draw.text((x, y_start), line, font=font, fill=(255, 255, 255, 255))
+            draw.text((x, y_start), bidi_line, font=font, fill=(255, 255, 255, 255))
             
             y_start += line_heights[i] + 15
 
-        # ۷. ذخیره به عنوان WebP
+        # ۶. ذخیره به عنوان WebP
         output = io.BytesIO()
         img.save(output, format="WebP", lossless=True)
         output.seek(0)
 
-        # ۸. ارسال استیکر
+        # ۷. ارسال استیکر
         await update.message.reply_sticker(sticker=output)
         await status_msg.delete()
 
     except Exception as e:
         logger.error(f"Sticker generation error: {e}", exc_info=True)
-        await status_msg.edit_text("❌ متأسفانه در ساخت استیکر خطایی پیش آمد.")
+        await status_msg.edit_text(f"❌ متأسفانه در ساخت استیکر خطایی پیش آمد.\nخطا: `{str(e)[:50]}`", parse_mode="Markdown")

@@ -12,16 +12,16 @@ BOT_COMMANDS = [
     BotCommand("menu", "🏠 منوی اصلی"),
 
     # ابزارهای هوشمند
-    BotCommand("imagine", "🎨 تولید عکس با هوش مصنوعی"),
-    BotCommand("search", "🔍 جستجوی هوشمند در وب"),
-    BotCommand("translate", "🌐 ترجمه هوشمند متن"),
-    BotCommand("voice", "🎙️ چت صوتی با هوش مصنوعی"),
+    BotCommand("search", "🔍 جستجوی هوشمند"),
+    BotCommand("translate", "🌐 ترجمه هوشمند"),
+    BotCommand("voice", "🎙️ چت صوتی"),
     BotCommand("tts", "🔊 تبدیل متن به صدا"),
+    BotCommand("sticker", "🎨 ساخت استیکر از متن"),
+    BotCommand("imagine", "🖼️ تولید عکس با AI"),
 
     # موسیقی
-    BotCommand("koma", "🎧 کشف موسیقی COMA"),
-    BotCommand("music", "🎵 دانلود آهنگ خاص"),
-    BotCommand("koma_random", "🎲 آهنگ تصادفی COMA"),
+    BotCommand("koma", "🎧 موسیقی COMA"),
+    BotCommand("music", "🎵 دانلود آهنگ"),
 
     # بازی و سرگرمی
     BotCommand("quiz", "🎮 کوییز زنده"),
@@ -30,40 +30,38 @@ BOT_COMMANDS = [
     BotCommand("mystats", "📊 آمار من"),
 
     # برنامه غذایی
-    BotCommand("plan", "🍽 ساخت برنامه غذایی"),
+    BotCommand("plan", "🍽 برنامه غذایی"),
     BotCommand("today", "📅 برنامه امروز"),
     BotCommand("shopping", "🛒 فهرست خرید"),
-    BotCommand("food", "🥗 ارزش غذایی غذا"),
+    BotCommand("food", "🥗 ارزش غذایی"),
 
     # پروفایل
-    BotCommand("setup", "✏️ تکمیل یا ویرایش اطلاعات"),
+    BotCommand("setup", "✏️ تکمیل اطلاعات"),
     BotCommand("profile", "👤 پروفایل من"),
-    BotCommand("mycard", "🪪 کارت گرافیکی من"),
+    BotCommand("mycard", "🪪 کارت دیجیتال من"),
 
     # محاسبات
     BotCommand("bmi", "⚖️ محاسبه BMI"),
-    BotCommand("calories", "🔥 نیاز کالری روزانه"),
+    BotCommand("calories", "🔥 کالری روزانه"),
     BotCommand("macros", "🧮 درشت‌مغذی‌ها"),
-    BotCommand("protein", "🥩 نیاز پروتئین"),
+    BotCommand("protein", "🥩 پروتئین"),
     BotCommand("ideal", "🎯 تحلیل کامل بدن"),
-    BotCommand("bodyfat", "📊 تخمین چربی بدن"),
-    BotCommand("bmr", "⚡ متابولیسم پایه"),
+    BotCommand("bodyfat", "📊 چربی بدن"),
+    BotCommand("bmr", "⚡ متابولیسم"),
 
     # پیگیری
-    BotCommand("weight", "⚖️ ثبت وزن جدید"),
-    BotCommand("progress", "📈 گزارش پیشرفت"),
+    BotCommand("weight", "⚖️ ثبت وزن"),
+    BotCommand("progress", "📈 پیشرفت"),
     BotCommand("water", "💧 ثبت آب"),
 
     # محتوای روزانه
-    BotCommand("tip", "💡 نکته تغذیه‌ای"),
-    BotCommand("fact", "🍎 فکت جالب"),
+    BotCommand("tip", "💡 نکته تغذیه"),
+    BotCommand("fact", "🍎 فکت"),
     BotCommand("myth", "❌ باور اشتباه"),
 
-    # مدیریت گروه
-    BotCommand("tagall", "📢 تگ کردن اعضا (ادمین)"),
-    BotCommand("setgroup", "📌 ثبت گروه برای پست خودکار"),
-
-    # ادمین
+    # مدیریت
+    BotCommand("tagall", "📢 تگ کردن اعضا"),
+    BotCommand("setgroup", "📌 ثبت گروه"),
     BotCommand("proxy", "🌐 لیست پروکسی"),
     BotCommand("getconfig", "⚙️ کانفیگ V2Ray"),
 
@@ -72,7 +70,6 @@ BOT_COMMANDS = [
     BotCommand("privacy", "🔒 حریم خصوصی"),
     BotCommand("settings", "⚙️ تنظیمات"),
 ]
-
 
 async def setup_commands(bot: Bot) -> None:
     try:

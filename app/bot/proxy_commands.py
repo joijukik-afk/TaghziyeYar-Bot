@@ -7,6 +7,8 @@ import html
 from typing import List, Dict
 import httpx
 import urllib.parse
+from telegram import Update
+from telegram.ext import ContextTypes
 from app.utils.message_formatter import with_signature
 
 logger = logging.getLogger(__name__)
@@ -102,7 +104,7 @@ SECURITY_WARNING = (
     "🔒 <i>استفاده با مسئولیت خود شماست.</i>"
 )
 
-async def cmd_proxy(update, context) -> None:
+async def cmd_proxy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.effective_user: return
     user_id = update.effective_user.id
 
@@ -134,3 +136,10 @@ async def cmd_proxy(update, context) -> None:
     except Exception as e:
         logger.error(f"cmd_proxy error: {e}", exc_info=True)
         await status.edit_text("❌ خطا در دریافت پروکسی.")
+
+# 👈 تابعی که باعث خطا شده بود (اضافه شد)
+async def handle_proxy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """هندلر خالی برای دکمه‌های شیشه‌ای پروکسی جهت جلوگیری از خطای AttributeError"""
+    query = update.callback_query
+    if query:
+        await query.answer("این بخش فعلاً غیرفعال است.", show_alert=True)

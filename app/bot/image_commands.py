@@ -3,13 +3,15 @@
 import io
 import logging
 import urllib.parse
+import hashlib
 import httpx
+from PIL import Image
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from app.services.ai_service import get_ai_service
+from app.utils.message_formatter import with_signature
 
 logger = logging.getLogger(__name__)
-
 
 async def cmd_imagine(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.effective_user:
@@ -31,33 +33,34 @@ async def cmd_imagine(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     try:
         ai = get_ai_service()
         
-        # ۱. ترجمه پرامپت به انگلیسی (هوش مصنوعی بهترین درک رو از انگلیسی داره)
         try:
             prompt_en = await ai.translate(prompt_fa, "en", user_id=update.effective_user.id)
             if not prompt_en or len(prompt_en) < 3:
                 prompt_en = prompt_fa
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Translation for image prompt failed: {e}")
             prompt_en = prompt_fa
 
-        # ۲. ساخت URL تصویر
         encoded = urllib.parse.quote(prompt_en)
         image_url = (
             f"https://image.pollinations.ai/prompt/{encoded}"
             f"?width=1024&height=1024&nologo=true&model=flux&enhance=true"
         )
 
-        # ۳. دانلود تصویر
-        async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=45.0, follow_redirects=True) as client:
             resp = await client.get(image_url)
             resp.raise_for_status()
             
-            if not resp.content or len(resp.content) < 1000:
-                return await status_msg.edit_text("❌ خطا در تولید تصویر. لطفاً دوباره تلاش کنید.")
-            
-            img_io = io.BytesIO(resp.content)
-            img_io.name = "imagine.jpg"
+            try:
+                img_io = io.BytesIO(resp.content)
+                img = Image.open(img_io)
+                img.verify() 
+                img_io.seek(0)
+                img_io.name = "imagine.jpg"
+            except Exception as img_err:
+                logger.error(f"Invalid image received: {img_err}")
+                return await status_msg.edit_text("❌ سرور تصویر، فایل معتبری برنگرداند. دوباره تلاش کنید.")
 
-        # ۴. ارسال به کاربر
         caption = (
             f"🎨 <b>تصویر ساخته شد!</b>\n\n"
             f"📝 <b>پرامپت:</b> {prompt_fa}\n"
@@ -65,9 +68,11 @@ async def cmd_imagine(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             f"🌟 ساخته شده با هوش مصنوعی"
         )
         
+        prompt_hash = hashlib.md5(prompt_fa.encode()).hexdigest()[:10]
+        context.user_data[f"reimagine_{prompt_hash}"] = prompt_fa
+        
         keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("🔄 تصویر جدید", callback_data=f"reimagine_{prompt_fa[:50]}"),
-            InlineKeyboardButton("🎨 همه عکس‌ها", url="https://t.me/" + (context.bot.username or ""))
+            InlineKeyboardButton("🔄 تصویر جدید", callback_data=f"reimg_{prompt_hash}")
         ]])
         
         await update.message.reply_photo(
@@ -81,3 +86,23 @@ async def cmd_imagine(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     except Exception as e:
         logger.error(f"Imagine error: {e}", exc_info=True)
         await status_msg.edit_text("❌ متأسفانه در تولید تصویر خطایی رخ داد. چند لحظه بعد دوباره تلاش کنید.")
+
+
+async def handle_reimagine(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """هندلر دکمه تصویر جدید"""
+    query = update.callback_query
+    if not query: return
+    await query.answer()
+    
+    data = query.data or ""
+    if not data.startswith("reimg_"): return
+    
+    prompt_hash = data.replace("reimg_", "")
+    prompt_fa = context.user_data.get(f"reimagine_{prompt_hash}")
+    
+    if not prompt_fa:
+        return await query.edit_message_text("⚠️ پرامپت اصلی پیدا نشد. لطفاً دستور /imagine را دوباره بزنید.")
+    
+    context.args = prompt_fa.split()
+    await query.message.reply_text("🔄 در حال ساخت تصویر جدید...")
+    await cmd_imagine(update, context)

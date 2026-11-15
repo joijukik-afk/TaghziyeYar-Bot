@@ -9,6 +9,8 @@ import time
 import threading
 import datetime
 import json
+import html
+import traceback
 from functools import wraps
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -66,6 +68,26 @@ logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 # ---------------------------------------------------------------------------
+#  🚨 Global Error Handler (سیستم نمایش دقیق خطا)
+# ---------------------------------------------------------------------------
+async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logger.error("Exception while handling an update:", exc_info=context.error)
+    
+    tb_list = traceback.format_exception(None, context.error, context.error.__traceback__)
+    tb_string = "".join(tb_list)
+    safe_tb = html.escape(tb_string)
+    
+    error_text = f"🚨 <b>خطای دقیق سیستم:</b>\n\n<pre>{safe_tb[-3500:]}</pre>"
+    
+    settings = get_settings()
+    if settings.admin_ids:
+        for admin_id in settings.admin_ids:
+            try:
+                await context.bot.send_message(chat_id=admin_id, text=error_text, parse_mode="HTML")
+            except Exception:
+                pass
+
+# ---------------------------------------------------------------------------
 #  Helper: Dynamic Admin Check & Monitoring
 # ---------------------------------------------------------------------------
 async def is_admin_user(user_id: int) -> bool:
@@ -76,7 +98,6 @@ async def is_admin_user(user_id: int) -> bool:
 async def notify_owner(context: ContextTypes.DEFAULT_TYPE, actor: User, action: str):
     settings = get_settings()
     owner_id = settings.admin_ids[0] if settings.admin_ids else None
-        
     if not owner_id or actor.id == owner_id: return  
     
     text = (
@@ -105,8 +126,7 @@ async def save_member_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def track_new_members(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat = update.effective_chat
-    if not chat or chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP):
-        return
+    if not chat or chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP): return
     if update.message and update.message.new_chat_members:
         for member in update.message.new_chat_members:
             if member.is_bot: continue
@@ -308,9 +328,6 @@ async def cmd_tagall(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     try: await status_msg.delete()
     except: pass
 
-# ---------------------------------------------------------------------------
-#  Commands: Profile & Health
-# ---------------------------------------------------------------------------
 @private_only
 @rate_limited
 async def cmd_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -536,17 +553,12 @@ async def _process_ai_response(update: Update, context: ContextTypes.DEFAULT_TYP
 @rate_limited
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.message.text: return
-    
-    # 👈 اصلاح مهم: اول چک می‌کنیم آیا پیام برای ماست، بعد دیتابیس رو آپدیت می‌کنیم
     if not is_for_me(update, context): return
-    
     await ensure_user_and_group(update)
-    
     original_text = clean_mention(update.message.text, context.bot.username or "")
     if not original_text: return
     
     user = update.effective_user
-    
     greetings = ["سلام", "درود", "hi", "hello", "سلم", "سلام خوبی", "سلام خسته نباشی"]
     user_greeted = original_text.strip().lower() in greetings
     
@@ -610,14 +622,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await query.edit_message_text(with_signature("🛡️ این بخش خصوصی است."), reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML"); return
     
     await query.edit_message_text(with_signature(text), parse_mode="HTML")
-
-async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logger.error("Exception while handling an update:", exc_info=context.error)
-    settings = get_settings()
-    if settings.admin_ids:
-        try:
-            await context.bot.send_message(chat_id=settings.admin_ids[0], text=f"⚠️ Error: {context.error}")
-        except: pass
 
 # ---------------------------------------------------------------------------
 #  Admin Management Commands

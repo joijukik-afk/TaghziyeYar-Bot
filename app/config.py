@@ -1,7 +1,8 @@
 """Central configuration read from environment variables / .env file."""
 
+import uuid
 from functools import lru_cache
-from pydantic import Field, AliasChoices
+from pydantic import Field, AliasChoices, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -15,66 +16,51 @@ class Settings(BaseSettings):
 
     # Telegram
     telegram_bot_token: str
-    admin_ids: str = ""
+    admin_ids: list[int] = Field(default_factory=list)
 
-    # AI (Groq)
-    groq_api_key: str = Field(
-        default="", 
-        validation_alias=AliasChoices("GROQ_API_KEY", "DEEPSEEK_API_KEY", "deepseek_api_key", "groq_api_key")
-    )
-    groq_model: str = Field(
-        default="llama3-70b-8192", 
-        validation_alias=AliasChoices("GROQ_MODEL", "DEEPSEEK_MODEL", "deepseek_model", "groq_model")
-    )
-    
-    # Unsplash & Pollinations
+    # Security / Webhook
+    webhook_secret_token: str = Field(default="")
+    webhook_path: str = Field(default_factory=lambda: str(uuid.uuid4()))
+
+    # AI Services
+    groq_api_key: str = Field(default="", validation_alias=AliasChoices("GROQ_API_KEY", "groq_api_key"))
+    groq_model: str = Field(default="llama-3.3-70b-versatile", validation_alias=AliasChoices("GROQ_MODEL", "groq_model"))
+    openai_api_key: str = Field(default="", validation_alias=AliasChoices("OPENAI_API_KEY", "openai_api_key"))
+    tavily_api_key: str = Field(default="", validation_alias=AliasChoices("TAVILY_API_KEY", "tavily_api_key"))
+
+    # Media
     unsplash_access_key: str = ""
-    pollinations_api_key: str = Field(
-        default="", 
-        validation_alias=AliasChoices("POLLINATIONS_API_KEY", "pollinations_api_key")
-    )
+    pollinations_api_key: str = Field(default="", validation_alias=AliasChoices("POLLINATIONS_API_KEY", "pollinations_api_key"))
 
-    # Database
-    database_url: str = "sqlite+aiosqlite:///./taghziye_yar.db"
+    # Database (اجباری - در .env مقداردهی شود)
+    database_url: str
 
     # General
     log_level: str = "INFO"
     mock_mode: bool = False
 
-    # 👇 Branding (اصلاح‌شده - بدون اسم متخصص)
+    # Branding
     bot_display_name: str = "تغذیه‌یار"
     signature: str = "🌱 تغذیه‌یار | دستیار هوشمند شما"
 
-    # 🛡️ Security & Render
-    webhook_url: str = ""  
-    port: int = 8080       
-    rate_limit_seconds: float = 2.0  
-    
-    webhook_secret_token: str = Field(
-        default="", 
-        validation_alias=AliasChoices("WEBHOOK_SECRET_TOKEN", "webhook_secret_token")
-    )
+    # Server
+    webhook_url: str = ""
+    port: int = Field(default=8080, validation_alias=AliasChoices("PORT", "port"))
+    rate_limit_seconds: float = 2.0
 
-    @property
-    def admin_id_list(self) -> list[int]:
-        if not self.admin_ids:
-            return []
-        result: list[int] = []
-        for part in self.admin_ids.split(","):
-            part = part.strip()
-            if part.isdigit():
-                result.append(int(part))
-        return result
+    @field_validator("admin_ids", mode="before")
+    @classmethod
+    def parse_admin_ids(cls, v):
+        if isinstance(v, str):
+            return [int(i.strip()) for i in v.split(",") if i.strip().isdigit()]
+        return v
 
     def is_admin(self, user_id: int) -> bool:
-        return user_id in self.admin_id_list
+        return user_id in self.admin_ids
 
     @property
-    def deepseek_api_key(self) -> str: return self.groq_api_key
-    @property
-    def deepseek_model(self) -> str: return self.groq_model
-    @property
-    def deepseek_base_url(self) -> str: return "https://api.groq.com/openai/v1"
+    def groq_base_url(self) -> str:
+        return "https://api.groq.com/openai/v1"
 
 
 @lru_cache(maxsize=1)

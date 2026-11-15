@@ -4,6 +4,7 @@ import json
 import logging
 import random
 import re
+import asyncio
 from typing import Optional
 
 from groq import AsyncGroq
@@ -11,6 +12,24 @@ from app.config import get_settings
 from app.database import repository as repo
 
 logger = logging.getLogger(__name__)
+
+# 👈 قفل سراسری برای جلوگیری از Race Condition
+_quiz_lock = asyncio.Lock()
+
+# 👈 Client مشترک
+_groq_client: Optional[AsyncGroq] = None
+
+
+def _get_groq_client() -> Optional[AsyncGroq]:
+    global _groq_client
+    settings = get_settings()
+    api_key = getattr(settings, 'groq_api_key', '') or getattr(settings, 'deepseek_api_key', '')
+    if not api_key:
+        return None
+    if _groq_client is None:
+        _groq_client = AsyncGroq(api_key=api_key, timeout=30.0)
+    return _groq_client
+
 
 CATEGORIES = [
     "ویتامین‌ها و مواد معدنی", "پروتئین و عضله‌سازی", "کربوهیدرات و انرژی",
@@ -59,95 +78,133 @@ FALLBACK_QUESTIONS = [
     {"question": "هر گرم چربی چند کالری دارد؟", "options": ["۴", "۷", "۹", "۱۲"], "correct": 2, "explanation": "هر گرم چربی ۹ کالری دارد.", "category": "چربی‌های سالم"},
 ]
 
+
 def _extract_json(text: str) -> Optional[dict]:
-    if not text: return None
+    if not text:
+        return None
     text = text.strip()
+    # 👈 پاکسازی کاراکترهای خاص فارسی که JSON را می‌شکنند
+    text = text.replace("«", '"').replace("»", '"').replace("”", '"').replace("“", '"')
     text = re.sub(r"^```(?:json)?\s*", "", text)
     text = re.sub(r"\s*```$", "", text)
-    try: return json.loads(text)
-    except json.JSONDecodeError: pass
-    start = text.find("{"); end = text.rfind("}")
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    start = text.find("{")
+    end = text.rfind("}")
     if start != -1 and end != -1 and end > start:
-        try: return json.loads(text[start:end + 1])
-        except json.JSONDecodeError: pass
+        try:
+            return json.loads(text[start:end + 1])
+        except json.JSONDecodeError:
+            pass
     return None
 
+
 def _validate_question(data: dict) -> bool:
-    if not isinstance(data, dict): return False
-    if "question" not in data or "options" not in data: return False
-    if not isinstance(data["options"], list) or len(data["options"]) != 4: return False
-    if "correct" not in data: return False
-    try: c = int(data["correct"])
-    except: return False
-    if c < 0 or c > 3: return False
-    if not data.get("question"): return False
-    if not all(isinstance(o, str) and o.strip() for o in data["options"]): return False
+    if not isinstance(data, dict):
+        return False
+    if "question" not in data or "options" not in data:
+        return False
+    if not isinstance(data["options"], list) or len(data["options"]) != 4:
+        return False
+    if "correct" not in data:
+        return False
+    try:
+        c = int(data["correct"])
+    except (ValueError, TypeError):
+        return False
+    if c < 0 or c > 3:
+        return False
+    if not data.get("question") or len(str(data["question"]).strip()) < 5:
+        return False
+    if not all(isinstance(o, str) and o.strip() for o in data["options"]):
+        return False
+    if not data.get("explanation") or len(str(data.get("explanation", "")).strip()) < 5:
+        return False
     return True
 
+
 async def _get_unused_fallback(recent_qs: list[str]) -> dict:
-    available = [q for q in FALLBACK_QUESTIONS if q["question"] not in recent_qs]
-    if not available: available = FALLBACK_QUESTIONS
-    q = random.choice(available).copy()
-    q["options"] = list(q["options"])
-    await repo.save_quiz_question(q["question"])
-    return q
+    recent_set = set(recent_qs)
+    available = [q for q in FALLBACK_QUESTIONS if q["question"] not in recent_set]
+
+    if not available:
+        logger.warning("همه Fallback‌ها استفاده شده‌اند. چرخه جدید.")
+        available = FALLBACK_QUESTIONS
+
+    q = random.choice(available)
+    result = {
+        "question": q["question"],
+        "options": list(q["options"]),
+        "correct": q["correct"],
+        "explanation": q["explanation"],
+        "category": q["category"],
+    }
+    await repo.save_quiz_question(result["question"])
+    return result
+
 
 async def generate_question(category: Optional[str] = None) -> dict:
-    settings = get_settings()
-    api_key = getattr(settings, 'groq_api_key', '') or getattr(settings, 'deepseek_api_key', '')
+    # 👈 Lock برای جلوگیری از Race Condition
+    async with _quiz_lock:
+        settings = get_settings()
+        client = _get_groq_client()
 
-    # 🧠 دریافت ۳۰ سوال آخر از دیتابیس Neon
-    recent_qs = await repo.get_recent_quiz_questions(limit=30)
+        recent_qs = await repo.get_recent_quiz_questions(limit=30)
 
-    if not api_key:
-        logger.info("کلید API تنظیم نشده — استفاده از سوالات آماده.")
-        return await _get_unused_fallback(recent_qs)
+        if client is None:
+            logger.info("کلید API تنظیم نشده — استفاده از سوالات آماده.")
+            return await _get_unused_fallback(recent_qs)
 
-    cat = category or random.choice(CATEGORIES)
-    history_text = "\n".join([f"- {q}" for q in recent_qs]) if recent_qs else "هیچ سوالی تاکنون پرسیده نشده است."
-    prompt = PROMPT_TEMPLATE.format(category=cat, history=history_text)
+        cat = category or random.choice(CATEGORIES)
+        history_text = "\n".join([f"- {q}" for q in recent_qs]) if recent_qs else "هیچ سوالی تاکنون پرسیده نشده است."
+        prompt = PROMPT_TEMPLATE.format(category=cat, history=history_text)
 
-    models_to_try = [getattr(settings, 'groq_model', ''), "qwen/qwen3.8-27b", "openai/gpt-oss-120b"]
-    
-    for model_name in models_to_try:
-        if not model_name: continue
-        try:
-            logger.info("کوییز با مدل: %s", model_name)
-            client = AsyncGroq(api_key=api_key)
+        models_to_try = [getattr(settings, 'groq_model', ''), "qwen/qwen3.8-27b", "openai/gpt-oss-120b"]
 
-            response = await client.chat.completions.create(
-                model=model_name,
-                messages=[
-                    {"role": "system", "content": "تو یک متخصص تغذیه هستی. فقط JSON خالص برگردان."},
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=0.6,
-                max_tokens=800,
-            )
+        for model_name in models_to_try:
+            if not model_name:
+                continue
+            try:
+                logger.info("کوییز با مدل: %s", model_name)
 
-            text = response.choices[0].message.content
-            if not text: continue
+                response = await client.chat.completions.create(
+                    model=model_name,
+                    messages=[
+                        {"role": "system", "content": "تو یک متخصص تغذیه هستی. فقط JSON خالص برگردان."},
+                        {"role": "user", "content": prompt},
+                    ],
+                    temperature=0.3,
+                    max_tokens=800,
+                )
 
-            data = _extract_json(text)
-            if data is None or not _validate_question(data):
+                text = response.choices[0].message.content
+                if not text:
+                    continue
+
+                data = _extract_json(text)
+                if data is None or not _validate_question(data):
+                    logger.warning("پاسخ AI معتبر نبود (مدل: %s)", model_name)
+                    continue
+
+                new_question_text = str(data["question"]).strip()[:500]
+                await repo.save_quiz_question(new_question_text)
+
+                return {
+                    "question": new_question_text,
+                    "options": [str(o).strip()[:100] for o in data["options"]],
+                    "correct": int(data["correct"]),
+                    "explanation": str(data["explanation"]).strip()[:400],
+                    "category": cat,
+                }
+
+            except asyncio.TimeoutError:
+                logger.warning("Timeout در مدل %s", model_name)
+                continue
+            except Exception as e:
+                logger.warning("خطا در تولید با مدل %s: %s", model_name, e, exc_info=True)
                 continue
 
-            new_question_text = str(data["question"]).strip()[:500]
-            
-            # 🧠 ذخیره سوال در دیتابیس Neon
-            await repo.save_quiz_question(new_question_text)
-
-            return {
-                "question": new_question_text,
-                "options": [str(o).strip()[:100] for o in data["options"]],
-                "correct": int(data["correct"]),
-                "explanation": str(data.get("explanation", "")).strip()[:400],
-                "category": cat,
-            }
-
-        except Exception as e:
-            logger.warning("خطا در تولید با مدل %s: %s", model_name, e)
-            continue
-
-    logger.warning("AI question generation failed — using fallback")
-    return await _get_unused_fallback(recent_qs)
+        logger.warning("AI question generation failed — using fallback")
+        return await _get_unused_fallback(recent_qs)

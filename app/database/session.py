@@ -3,7 +3,7 @@
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+import uuid
 
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
@@ -20,6 +20,9 @@ logger = logging.getLogger(__name__)
 _engine = None
 _session_factory: async_sessionmaker[AsyncSession] | None = None
 
+def _unique_stmt_name() -> str:
+    """تولید یک نام یکتا برای هر دستور آماده."""
+    return f"__asyncpg_{uuid.uuid4()}__"
 
 def init_engine() -> None:
     """Create the global async engine and session factory."""
@@ -28,33 +31,29 @@ def init_engine() -> None:
 
     url = settings.database_url
 
-    # 👈 خاموش کردن کش در لایه اول (کتابخانه asyncpg)
-    connect_args = {
-        "statement_cache_size": 0,
-        "prepared_statement_cache_size": 0,
-    }
-
-    # اصلاح آدرس دیتابیس
+    # ۱. اصلاح آدرس دیتابیس
     if url.startswith("postgres://"):
         url = url.replace("postgres://", "postgresql+asyncpg://", 1)
     elif url.startswith("postgresql://") and "+asyncpg" not in url:
         url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
 
-    # مدیریت SSL
-    parsed = urlparse(url)
-    query_params = parse_qs(parsed.query)
-    
-    if "sslmode" in query_params:
-        ssl_mode = query_params["sslmode"][0]
-        if ssl_mode in ("require", "verify-ca", "verify-full"):
-            connect_args["ssl"] = ssl_mode
+    # ۲. پاکسازی کامل آدرس از هرگونه پارامتر اضافی (مثل sslmode)
+    if "?" in url:
+        url = url.split("?")[0]
 
-    # 👈 خاموش کردن کش در لایه دوم (کتابخانه SQLAlchemy)
-    clean_query = {k: v for k, v in query_params.items() if k != "prepared_statement_cache_size"}
-    clean_query["prepared_statement_cache_size"] = ["0"]
-    new_query = urlencode(clean_query, doseq=True)
-    url = urlunparse(parsed._replace(query=new_query))
+    # ۳. تنظیمات اتصال به asyncpg
+    connect_args = {
+        "statement_cache_size": 0,
+        "prepared_statement_cache_size": 0,
+        "prepared_statement_name_func": _unique_stmt_name,
+        "server_settings": {"jit": "off"},
+    }
 
+    # ۴. اجبار به استفاده از SSL (چون Neon به آن نیاز دارد)
+    if "neon.tech" in url:
+        connect_args["ssl"] = "require"
+
+    # ۵. ساخت موتور دیتابیس
     _engine = create_async_engine(
         url,
         echo=False,
@@ -62,14 +61,14 @@ def init_engine() -> None:
         poolclass=NullPool,
         connect_args=connect_args,
     )
-    
+
     _session_factory = async_sessionmaker(
         bind=_engine,
         class_=AsyncSession,
         expire_on_commit=False,
         autoflush=False,
     )
-    logger.info("Database engine initialized with ALL statement caches disabled.")
+    logger.info("Database engine initialized successfully with all caches disabled.")
 
 
 async def create_all() -> None:

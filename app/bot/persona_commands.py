@@ -1,13 +1,19 @@
 """AI Persona handler with DB Save."""
 
 import logging
+from typing import TypedDict, Optional
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from app.database.state_repository import save_user_state
+from app.database import repository as repo
 
 logger = logging.getLogger(__name__)
 
-PERSONAS = {
+class PersonaDict(TypedDict):
+    name: str
+    prompt: Optional[str]
+
+PERSONAS: dict[str, PersonaDict] = {
     "default": {"name": "👤 تغذیه‌یار (عادی)", "prompt": None},
     "teacher": {"name": "👨‍🏫 معلم زبان", "prompt": "You are a strict English teacher. Answer ONLY in English. Correct the user's grammar gently."},
     "psychologist": {"name": "🛋️ روانشناس مهربان", "prompt": "You are a very empathetic psychologist. Listen and offer emotional support in Persian."},
@@ -32,10 +38,13 @@ async def cmd_persona(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             row = []
     if row: keyboard.append(row)
 
-    current = context.user_data.get("persona_name", "👤 تغذیه‌یار (عادی)")
+    current_key = context.user_data.get("persona_key", "default")
+    current_name = PERSONAS.get(current_key, PERSONAS["default"])["name"]
+
     await update.message.reply_text(
-        f"🎭 **تغییر شخصیت**\n\nشخصیت فعلی: **{current}**\n\nکدوم رو می‌خوای؟", 
-        reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown"
+        f"🎭 <b>تغییر شخصیت</b>\n\nشخصیت فعلی: <b>{current_name}</b>\n\nکدوم رو می‌خوای؟", 
+        reply_markup=InlineKeyboardMarkup(keyboard), 
+        parse_mode="HTML"
     )
 
 async def handle_persona_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -50,15 +59,27 @@ async def handle_persona_callback(update: Update, context: ContextTypes.DEFAULT_
     persona = PERSONAS.get(persona_key)
     if not persona: return
     
+    user = query.from_user
+    
+    try:
+        await repo.get_or_create_user(
+            telegram_id=user.id, username=user.username, first_name=user.first_name, last_name=user.last_name
+        )
+    except Exception as e:
+        logger.error(f"Failed to ensure user in DB: {e}")
+        return await query.edit_message_text("❌ خطا در ارتباط با دیتابیس. لطفاً بعداً تلاش کنید.")
+
+    try:
+        await save_user_state(user.id, persona_key, [])
+    except Exception as e:
+        logger.error(f"Failed to save persona to DB: {e}")
+        return await query.edit_message_text("❌ خطا در ذخیره شخصیت. لطفاً بعداً تلاش کنید.")
+
     context.user_data["persona_key"] = persona_key
     context.user_data["persona_prompt"] = persona["prompt"]
     context.user_data["persona_name"] = persona["name"]
-    context.user_data["chat_history"] = [] 
-
-    # 👇 سیو در دیتابیس
-    await save_user_state(query.from_user.id, persona_key, [])
 
     await query.edit_message_text(
-        f"✅ شخصیت به **{persona['name']}** تغییر کرد!\n\n(توی دیتابیس هم ذخیره شد).",
-        parse_mode="Markdown"
+        f"✅ شخصیت به <b>{persona['name']}</b> تغییر کرد!\n\n(توی دیتابیس هم ذخیره شد).",
+        parse_mode="HTML"
     )

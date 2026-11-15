@@ -27,15 +27,22 @@ class Settings(BaseSettings):
     webhook_path: str = Field(default_factory=lambda: str(uuid.uuid4()))
 
     # ============================================================
-    # AI Services
+    # AI Services (اصلاح‌شده برای پشتیبانی از DEEPSEEK قبلی)
     # ============================================================
     groq_api_key: str = Field(
         default="",
-        validation_alias=AliasChoices("GROQ_API_KEY", "groq_api_key"),
+        # 👈 این بخش باعث می‌شود هم GROQ_API_KEY و هم DEEPSEEK_API_KEY خوانده شوند
+        validation_alias=AliasChoices(
+            "GROQ_API_KEY", "DEEPSEEK_API_KEY", 
+            "groq_api_key", "deepseek_api_key"
+        ),
     )
     groq_model: str = Field(
         default="llama-3.3-70b-versatile",
-        validation_alias=AliasChoices("GROQ_MODEL", "groq_model"),
+        validation_alias=AliasChoices(
+            "GROQ_MODEL", "DEEPSEEK_MODEL", 
+            "groq_model", "deepseek_model"
+        ),
     )
     openai_api_key: str = Field(
         default="",
@@ -59,7 +66,7 @@ class Settings(BaseSettings):
     )
 
     # ============================================================
-    # Database (اجباری - در .env یا Environment Variables مقداردهی شود)
+    # Database
     # ============================================================
     database_url: str
 
@@ -92,12 +99,11 @@ class Settings(BaseSettings):
     @classmethod
     def parse_admin_ids(cls, v):
         """
-        پشتیبانی از سه حالت ورودی:
-        - int (مثل 6409367884) → [6409367884]
-        - str (مثل "123,456") → [123, 456]
-        - list (مثل [123, 456]) → [123, 456]
+        پشتیبانی از سه حالت ورودی برای ادمین آیدی:
+        - int (مثل 6409367884)
+        - str (مثل "123,456")
+        - list (مثل [123, 456])
         """
-        # حالت ۱: اگر از قبل لیست است
         if isinstance(v, list):
             result = []
             for item in v:
@@ -107,11 +113,9 @@ class Settings(BaseSettings):
                     continue
             return result
 
-        # حالت ۲: اگر عدد تکی است (مثل 6409367884)
         if isinstance(v, int):
             return [v]
 
-        # حالت ۳: اگر رشته است (مثل "123,456" یا "123, 456")
         if isinstance(v, str):
             stripped = v.strip()
             if not stripped:
@@ -123,7 +127,6 @@ class Settings(BaseSettings):
                     result.append(int(part))
             return result
 
-        # حالت نامشخص
         return []
 
     # ============================================================

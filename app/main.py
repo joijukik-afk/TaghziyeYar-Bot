@@ -1,4 +1,4 @@
-"""Bot entry point. Wires together all handlers and starts polling."""
+"""TaghziyeYar Bot - Ultimate Entry Point (Production Ready & Full Features)."""
 
 import asyncio
 import io
@@ -15,13 +15,22 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import httpx
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, User
 from telegram.constants import ChatType
-from telegram.error import Forbidden
+from telegram.error import Forbidden, BadRequest
 from telegram.ext import (
     Application, ApplicationBuilder, CallbackQueryHandler, ChatMemberHandler,
     CommandHandler, ContextTypes, MessageHandler, PollAnswerHandler,
     TypeHandler, ApplicationHandlerStop, filters,
 )
 
+# --- Core Imports ---
+from app.config import get_settings
+from app.security import private_only, rate_limited
+from app.database import repository as repo
+from app.database.session import create_all, dispose_engine, init_engine, session_scope
+from app.database.state_repository import get_user_state, save_user_state
+from app.utils.message_formatter import with_signature
+
+# --- Bot Handlers ---
 from app.bot import extra_commands as ecmd
 from app.bot import group_manager as gmanager
 from app.bot import group_quiz as gquiz
@@ -40,20 +49,17 @@ from app.bot import voice_chat_commands as voice_cmd
 from app.bot import image_commands as img_cmd
 from app.bot import persona_commands as persona_cmd
 from app.bot import vision_commands as vision_cmd 
-from app.bot import sticker_commands as sticker_cmd # 👈 استیکر
+from app.bot import sticker_commands as sticker_cmd
+from app.bot import barcode_commands as barcode_cmd # 👈 قابلیت جدید
+
 from app.bot.content import get_fact, get_myth, get_tip
-from app.config import get_settings
-from app.database import repository as repo
-from app.database.session import create_all, dispose_engine, init_engine, session_scope
-from app.database.group_models import GroupMember
-from app.database.state_repository import get_user_state, save_user_state
 from app.services.ai_service import get_ai_service, VOICE_SYSTEM_PROMPT 
 from app.services.auto_content import broadcast_auto_content, post_auto_content
 from app.services.card_generator import generate_ai_health_card
 from app.services.image_generator import generate_group_cover
 from app.services.news_service import get_global_magazine_news
 from app.services.agent_search_service import get_agent_search_service
-from app.utils.message_formatter import with_signature
+from app.bot.commands_setup import setup_commands
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=get_settings().log_level)
 logger = logging.getLogger(__name__)
@@ -69,17 +75,13 @@ async def is_admin_user(user_id: int) -> bool:
 
 async def notify_owner(context: ContextTypes.DEFAULT_TYPE, actor: User, action: str):
     settings = get_settings()
-    owner_id = None
-    if hasattr(settings, 'admin_ids') and settings.admin_ids:
-        owner_id = settings.admin_ids[0] if isinstance(settings.admin_ids, list) else int(str(settings.admin_ids).split(',')[0])
-    elif hasattr(settings, 'admin_id'):
-        owner_id = settings.admin_id
+    owner_id = settings.admin_ids[0] if settings.admin_ids else None
         
     if not owner_id or actor.id == owner_id: return  
     
     text = (
         f"🔔 <b>گزارش لحظه‌ای مدیریت:</b>\n\n"
-        f"👤 <b>ادمین:</b> <a href='tg://user?id={actor.id}'>{actor.full_name}</a> (ID: <code>{actor.id}</code>)\n"
+        f"👤 <b>ادمین:</b> <a href='tg://user?id={actor.id}'>{actor.first_name}</a> (ID: <code>{actor.id}</code>)\n"
         f"📝 <b>عملیات:</b> {action}"
     )
     try:
@@ -111,7 +113,7 @@ async def track_new_members(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             await repo.save_group_member(chat.id, member.id, member.first_name or "کاربر", member.username)
 
 # ---------------------------------------------------------------------------
-#  Health server
+#  Health server (For Render)
 # ---------------------------------------------------------------------------
 class _HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -121,44 +123,9 @@ class _HealthHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args): pass
 
 def _start_health_server() -> None:
-    server = HTTPServer(("0.0.0.0", int(os.environ.get("PORT", "8080"))), _HealthHandler)
+    port = int(os.environ.get("PORT", "8080"))
+    server = HTTPServer(("0.0.0.0", port), _HealthHandler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
-
-# ---------------------------------------------------------------------------
-#  Security & Rate Limits
-# ---------------------------------------------------------------------------
-_user_last_message_time: dict = {}
-_last_cleanup = time.time()
-
-def _cleanup_old_rate_limits():
-    global _last_cleanup
-    if time.time() - _last_cleanup < 3600: return
-    now = time.time()
-    to_remove = [uid for uid, ts in _user_last_message_time.items() if now - ts > 3600]
-    for uid in to_remove:
-        _user_last_message_time.pop(uid, None)
-    _last_cleanup = now
-
-def private_only(func):
-    @wraps(func)
-    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
-        if is_group(update):
-            keyboard = [[InlineKeyboardButton("🔒 ورود به چت خصوصی", url=f"https://t.me/{context.bot.username}?start=private_setup")]]
-            if update.message: await update.message.reply_text("🛡️ این بخش فقط در چت خصوصی کار می‌کند.", reply_markup=InlineKeyboardMarkup(keyboard))
-            elif update.callback_query: await update.callback_query.answer("لطفاً به چت خصوصی بروید.", show_alert=True)
-            return 
-        return await func(update, context, *args, **kwargs)
-    return wrapper
-
-def rate_limited(func):
-    @wraps(func)
-    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
-        _cleanup_old_rate_limits()
-        if not update.effective_user: return await func(update, context, *args, **kwargs)
-        if time.time() - _user_last_message_time.get(update.effective_user.id, 0) < 0.5: return 
-        _user_last_message_time[update.effective_user.id] = time.time()
-        return await func(update, context, *args, **kwargs)
-    return wrapper
 
 # ---------------------------------------------------------------------------
 #  🤖 Auto-post Job
@@ -173,14 +140,14 @@ async def _auto_post_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         if specific_chat:
             try: 
                 ok = await post_auto_content(context.bot, int(specific_chat))
-                if ok: await repo.set_last_post_time(time.time())
+                if ok: await repo.set_last_post_time(now)
             except Exception: pass
             return
 
         sent = await broadcast_auto_content(context.bot)
-        if sent > 0: await repo.set_last_post_time(time.time())
+        if sent > 0: await repo.set_last_post_time(now)
     except Exception as e:
-        logger.error("❌ خطا در _auto_post_job: %s", e)
+        logger.error("❌ خطا در _auto_post_job: %s", e, exc_info=True)
 
 # ---------------------------------------------------------------------------
 #  Helpers
@@ -239,13 +206,16 @@ async def ensure_user_and_group(update: Update) -> None:
     if chat and chat.type in (ChatType.GROUP, ChatType.SUPERGROUP): await repo.get_or_create_group(chat_id=chat.id, title=chat.title)
 
 async def _send_html_safe(bot, chat_id: int, text: str, reply_to: int | None = None) -> None:
-    try: await bot.send_message(chat_id=chat_id, text=with_signature(text), parse_mode="HTML", reply_to_message_id=reply_to)
-    except: 
-        try: await bot.send_message(chat_id=chat_id, text=with_signature(re.sub(r"<[^>]+>", "", text)), reply_to_message_id=reply_to)
-        except: pass
+    try: 
+        await bot.send_message(chat_id=chat_id, text=with_signature(text), parse_mode="HTML", reply_to_message_id=reply_to)
+    except BadRequest: 
+        try: 
+            clean_text = re.sub(r"<[^>]+>", "", text)
+            await bot.send_message(chat_id=chat_id, text=with_signature(clean_text), reply_to_message_id=reply_to)
+        except Exception: pass
 
 # ---------------------------------------------------------------------------
-#  Commands
+#  Commands: Core
 # ---------------------------------------------------------------------------
 @rate_limited
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -257,31 +227,32 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         db_user = await repo.get_user_by_telegram_id(user.id)
         profile = await repo.get_profile(db_user.id) if db_user else None
         if not profile or not profile.setup_complete:
-            await update.message.reply_text(with_signature("👋 خوش آمدید!\n\nبرای دریافت **کارت دیجیتال سلامت**، ابتدا باید اطلاعات پروفایل خود را تکمیل کنید.\n\n👇 لطفاً دستور /setup را بزنید."), parse_mode="Markdown")
+            await update.message.reply_text(with_signature("👋 خوش آمدید!\n\nبرای دریافت **کارت دیجیتال سلامت**، ابتدا باید اطلاعات پروفایل خود را تکمیل کنید.\n\n👇 لطفاً دستور /setup را بزنید."), parse_mode="HTML")
         else:
             await update.message.reply_text(with_signature("👋 خوش آمدید!\n\nشما اطلاعات پروفایل خود را تکمیل کرده‌اید. برای دریافت کارت خود، روی دستور /mycard کلیک کنید."))
         return
-    await update.message.reply_text(with_signature(msg.WELCOME), reply_markup=main_menu_keyboard())
+    await update.message.reply_text(with_signature(msg.WELCOME), reply_markup=main_menu_keyboard(), parse_mode="HTML")
 
 @rate_limited
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
-    if update.message: await update.message.reply_text(with_signature(msg.HELP))
+    if update.message: await update.message.reply_text(with_signature(msg.HELP), parse_mode="HTML")
 
 @rate_limited
 async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
-    if update.message: await update.message.reply_text(with_signature(msg.MENU_TEXT), reply_markup=main_menu_keyboard())
+    if update.message: await update.message.reply_text(with_signature(msg.MENU_TEXT), reply_markup=main_menu_keyboard(), parse_mode="HTML")
 
 async def cmd_about(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.message: await update.message.reply_text(with_signature(msg.ABOUT))
+    if update.message: await update.message.reply_text(with_signature(msg.ABOUT), parse_mode="HTML")
 
 async def cmd_privacy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.message: await update.message.reply_text(with_signature(msg.PRIVACY))
+    if update.message: await update.message.reply_text(with_signature(msg.PRIVACY), parse_mode="HTML")
 
 async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.message: await update.message.reply_text(with_signature(msg.SETTINGS_TEXT))
+    if update.message: await update.message.reply_text(with_signature(msg.SETTINGS_TEXT), parse_mode="HTML")
 
+@rate_limited
 async def cmd_tagall(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.effective_chat: return
     chat = update.effective_chat
@@ -337,6 +308,9 @@ async def cmd_tagall(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     try: await status_msg.delete()
     except: pass
 
+# ---------------------------------------------------------------------------
+#  Commands: Profile & Health
+# ---------------------------------------------------------------------------
 @private_only
 @rate_limited
 async def cmd_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -346,15 +320,16 @@ async def cmd_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     db_user = await repo.get_user_by_telegram_id(user.id)
     if not db_user: return
     profile = await repo.get_profile(db_user.id)
-    if not profile or not profile.setup_complete: await update.message.reply_text(with_signature(msg.NOT_SETUP_YET)); return
-    lines = ["👤 پروفایل من\n"]
+    if not profile or not profile.setup_complete: 
+        await update.message.reply_text(with_signature(msg.NOT_SETUP_YET), parse_mode="HTML"); return
+    lines = ["👤 <b>پروفایل من</b>\n"]
     if profile.age: lines.append(f"• سن: {profile.age} سال")
     if profile.gender: lines.append("• جنسیت: " + ("مرد" if profile.gender == "male" else "زن"))
     if profile.height_cm: lines.append(f"• قد: {profile.height_cm:.0f} سانتی‌متر")
     if profile.weight_kg: lines.append(f"• وزن: {profile.weight_kg:.1f} کیلوگرم")
     if profile.goal: lines.append(f"• هدف: {profile.goal}")
     lines.append("\n✏️ برای ویرایش، /setup رو بزن.")
-    await update.message.reply_text(with_signature("\n".join(lines)))
+    await update.message.reply_text(with_signature("\n".join(lines)), parse_mode="HTML")
 
 @private_only
 @rate_limited
@@ -386,7 +361,7 @@ async def cmd_mycard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await status_msg.delete()
     except Exception as e:
         logger.error("Error generating card: %s", e, exc_info=True)
-        await status_msg.edit_text(f"❌ متأسفانه خطایی پیش آمد.\n\nخطا: `{e}`", parse_mode="Markdown")
+        await status_msg.edit_text("❌ متأسفانه خطایی پیش آمد. لطفاً بعداً تلاش کنید.")
 
 @private_only
 @rate_limited
@@ -455,19 +430,19 @@ async def cmd_remind(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if not update.message: return
     args = context.args
     if len(args) < 2:
-        return await update.message.reply_text("⚠️ فرمت: `/remind 10m آب بخورم`", parse_mode="Markdown")
+        return await update.message.reply_text("⚠️ فرمت: `/remind 10m آب بخورم`", parse_mode="HTML")
     
     time_str = args[0]
     text = " ".join(args[1:])
     
     match = re.match(r"(\d+)([smh])", time_str.lower())
     if not match:
-        return await update.message.reply_text("⚠️ زمان اشتباه است. از `s`، `m` یا `h` استفاده کن.", parse_mode="Markdown")
+        return await update.message.reply_text("⚠️ زمان اشتباه است. از `s`، `m` یا `h` استفاده کن.", parse_mode="HTML")
     
     amount = int(match.group(1)); unit = match.group(2)
     seconds = amount if unit == "s" else amount * 60 if unit == "m" else amount * 3600
     
-    context.job_queue.run_once(_send_reminder, when=seconds, chat_id=update.effective_chat.id, data={"text": f"⏰ **یادآوری:**\n{text}"})
+    context.job_queue.run_once(_send_reminder, when=seconds, chat_id=update.effective_chat.id, data={"text": f"⏰ <b>یادآوری:</b>\n{text}"})
     await update.message.reply_text(f"✅ ثبت شد! بعد از {amount}{unit} یادآوری می‌کنم.")
 
 # ---------------------------------------------------------------------------
@@ -497,7 +472,6 @@ async def _process_ai_response(update: Update, context: ContextTypes.DEFAULT_TYP
                 clean_text = clean_text.replace(w, "")
             clean_text = clean_text.strip() or user_text
 
-        # جستجوی واقعی
         search_context = ""
         casual_chats = ["خوبی", "چطوری", "چه خبر", "خسته نباشی", "مرسی", "ممنون", "سلام"]
         is_casual = any(chat == clean_text.lower().strip() for chat in casual_chats)
@@ -515,7 +489,7 @@ async def _process_ai_response(update: Update, context: ContextTypes.DEFAULT_TYP
                     await _send_html_safe(bot=context.bot, chat_id=chat_id, text=result, reply_to=message_id)
                     return
             except Exception as e:
-                logger.error(f"Search error: {e}")
+                logger.error(f"Search error: {e}", exc_info=True)
 
         final_input = f"{reply_context}{clean_text}"
         
@@ -556,14 +530,17 @@ async def _process_ai_response(update: Update, context: ContextTypes.DEFAULT_TYP
     except Exception as e:
         logger.error(f"AI Processing Error: {e}", exc_info=True)
         try:
-            await context.bot.send_message(chat_id=chat_id, text=f"❌ خطا: {str(e)[:100]}")
+            await context.bot.send_message(chat_id=chat_id, text="❌ متأسفانه در پردازش درخواست شما خطایی رخ داد. لطفاً بعداً تلاش کنید.")
         except: pass
 
 @rate_limited
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.message.text: return
-    await ensure_user_and_group(update)
+    
+    # 👈 اصلاح مهم: اول چک می‌کنیم آیا پیام برای ماست، بعد دیتابیس رو آپدیت می‌کنیم
     if not is_for_me(update, context): return
+    
+    await ensure_user_and_group(update)
     
     original_text = clean_mention(update.message.text, context.bot.username or "")
     if not original_text: return
@@ -580,7 +557,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             import random
             replies = ["سلام! 👋 چطور می‌تونم امروز بهت کمک کنم؟", "سلام جان! 🌱 چه خبر؟", "درود! 🤖 امروز چی می‌خوای یاد بگیری؟"]
             context.user_data["last_interaction"] = current_time
-            return await update.message.reply_text(with_signature(random.choice(replies)))
+            return await update.message.reply_text(with_signature(random.choice(replies)), parse_mode="HTML")
     context.user_data["last_interaction"] = time.time()
 
     if is_group(update):
@@ -604,7 +581,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     
     if data == "menu_persona": await persona_cmd.cmd_persona(update, context); return
     if data == "menu_vision":
-        await query.edit_message_text(with_signature("👁️ <b>تحلیل عکس</b>\n\nیک عکس بفرست و بزن:\n<code>/vision</code>\n<code>/roast</code>\n<code>/ocr</code>\n<code>/food</code>"), parse_mode="HTML"); return
+        await query.edit_message_text(with_signature("👁️ <b>تحلیل عکس</b>\n\nیک عکس بفرست و بزن:\n<code>/vision</code>\n<code>/roast</code>\n<code>/ocr</code>\n<code>/food</code>\n<code>/barcode</code>"), parse_mode="HTML"); return
     if data == "menu_tts":
         await query.edit_message_text(with_signature("🔊 <b>TTS</b>\n\nروش‌ها:\n<code>/tts سلام خوبی؟</code>\nیا روی متن ریپلای کن و بزن <code>/tts</code>"), parse_mode="HTML"); return
     if data == "menu_imagine":
@@ -618,24 +595,29 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if data == "menu_music":
         await query.edit_message_text(with_signature("🎵 <b>دانلود آهنگ</b>\n\n<code>/music نام آهنگ</code>"), parse_mode="HTML"); return
     
-    if data == "menu_quiz": await query.edit_message_text(with_signature("🎮 /quiz")); return
-    if data == "menu_lb": await query.edit_message_text(with_signature("🏆 /leaderboard")); return
-    if data == "menu_help": await query.edit_message_text(with_signature(msg.HELP)); return
-    if data == "menu_tip": await query.edit_message_text(with_signature(f"💡 {get_tip()}")); return
-    if data == "menu_fact": await query.edit_message_text(with_signature(f"🍎 {get_fact()}")); return
-    if data == "menu_myth": m, t = get_myth(); await query.edit_message_text(with_signature(f"❌ {m}\n\n✅ {t}")); return
+    if data == "menu_quiz": await query.edit_message_text(with_signature("🎮 /quiz"), parse_mode="HTML"); return
+    if data == "menu_lb": await query.edit_message_text(with_signature("🏆 /leaderboard"), parse_mode="HTML"); return
+    if data == "menu_help": await query.edit_message_text(with_signature(msg.HELP), parse_mode="HTML"); return
+    if data == "menu_tip": await query.edit_message_text(with_signature(f"💡 {get_tip()}"), parse_mode="HTML"); return
+    if data == "menu_fact": await query.edit_message_text(with_signature(f"🍎 {get_fact()}"), parse_mode="HTML"); return
+    if data == "menu_myth": m, t = get_myth(); await query.edit_message_text(with_signature(f"❌ {m}\n\n✅ {t}"), parse_mode="HTML"); return
     
     hints = {"menu_plan": "🍽 /plan", "menu_today": "📅 /today", "menu_shopping": "🛒 /shopping", "menu_food": "🥗 /food", "menu_ideal": "🎯 /ideal (پیوی)", "menu_weight": "⚖️ /weight (پیوی)", "menu_calories": "🔥 /calories (پیوی)", "menu_protein": "🥩 /protein (پیوی)", "menu_macros": "🧮 /macros (پیوی)", "menu_progress": "📊 /progress (پیوی)", "menu_profile": "👤 /profile (پیوی)", "menu_ai": "💬 پیام بفرست."}
     text = hints.get(data, msg.UNKNOWN_COMMAND)
     
     if is_group(update) and data in ["menu_weight", "menu_calories", "menu_protein", "menu_macros", "menu_progress", "menu_profile", "menu_ideal"]:
         kb = [[InlineKeyboardButton("🔒 ورود به چت خصوصی", url=f"https://t.me/{context.bot.username}?start=private_setup")]]
-        await query.edit_message_text(with_signature("🛡️ این بخش خصوصی است."), reply_markup=InlineKeyboardMarkup(kb)); return
+        await query.edit_message_text(with_signature("🛡️ این بخش خصوصی است."), reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML"); return
     
-    await query.edit_message_text(with_signature(text))
+    await query.edit_message_text(with_signature(text), parse_mode="HTML")
 
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logger.exception("Exception", exc_info=context.error)
+    logger.error("Exception while handling an update:", exc_info=context.error)
+    settings = get_settings()
+    if settings.admin_ids:
+        try:
+            await context.bot.send_message(chat_id=settings.admin_ids[0], text=f"⚠️ Error: {context.error}")
+        except: pass
 
 # ---------------------------------------------------------------------------
 #  Admin Management Commands
@@ -657,7 +639,7 @@ async def cmd_addadmin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         else:
             try: target_id, target_name = int(arg), str(arg)
             except: pass
-    if not target_id: return await update.message.reply_text("⚠️ راهنما:\n`/addadmin 123456789`", parse_mode="Markdown")
+    if not target_id: return await update.message.reply_text("⚠️ راهنما:\n`/addadmin 123456789`", parse_mode="HTML")
     await repo.add_dynamic_admin(target_id)
     await update.message.reply_text(f"✅ کاربر <b>{target_name}</b> ادمین شد.", parse_mode="HTML")
 
@@ -676,7 +658,7 @@ async def cmd_removeadmin(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         else:
             try: target_id = int(arg)
             except: pass
-    if not target_id: return await update.message.reply_text("⚠️ راهنما:\n`/removeadmin 123456789`", parse_mode="Markdown")
+    if not target_id: return await update.message.reply_text("⚠️ راهنما:\n`/removeadmin 123456789`", parse_mode="HTML")
     await repo.remove_dynamic_admin(target_id)
     await update.message.reply_text(f"✅ دسترسی ادمینی برداشته شد.", parse_mode="HTML")
 
@@ -737,7 +719,7 @@ async def cmd_leave_group(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     user, chat = update.effective_user, update.effective_chat
     if not user or not await is_admin_user(user.id): return
     if chat.type == ChatType.PRIVATE:
-        if not context.args: return await update.message.reply_text("⚠️ مثال: `/leavegroup Asli`", parse_mode="Markdown")
+        if not context.args: return await update.message.reply_text("⚠️ مثال: `/leavegroup Asli`", parse_mode="HTML")
         query = " ".join(context.args).strip(); groups = await repo.list_all_groups()
         target = next((g for g in groups if str(g.chat_id) == query or (g.title and query.lower() in g.title.lower())), None)
         if not target: return await update.message.reply_text("❌ گروه پیدا نشد.")
@@ -754,7 +736,7 @@ async def cmd_send_to_group(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     user = update.effective_user
     if not user or not await is_admin_user(user.id): return
     if not update.message.reply_to_message: return await update.message.reply_text("⚠️ روی پیام ریپلای کنید.")
-    if not context.args: return await update.message.reply_text("⚠️ مثال: `/sendto Asli`", parse_mode="Markdown")
+    if not context.args: return await update.message.reply_text("⚠️ مثال: `/sendto Asli`", parse_mode="HTML")
     query = " ".join(context.args).strip(); groups = await repo.list_all_groups()
     target = next((g for g in groups if str(g.chat_id) == query or (g.title and query.lower() in g.title.lower())), None)
     if not target: return await update.message.reply_text("❌ گروه پیدا نشد.")
@@ -767,7 +749,7 @@ async def cmd_send_to_group(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 async def cmd_global_news(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     if not user or not await is_admin_user(user.id): return
-    if not context.args: return await update.message.reply_text("⚠️ مثال: `/globalnews Asli`", parse_mode="Markdown")
+    if not context.args: return await update.message.reply_text("⚠️ مثال: `/globalnews Asli`", parse_mode="HTML")
     query = " ".join(context.args).strip(); groups = await repo.list_all_groups()
     target = next((g for g in groups if str(g.chat_id) == query or (g.title and query.lower() in g.title.lower())), None)
     if not target: return await update.message.reply_text("❌ گروه پیدا نشد.")
@@ -788,7 +770,7 @@ async def cmd_global_news(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     if not user or not await is_admin_user(user.id): return
-    target_id, target_name, group_to_notify = None, "کاربر", None
+    target_id, target_name = None, "کاربر"
     if update.message.reply_to_message:
         replied = update.message.reply_to_message
         if replied.forward_from: target_id, target_name = replied.forward_from.id, replied.forward_from.first_name or "کاربر"
@@ -801,18 +783,18 @@ async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         else:
             try: target_id, target_name = int(arg), str(arg)
             except: pass
-    if not target_id: return await update.message.reply_text("⚠️ راهنما:\n`/ban @username`", parse_mode="Markdown")
+    if not target_id: return await update.message.reply_text("⚠️ راهنما:\n`/ban @username`", parse_mode="HTML")
     try:
         await repo.ban_user(target_id, "نقض قوانین")
         await update.message.reply_text(f"✅ کاربر <b>{target_name}</b> مسدود شد.", parse_mode="HTML")
         try: await context.bot.send_message(chat_id=target_id, text="🚫 <b>دسترسی شما مسدود شد</b>", parse_mode="HTML")
         except: pass
-    except Exception as e: await update.message.reply_text(f"❌ خطای دیتابیسی: `{e}`", parse_mode="Markdown")
+    except Exception as e: await update.message.reply_text(f"❌ خطای دیتابیسی: `{e}`", parse_mode="HTML")
 
 async def cmd_unban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     if not user or not await is_admin_user(user.id): return
-    if not context.args: return await update.message.reply_text("⚠️ `/unban 123456789`", parse_mode="Markdown")
+    if not context.args: return await update.message.reply_text("⚠️ `/unban 123456789`", parse_mode="HTML")
     arg = context.args[0]; target_id = None
     if arg.startswith("@"):
         db_user = await repo.get_user_by_username(arg)
@@ -822,7 +804,7 @@ async def cmd_unban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         except: pass
     if not target_id: return await update.message.reply_text("❌ کاربر پیدا نشد.")
     await repo.unban_user(target_id)
-    await update.message.reply_text(f"✅ مسدودی `{target_id}` برداشته شد.", parse_mode="Markdown")
+    await update.message.reply_text(f"✅ مسدودی `{target_id}` برداشته شد.", parse_mode="HTML")
 
 async def cmd_forcepost(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
@@ -839,29 +821,26 @@ async def cmd_forcepost(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await status.edit_text(f"❌ خطای فنی: {e}")
 
 # ---------------------------------------------------------------------------
-#  Lifecycle
+#  Lifecycle & Setup
 # ---------------------------------------------------------------------------
 async def post_init(application: Application) -> None:
     init_engine()
-    import app.database.models
-    import app.database.quiz_models 
-    import app.database.music_models
-    import app.database.group_models
-    import app.database.state_models
+    import app.database.models, app.database.quiz_models, app.database.music_models
+    import app.database.group_models, app.database.state_models
     await create_all()
     
     me = await application.bot.get_me()
     logger.info("Bot started as @%s", me.username)
     
     try:
-        from app.bot.commands_setup import setup_commands
         await setup_commands(application.bot)
-    except: pass
+    except Exception as e: 
+        logger.warning(f"Commands setup failed: {e}")
     
     if application.job_queue is not None:
         try: first = int(os.environ.get("AUTO_POST_FIRST_DELAY", "600")) 
         except: first = 600
-        application.job_queue.run_repeating(_auto_post_job, interval=600, first=first, name="auto_nutrition_post")
+        application.job_queue.run_repeating(_auto_post_job, interval=3600, first=first, name="auto_nutrition_post")
 
 async def post_shutdown(application: Application) -> None: 
     await dispose_engine()
@@ -870,19 +849,21 @@ def build_application() -> Application:
     settings = get_settings()
     app = (ApplicationBuilder().token(settings.telegram_bot_token).post_init(post_init).post_shutdown(post_shutdown).build())
     
-    app.add_handler(TypeHandler(Update, check_user_ban), group=-1)
+    # --- Security & Background (Group -2, -1) ---
+    app.add_handler(TypeHandler(Update, check_user_ban), group=-2)
     app.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.ALL, save_member_handler), group=-2)
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS & filters.ChatType.GROUPS, track_new_members), group=-2)
+    app.add_handler(ChatMemberHandler(gmanager.on_bot_added, ChatMemberHandler.MY_CHAT_MEMBER), group=-1)
+    app.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.ALL, gmanager.on_group_message), group=-1)
 
+    # --- Core Commands ---
     app.add_handler(CommandHandler("start", cmd_start)); app.add_handler(CommandHandler("help", cmd_help)); app.add_handler(CommandHandler("menu", cmd_menu))
     app.add_handler(CommandHandler("about", cmd_about)); app.add_handler(CommandHandler("privacy", cmd_privacy)); app.add_handler(CommandHandler("settings", cmd_settings))
-    
-    app.add_handler(CommandHandler("profile", cmd_profile))
-    app.add_handler(CommandHandler("mycard", cmd_mycard))
+    app.add_handler(CommandHandler("profile", cmd_profile)); app.add_handler(CommandHandler("mycard", cmd_mycard))
     app.add_handler(CommandHandler("setup", cmd_setup)); app.add_handler(CommandHandler("cancel", cmd_cancel))
-    
     app.add_handler(CommandHandler("tagall", cmd_tagall))
     
+    # --- Tools Commands ---
     app.add_handler(CommandHandler("tts", tts_cmd.cmd_tts))
     app.add_handler(CommandHandler("voice", voice_cmd.cmd_voice))
     app.add_handler(MessageHandler(filters.VOICE, voice_cmd.handle_voice_message))
@@ -895,59 +876,66 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("roast", vision_cmd.cmd_roast))
     app.add_handler(CommandHandler("ocr", vision_cmd.cmd_ocr))
     app.add_handler(CommandHandler("food_vision", vision_cmd.cmd_food)) 
+    app.add_handler(CommandHandler("barcode", barcode_cmd.cmd_barcode)) # 👈 قابلیت جدید
     
     app.add_handler(CommandHandler("imagine", img_cmd.cmd_imagine))
+    app.add_handler(CallbackQueryHandler(img_cmd.handle_reimagine, pattern=r"^reimg_")) # 👈 دکمه تصویر جدید
+    
     app.add_handler(CommandHandler("getconfig", conf_cmd.cmd_getconfig))
     app.add_handler(CallbackQueryHandler(conf_cmd.handle_config_callback, pattern=r"^(copy_cfg_|refresh_cfg)"))
     app.add_handler(CommandHandler("translate", trans_cmd.cmd_translate)) 
     app.add_handler(CommandHandler("search", search_cmd.cmd_search))
-    app.add_handler(CommandHandler("sticker", sticker_cmd.cmd_sticker)) # 👈 جدید
+    app.add_handler(CommandHandler("sticker", sticker_cmd.cmd_sticker))
     
+    # --- Health Commands ---
     app.add_handler(CommandHandler("bmi", cmd_bmi)); app.add_handler(CommandHandler("calories", cmd_calories)); app.add_handler(CommandHandler("weight", cmd_weight))
     app.add_handler(CommandHandler("progress", cmd_progress)); app.add_handler(CommandHandler("macros", cmd_macros)); app.add_handler(CommandHandler("protein", cmd_protein))
     app.add_handler(CommandHandler("ideal", cmd_ideal)); app.add_handler(CommandHandler("bodyfat", cmd_bodyfat)); app.add_handler(CommandHandler("bmr", cmd_bmr))
     app.add_handler(CommandHandler("tip", cmd_tip)); app.add_handler(CommandHandler("fact", cmd_fact)); app.add_handler(CommandHandler("myth", cmd_myth)); app.add_handler(CommandHandler("water", cmd_water))
     app.add_handler(CommandHandler("plan", cmd_plan)); app.add_handler(CommandHandler("today", cmd_today)); app.add_handler(CommandHandler("shopping", cmd_shopping)); app.add_handler(CommandHandler("food", cmd_food))
+    
+    # --- Games & Music Commands ---
     app.add_handler(CommandHandler("quiz", gquiz.cmd_quiz)); app.add_handler(CommandHandler("leaderboard", gquiz.cmd_leaderboard)); app.add_handler(CommandHandler("mystats", gquiz.cmd_mystats))
     app.add_handler(PollAnswerHandler(gquiz.on_poll_answer)); app.add_handler(CallbackQueryHandler(gquiz.on_inline_answer, pattern=r"^gq_\d+$"))
+    app.add_handler(CallbackQueryHandler(gquiz.handle_next_quiz, pattern=r"^gq_next$")) # 👈 دکمه سوال بعدی
     
     app.add_handler(CommandHandler("snake", snake_game.cmd_snake)); app.add_handler(CallbackQueryHandler(snake_game.handle_snake, pattern=r"^snake_"))
     app.add_handler(CommandHandler("koma", kcmd.cmd_koma)); app.add_handler(CommandHandler("music", kcmd.cmd_music))
     app.add_handler(CommandHandler("proxy", prox_cmd.cmd_proxy)); app.add_handler(CallbackQueryHandler(prox_cmd.handle_proxy_callback, pattern=r"^proxy_"))
     
-    app.add_handler(ChatMemberHandler(gmanager.on_bot_added, ChatMemberHandler.MY_CHAT_MEMBER))
+    # --- Admin Commands ---
     app.add_handler(CommandHandler("setgroup", gmanager.cmd_setgroup)); app.add_handler(CommandHandler("groups", gmanager.cmd_groups)); app.add_handler(CommandHandler("unsetgroup", gmanager.cmd_unsetgroup))
-    
-    app.add_handler(CommandHandler("addadmin", cmd_addadmin))
-    app.add_handler(CommandHandler("removeadmin", cmd_removeadmin))
-    app.add_handler(CommandHandler("admins", cmd_admins))
-    
+    app.add_handler(CommandHandler("addadmin", cmd_addadmin)); app.add_handler(CommandHandler("removeadmin", cmd_removeadmin)); app.add_handler(CommandHandler("admins", cmd_admins))
     app.add_handler(CommandHandler("broadcast_covers", cmd_broadcast_covers)); app.add_handler(CommandHandler("leave", cmd_leave_group)); app.add_handler(CommandHandler("leavegroup", cmd_leave_group))
     app.add_handler(CommandHandler("sendto", cmd_send_to_group)); app.add_handler(CommandHandler("globalnews", cmd_global_news)); app.add_handler(CommandHandler("ban", cmd_ban)); app.add_handler(CommandHandler("unban", cmd_unban))
-    app.add_handler(CommandHandler("forcepost", cmd_forcepost))
-    app.add_handler(CommandHandler("advertise", cmd_advertise))
+    app.add_handler(CommandHandler("forcepost", cmd_forcepost)); app.add_handler(CommandHandler("advertise", cmd_advertise))
     
-    app.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.ALL, gmanager.on_group_message), group=1)
-    
+    # --- Media & Text Handlers ---
     app.add_handler(MessageHandler(filters.PHOTO & filters.ChatType.PRIVATE, vision_cmd.handle_photo_message))
+    app.add_handler(CallbackQueryHandler(handle_callback)) # 👈 Callback اصلی منو
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text)) # 👈 هندلر اصلی متن
     
-    app.add_handler(CallbackQueryHandler(handle_callback))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_error_handler(on_error)
     return app
 
 def main() -> None:
-    settings = get_settings(); application = build_application()
+    settings = get_settings()
+    application = build_application()
+    
     render_url = os.environ.get("RENDER_EXTERNAL_URL", "").strip()
-    if render_url:
-        port = int(os.environ.get("PORT", "8080")); url_path = application.bot.token; secret = settings.webhook_secret_token
+    if render_url and settings.webhook_path:
+        logger.info("Starting via WEBHOOK...")
         application.run_webhook(
-            listen="0.0.0.0", port=port, url_path=url_path, 
-            webhook_url=f"{render_url}/{url_path}", 
-            allowed_updates=Update.ALL_TYPES, drop_pending_updates=True, 
-            secret_token=secret if secret else None
+            listen="0.0.0.0", 
+            port=settings.port, 
+            url_path=settings.webhook_path, 
+            webhook_url=f"{render_url}/{settings.webhook_path}", 
+            secret_token=settings.webhook_secret_token or None,
+            allowed_updates=Update.ALL_TYPES, 
+            drop_pending_updates=True
         )
     else:
+        logger.info("Starting via POLLING...")
         _start_health_server()
         application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 

@@ -40,7 +40,7 @@ from app.bot import voice_chat_commands as voice_cmd
 from app.bot import image_commands as img_cmd
 from app.bot import persona_commands as persona_cmd
 from app.bot import vision_commands as vision_cmd 
-from app.bot import sticker_commands as sticker_cmd # 👈 جدید
+from app.bot import sticker_commands as sticker_cmd # 👈 استیکر
 from app.bot.content import get_fact, get_myth, get_tip
 from app.config import get_settings
 from app.database import repository as repo

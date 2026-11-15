@@ -14,48 +14,123 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    # ============================================================
     # Telegram
+    # ============================================================
     telegram_bot_token: str
     admin_ids: list[int] = Field(default_factory=list)
 
+    # ============================================================
     # Security / Webhook
+    # ============================================================
     webhook_secret_token: str = Field(default="")
     webhook_path: str = Field(default_factory=lambda: str(uuid.uuid4()))
 
+    # ============================================================
     # AI Services
-    groq_api_key: str = Field(default="", validation_alias=AliasChoices("GROQ_API_KEY", "groq_api_key"))
-    groq_model: str = Field(default="llama-3.3-70b-versatile", validation_alias=AliasChoices("GROQ_MODEL", "groq_model"))
-    openai_api_key: str = Field(default="", validation_alias=AliasChoices("OPENAI_API_KEY", "openai_api_key"))
-    tavily_api_key: str = Field(default="", validation_alias=AliasChoices("TAVILY_API_KEY", "tavily_api_key"))
+    # ============================================================
+    groq_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("GROQ_API_KEY", "groq_api_key"),
+    )
+    groq_model: str = Field(
+        default="llama-3.3-70b-versatile",
+        validation_alias=AliasChoices("GROQ_MODEL", "groq_model"),
+    )
+    openai_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("OPENAI_API_KEY", "openai_api_key"),
+    )
+    tavily_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("TAVILY_API_KEY", "tavily_api_key"),
+    )
 
+    # ============================================================
     # Media
-    unsplash_access_key: str = ""
-    pollinations_api_key: str = Field(default="", validation_alias=AliasChoices("POLLINATIONS_API_KEY", "pollinations_api_key"))
+    # ============================================================
+    unsplash_access_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("UNSPLASH_ACCESS_KEY", "unsplash_access_key"),
+    )
+    pollinations_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("POLLINATIONS_API_KEY", "pollinations_api_key"),
+    )
 
-    # Database (اجباری - در .env مقداردهی شود)
+    # ============================================================
+    # Database (اجباری - در .env یا Environment Variables مقداردهی شود)
+    # ============================================================
     database_url: str
 
+    # ============================================================
     # General
+    # ============================================================
     log_level: str = "INFO"
     mock_mode: bool = False
 
+    # ============================================================
     # Branding
+    # ============================================================
     bot_display_name: str = "تغذیه‌یار"
     signature: str = "🌱 تغذیه‌یار | دستیار هوشمند شما"
 
+    # ============================================================
     # Server
+    # ============================================================
     webhook_url: str = ""
-    port: int = Field(default=8080, validation_alias=AliasChoices("PORT", "port"))
+    port: int = Field(
+        default=8080,
+        validation_alias=AliasChoices("PORT", "port"),
+    )
     rate_limit_seconds: float = 2.0
 
+    # ============================================================
+    # Validators
+    # ============================================================
     @field_validator("admin_ids", mode="before")
     @classmethod
     def parse_admin_ids(cls, v):
-        if isinstance(v, str):
-            return [int(i.strip()) for i in v.split(",") if i.strip().isdigit()]
-        return v
+        """
+        پشتیبانی از سه حالت ورودی:
+        - int (مثل 6409367884) → [6409367884]
+        - str (مثل "123,456") → [123, 456]
+        - list (مثل [123, 456]) → [123, 456]
+        """
+        # حالت ۱: اگر از قبل لیست است
+        if isinstance(v, list):
+            result = []
+            for item in v:
+                try:
+                    result.append(int(item))
+                except (ValueError, TypeError):
+                    continue
+            return result
 
+        # حالت ۲: اگر عدد تکی است (مثل 6409367884)
+        if isinstance(v, int):
+            return [v]
+
+        # حالت ۳: اگر رشته است (مثل "123,456" یا "123, 456")
+        if isinstance(v, str):
+            stripped = v.strip()
+            if not stripped:
+                return []
+            result = []
+            for part in stripped.split(","):
+                part = part.strip()
+                if part.isdigit():
+                    result.append(int(part))
+            return result
+
+        # حالت نامشخص
+        return []
+
+    # ============================================================
+    # Helper Methods
+    # ============================================================
     def is_admin(self, user_id: int) -> bool:
+        """بررسی اینکه آیا کاربر ادمین است یا نه"""
         return user_id in self.admin_ids
 
     @property
@@ -65,4 +140,5 @@ class Settings(BaseSettings):
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
+    """دریافت تنظیمات با کش (فقط یک بار خوانده می‌شود)"""
     return Settings()

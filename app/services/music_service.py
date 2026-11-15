@@ -170,6 +170,7 @@ async def _search_audius(query: str) -> List[Dict]:
 
 
 def _download_audio_ytdlp(url: str, output_template: str) -> Optional[dict]:
+    # 👈 تغییرات مهم: اضافه شدن sleep_interval برای جلوگیری از خطای 429 یوتیوب
     ydl_opts = {
         'format': 'bestaudio/best',
         'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '128'}],
@@ -178,13 +179,14 @@ def _download_audio_ytdlp(url: str, output_template: str) -> Optional[dict]:
         'ignoreerrors': True, 'no_color': True,
         'extractor_args': {'youtube': {'player_client': ['ios', 'android', 'mweb', 'web']}},
         'retries': 3, 'fragment_retries': 3, 'socket_timeout': 30,
+        'sleep_interval': 3,          # 👈 صبر ۳ ثانیه‌ای بین درخواست‌ها
+        'max_sleep_interval': 10,     # 👈 حداکثر صبر ۱۰ ثانیه‌ای
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             if not info: return None
 
-            # 👈 روش صحیح و امن پیدا کردن فایل دانلود شده
             if 'requested_downloads' in info and info['requested_downloads']:
                 mp3_path = info['requested_downloads'][0].get('filepath')
             else:

@@ -1,6 +1,6 @@
 FROM python:3.12-slim
 
-# نصب پیش‌نیازهای سیستمی (FFmpeg برای صدا، libzbar0 برای بارکد)
+# نصب پیش‌نیازهای سیستمی: FFmpeg برای صدا، libzbar0 برای بارکد
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     libzbar0 \

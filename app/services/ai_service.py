@@ -14,14 +14,13 @@ _RATE_MAX_REQUESTS = 15
 _user_requests: dict[int, deque] = defaultdict(deque)
 _last_cleanup = time.time()
 
-TEXT_MODEL_DEFAULT = "llama-3.3-70b-versatile"
+TEXT_MODEL_DEFAULT = "openai/gpt-oss-120b"  # 👈 مدل پیش‌فرض جایگزین
 VISION_MODEL = "llama-3.2-11b-vision-preview"
 
 PREFERRED_MODELS = [
-    "llama-3.3-70b-versatile",
-    "qwen/qwen3.8-27b",
-    "openai/gpt-oss-20b",
-    "gemma2-9b-it",
+    "openai/gpt-oss-120b",      # 👈 جایگزین رسمی Groq
+    "qwen/qwen3.6-27b",         # 👈 جایگزین Qwen
+    "openai/gpt-oss-20b",       # 👈 جایگزین مدل 8B
 ]
 
 def _cleanup_old_rate_limits():

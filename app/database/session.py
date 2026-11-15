@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
+from sqlalchemy.pool import NullPool
 
 from app.config import get_settings
 from app.database.models import Base
@@ -27,8 +28,8 @@ def init_engine() -> None:
 
     url = settings.database_url
 
-    # 👈 تنظیمات اتصال (حل مشکل InvalidCachedStatementError)
-    # statement_cache_size=0 باعث می‌شود دیتابیس کوئری‌ها را کش نکند تا بعد از تغییر ساختار جدول، خطا ندهد
+    # 👈 ۱. غیرفعال کردن کش درایور asyncpg
+    # statement_cache_size=0 باعث می‌شود asyncpg برای هر کوئری، هر بار از نو برنامه‌ریزی کند
     connect_args = {"statement_cache_size": 0}
 
     # Normalize postgres:// and postgresql:// to asyncpg format
@@ -37,12 +38,13 @@ def init_engine() -> None:
     elif url.startswith("postgresql://") and "+asyncpg" not in url:
         url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
 
-    # Strip sslmode and other query params (asyncpg doesn't accept them natively in URL)
+    # 👈 ۲. غیرفعال کردن کش در سطح SQLAlchemy (با اضافه کردن پارامتر به URL)
+    # این کار باعث می‌شود SQLAlchemy هم کوئری‌های تولیدی خود را کش نکند
     if "?" in url:
         parsed = urlparse(url)
         query_params = parse_qs(parsed.query)
         
-        # 👈 مدیریت SSL برای دیتابیس‌های ابری
+        # مدیریت SSL
         if "sslmode" in query_params:
             ssl_mode = query_params["sslmode"][0]
             if ssl_mode in ("require", "verify-ca", "verify-full"):
@@ -50,16 +52,16 @@ def init_engine() -> None:
                 
         url = url.split("?")[0]
 
+    # 👈 ۳. اضافه کردن پارامتر غیرفعال‌سازی کش به URL
+    url = f"{url}?prepared_statement_cache_size=0"
+
+    # 👈 ۴. استفاده از NullPool برای اطمینان از عدم نگهداری اتصالات قدیمی
     _engine = create_async_engine(
         url,
         echo=False,
         future=True,
-        pool_pre_ping=True,
-        pool_size=10,
-        max_overflow=20,
-        pool_recycle=1800,
-        pool_timeout=30.0,
-        connect_args=connect_args, # 👈 اعمال تنظیمات اینجا
+        poolclass=NullPool,  # 👈 استفاده از NullPool به جای pool_pre_ping
+        connect_args=connect_args,
     )
     
     _session_factory = async_sessionmaker(
@@ -68,7 +70,7 @@ def init_engine() -> None:
         expire_on_commit=False,
         autoflush=False,
     )
-    logger.info("Database engine initialized successfully.")
+    logger.info("Database engine initialized with caching disabled.")
 
 
 async def create_all() -> None:

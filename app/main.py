@@ -17,12 +17,13 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import httpx
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, User
 from telegram.constants import ChatType
-from telegram.error import Forbidden, BadRequest
+from telegram.error import Forbidden, BadRequest, NetworkError
 from telegram.ext import (
     Application, ApplicationBuilder, CallbackQueryHandler, ChatMemberHandler,
     CommandHandler, ContextTypes, MessageHandler, PollAnswerHandler,
     TypeHandler, ApplicationHandlerStop, filters,
 )
+from telegram.request import HTTPXRequest # 👈 برای تایم اوت
 
 # --- Core Imports ---
 from app.config import get_settings
@@ -52,7 +53,7 @@ from app.bot import image_commands as img_cmd
 from app.bot import persona_commands as persona_cmd
 from app.bot import vision_commands as vision_cmd 
 from app.bot import sticker_commands as sticker_cmd
-from app.bot import barcode_commands as barcode_cmd # 👈 قابلیت جدید
+from app.bot import barcode_commands as barcode_cmd
 
 from app.bot.content import get_fact, get_myth, get_tip
 from app.services.ai_service import get_ai_service, VOICE_SYSTEM_PROMPT 
@@ -68,7 +69,7 @@ logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 # ---------------------------------------------------------------------------
-#  🚨 Global Error Handler (سیستم نمایش دقیق خطا)
+#  🚨 Global Error Handler
 # ---------------------------------------------------------------------------
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.error("Exception while handling an update:", exc_info=context.error)
@@ -851,7 +852,24 @@ async def post_shutdown(application: Application) -> None:
 
 def build_application() -> Application:
     settings = get_settings()
-    app = (ApplicationBuilder().token(settings.telegram_bot_token).post_init(post_init).post_shutdown(post_shutdown).build())
+    
+    # 👈 تنظیمات شبکه با تایم‌اوت بالاتر برای جلوگیری از کرش در سرورهای کند
+    custom_request = HTTPXRequest(
+        connection_pool_size=8,
+        connect_timeout=20.0,
+        read_timeout=30.0,
+        write_timeout=30.0
+    )
+
+    app = (
+        ApplicationBuilder()
+        .token(settings.telegram_bot_token)
+        .request(custom_request)
+        .get_updates_request(custom_request)
+        .post_init(post_init)
+        .post_shutdown(post_shutdown)
+        .build()
+    )
     
     # --- Security & Background (Group -2, -1) ---
     app.add_handler(TypeHandler(Update, check_user_ban), group=-2)
@@ -880,10 +898,10 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("roast", vision_cmd.cmd_roast))
     app.add_handler(CommandHandler("ocr", vision_cmd.cmd_ocr))
     app.add_handler(CommandHandler("food_vision", vision_cmd.cmd_food)) 
-    app.add_handler(CommandHandler("barcode", barcode_cmd.cmd_barcode)) # 👈 قابلیت جدید
+    app.add_handler(CommandHandler("barcode", barcode_cmd.cmd_barcode))
     
     app.add_handler(CommandHandler("imagine", img_cmd.cmd_imagine))
-    app.add_handler(CallbackQueryHandler(img_cmd.handle_reimagine, pattern=r"^reimg_")) # 👈 دکمه تصویر جدید
+    app.add_handler(CallbackQueryHandler(img_cmd.handle_reimagine, pattern=r"^reimg_"))
     
     app.add_handler(CommandHandler("getconfig", conf_cmd.cmd_getconfig))
     app.add_handler(CallbackQueryHandler(conf_cmd.handle_config_callback, pattern=r"^(copy_cfg_|refresh_cfg)"))
@@ -901,7 +919,7 @@ def build_application() -> Application:
     # --- Games & Music Commands ---
     app.add_handler(CommandHandler("quiz", gquiz.cmd_quiz)); app.add_handler(CommandHandler("leaderboard", gquiz.cmd_leaderboard)); app.add_handler(CommandHandler("mystats", gquiz.cmd_mystats))
     app.add_handler(PollAnswerHandler(gquiz.on_poll_answer)); app.add_handler(CallbackQueryHandler(gquiz.on_inline_answer, pattern=r"^gq_\d+$"))
-    app.add_handler(CallbackQueryHandler(gquiz.handle_next_quiz, pattern=r"^gq_next$")) # 👈 دکمه سوال بعدی
+    app.add_handler(CallbackQueryHandler(gquiz.handle_next_quiz, pattern=r"^gq_next$"))
     
     app.add_handler(CommandHandler("snake", snake_game.cmd_snake)); app.add_handler(CallbackQueryHandler(snake_game.handle_snake, pattern=r"^snake_"))
     app.add_handler(CommandHandler("koma", kcmd.cmd_koma)); app.add_handler(CommandHandler("music", kcmd.cmd_music))
@@ -916,8 +934,8 @@ def build_application() -> Application:
     
     # --- Media & Text Handlers ---
     app.add_handler(MessageHandler(filters.PHOTO & filters.ChatType.PRIVATE, vision_cmd.handle_photo_message))
-    app.add_handler(CallbackQueryHandler(handle_callback)) # 👈 Callback اصلی منو
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text)) # 👈 هندلر اصلی متن
+    app.add_handler(CallbackQueryHandler(handle_callback)) 
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text)) 
     
     app.add_error_handler(on_error)
     return app

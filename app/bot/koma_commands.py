@@ -1,4 +1,4 @@
-"""دستورات موزیک KOMA (با مدیریت خطای شبکه)"""
+"""دستورات موزیک KOMA"""
 
 import logging
 import time

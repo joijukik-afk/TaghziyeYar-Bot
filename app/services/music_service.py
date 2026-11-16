@@ -1,4 +1,4 @@
-"""موتور جستجوی KOMA (فقط ساندکلود - بدون آرشیو و کاملاً جدید)"""
+"""موتور جستجوی KOMA (فقط ساندکلود - کاملاً پایدار و بدون کرش)"""
 
 import os
 import random
@@ -9,19 +9,24 @@ import asyncio
 from typing import Optional, List, Dict
 from datetime import datetime, timezone
 import yt_dlp
-from sqlalchemy import select
 from telegram import Bot
 from telegram.constants import ParseMode
 
-from app.database.music_models import MusicTrack
-from app.database.session import session_scope
-
 logger = logging.getLogger(__name__)
+
+# تلاش برای ایمپورت دیتابیس (اگر ارور داد بات کرش نکند)
+try:
+    from sqlalchemy import select
+    from app.database.music_models import MusicTrack
+    from app.database.session import session_scope
+    DB_ENABLED = True
+except Exception as e:
+    logger.warning(f"Database disabled for music due to import error: {e}")
+    DB_ENABLED = False
 
 MAX_SIZE = 45 * 1024 * 1024 
 MIN_SIZE = 100 * 1024
 
-# کلمات کلیدی بسیار گسترده برای پیدا کردن بهترین آهنگ‌های سبک KOMA
 SEARCH_QUERIES = [
     "øneheart", "oneheart slowed", "reidenshi", "dreamcore", "dark ambient melancholic",
     "sad ambient", "slowed reverb aesthetic", "my head is empty", "daniel.mp3",
@@ -38,37 +43,43 @@ SEARCH_QUERIES = [
 
 # ==================== دیتابیس ====================
 async def _is_used(identifier: str) -> bool:
-    """بررسی می‌کند که آیا این آهنگ قبلاً ارسال شده است یا خیر (جلوگیری از تکرار)"""
-    async with session_scope() as session:
-        res = await session.execute(
-            select(MusicTrack).where(
-                MusicTrack.identifier == identifier, 
-                MusicTrack.is_sent == True
+    if not DB_ENABLED: return False
+    try:
+        async with session_scope() as session:
+            res = await session.execute(
+                select(MusicTrack).where(
+                    MusicTrack.identifier == identifier, 
+                    MusicTrack.is_sent == True
+                )
             )
-        )
-        return res.scalar_one_or_none() is not None
+            return res.scalar_one_or_none() is not None
+    except Exception as e:
+        logger.error(f"DB Check Error (Ignored): {e}")
+        return False
 
 async def _record_track(data: dict, file_id: str) -> None:
-    """ثبت آهنگ در دیتابیس"""
-    now_utc = datetime.now(timezone.utc)
-    async with session_scope() as session:
-        existing = await session.execute(select(MusicTrack).where(MusicTrack.identifier == data["identifier"]))
-        track = existing.scalar_one_or_none()
-        if track:
-            track.telegram_file_id = file_id
-            track.is_sent = True
-            track.sent_at = now_utc
-        else:
-            session.add(MusicTrack(
-                identifier=data["identifier"], title=data["title"], artist=data["artist"],
-                filename=data.get("filename", ""), file_hash=data["hash"],
-                telegram_file_id=file_id, is_sent=True, sent_at=now_utc
-            ))
-        await session.flush()
+    if not DB_ENABLED: return
+    try:
+        now_utc = datetime.now(timezone.utc)
+        async with session_scope() as session:
+            existing = await session.execute(select(MusicTrack).where(MusicTrack.identifier == data["identifier"]))
+            track = existing.scalar_one_or_none()
+            if track:
+                track.telegram_file_id = file_id
+                track.is_sent = True
+                track.sent_at = now_utc
+            else:
+                session.add(MusicTrack(
+                    identifier=data["identifier"], title=data["title"], artist=data["artist"],
+                    filename=data.get("filename", ""), file_hash=data["hash"],
+                    telegram_file_id=file_id, is_sent=True, sent_at=now_utc
+                ))
+            await session.flush()
+    except Exception as e:
+        logger.error(f"DB Record Error (Ignored): {e}")
 
 # ==================== جستجو و دانلود ====================
 def _search_soundcloud(query: str, max_results: int = 10) -> List[Dict]:
-    """جستجو در ساندکلود"""
     ydl_opts = {
         'quiet': True, 
         'no_warnings': True, 
@@ -99,7 +110,6 @@ def _search_soundcloud(query: str, max_results: int = 10) -> List[Dict]:
         return []
 
 def _download_soundcloud(url: str, output_template: str) -> Optional[dict]:
-    """دانلود از ساندکلود"""
     ydl_opts = {
         'format': 'bestaudio/best',
         'postprocessors': [{
@@ -116,7 +126,6 @@ def _download_soundcloud(url: str, output_template: str) -> Optional[dict]:
         'retries': 3,
         'fragment_retries': 3,
         'socket_timeout': 30,
-        'sleep_interval': 1, # تاخیر خیلی کم چون قرار نیست از یوتیوب دانلود کنیم
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -155,15 +164,20 @@ def _download_soundcloud(url: str, output_template: str) -> Optional[dict]:
 # ==================== ارسال ====================
 async def _send_and_record_audio(bot: Bot, chat_id: int, thread_id: int, item: dict, dl: dict) -> bool:
     try:
+        send_kwargs = {
+            "chat_id": chat_id, 
+            "title": dl.get('title', item.get('title', 'Unknown'))[:64],
+            "performer": dl.get('artist', item.get('artist', 'Unknown Artist'))[:64],
+            "caption": f"🎵 <b>{dl.get('title', item.get('title', 'Unknown'))}</b>\n🎤 {dl.get('artist', item.get('artist', 'Unknown Artist'))}\n📦 SoundCloud\n🌌 KOMA | کُما",
+            "parse_mode": ParseMode.HTML, 
+            "read_timeout": 180, 
+            "write_timeout": 180
+        }
+        if thread_id:
+            send_kwargs["message_thread_id"] = thread_id
+
         with open(dl["path"], "rb") as audio:
-            sent = await bot.send_audio(
-                chat_id=chat_id, audio=audio,
-                title=dl.get('title', item.get('title', 'Unknown'))[:64],
-                performer=dl.get('artist', item.get('artist', 'Unknown Artist'))[:64],
-                caption=f"🎵 <b>{dl.get('title', item.get('title', 'Unknown'))}</b>\n🎤 {dl.get('artist', item.get('artist', 'Unknown Artist'))}\n📦 SoundCloud\n🌌 KOMA | کُما",
-                parse_mode=ParseMode.HTML, read_timeout=180, write_timeout=180, 
-                message_thread_id=thread_id
-            )
+            sent = await bot.send_audio(audio=audio, **send_kwargs)
         
         await _record_track({
             "identifier": item["id"],
@@ -182,8 +196,6 @@ async def _send_and_record_audio(bot: Bot, chat_id: int, thread_id: int, item: d
         except Exception: pass
 
 async def fetch_and_send_music(bot: Bot, chat_id: int, thread_id: int = None) -> bool:
-    """برای دستور /koma (بدون آرشیو، فقط آهنگ جدید و با تلاش بالا)"""
-    # انتخاب ۵ کوئری تصادفی برای شانس بیشتر پیدا کردن آهنگ جدید
     queries = random.sample(SEARCH_QUERIES, min(5, len(SEARCH_QUERIES)))
     all_candidates = []
     
@@ -192,18 +204,15 @@ async def fetch_and_send_music(bot: Bot, chat_id: int, thread_id: int = None) ->
         all_candidates.extend(results)
     
     if not all_candidates:
-        logger.warning("No candidates found from SoundCloud.")
-        return False # دیگر به آرشیو برنمی‌گردد
+        return False
     
     random.shuffle(all_candidates)
     attempts = 0
     
-    # تلاش حداکثر 15 باره برای پیدا کردن یک آهنگ جدید
     for item in all_candidates:
         if attempts >= min(15, len(all_candidates)): break
         attempts += 1
         
-        # چک کردن اینکه قبلا فرستاده نشده باشه
         if await _is_used(item["id"]): continue
         
         output_template = os.path.join(tempfile.gettempdir(), f"koma_sc_{item['id']}")
@@ -214,12 +223,9 @@ async def fetch_and_send_music(bot: Bot, chat_id: int, thread_id: int = None) ->
         if await _send_and_record_audio(bot, chat_id, thread_id, item, dl):
             return True
             
-    logger.warning("Tried 15 times but couldn't find a NEW song. No archive fallback.")
-    return False # هیچ آهنگی پیدا نشد
-
+    return False 
 
 async def fetch_and_send_custom_music(bot: Bot, chat_id: int, query: str, thread_id: int = None) -> bool:
-    """برای دستور /music (جستجوی دقیق)"""
     item, dl = None, None
 
     if query.startswith(("http://", "https://")):

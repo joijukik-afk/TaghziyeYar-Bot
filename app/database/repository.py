@@ -85,8 +85,14 @@ async def update_profile(user_id: int, **fields) -> Profile | None:
         result = await session.execute(select(Profile).where(Profile.user_id == user_id))
         profile = result.scalar_one_or_none()
         if profile is None: return None
+        
         for key, value in fields.items():
-            if hasattr(profile, key): setattr(profile, key, value)
+            if hasattr(profile, key):
+                # 👈 لایه امنیتی: اگر setup_step عدد بود، به رشته تبدیل کن
+                if key == "setup_step" and isinstance(value, int):
+                    value = str(value)
+                setattr(profile, key, value)
+                
         await session.flush(); await session.refresh(profile)
         return profile
 

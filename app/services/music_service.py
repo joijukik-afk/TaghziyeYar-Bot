@@ -1,4 +1,4 @@
-"""موتور جستجوی KOMA (نسخه اصلاح شده - yt-dlp + ایمپرسونیت)"""
+"""موتور کشف و دانلود موسیقی KOMA (با مدیریت خطای دقیق)"""
 
 import os
 import random
@@ -6,246 +6,244 @@ import hashlib
 import logging
 import tempfile
 import asyncio
-from typing import Optional, List, Dict
 from datetime import datetime, timezone
+from typing import Optional, List, Dict
 import yt_dlp
+from sqlalchemy import select
 from telegram import Bot
 from telegram.constants import ParseMode
-from rapidfuzz import fuzz, process
+
+from app.database.music_models import MusicTrack
+from app.database.session import session_scope
+from app.services.ai_service import get_ai_service
 
 logger = logging.getLogger(__name__)
-LAST_ERROR = "بدون خطای مشخص"
-
-try:
-    from sqlalchemy import select
-    from app.database.music_models import MusicTrack
-    from app.database.session import session_scope
-    DB_ENABLED = True
-except Exception as e:
-    logger.warning(f"Database disabled: {e}")
-    DB_ENABLED = False
 
 MAX_SIZE = 45 * 1024 * 1024
 MIN_SIZE = 100 * 1024
 
-SEARCH_QUERIES = [
-    "øneheart", "oneheart slowed", "reidenshi", "dreamcore", "dark ambient melancholic",
-    "sad ambient", "slowed reverb aesthetic", "my head is empty", "daniel.mp3",
-    "sad piano reverb", "غمگین ایرانی", "غمگین slowed", "sad boy lofi", "shoegaze ambient",
-    "liminal space ambient", "ethereal wave", "atmospheric wave", "cinematic ambient",
-    "space ambient", "emotional ambient", "sleepcore", "dreamwave", "chillwave",
-    "slowcore", "downtempo ambient", "ambient lo-fi", "distorted memories",
-    "nostalgic ambient", "lonely piano ambient", "melancholic piano",
-    "dark piano ambient", "dark cinematic piano", "midnight ambient",
-    "احساسی slowed", "آرام slowed", "تنها slowed", "غمگین ریورب",
-    "sad girl lofi", "post rock ambient", "dark wave slowed", "comatose ambient",
-    "analog mannequin", "coma music", "koma music", "coma vibe", "coma aesthetic",
-]
+COMA_SYSTEM_PROMPT = """
+# COMA MUSIC DISCOVERY SYSTEM 🖤
+تو یک سیستم تخصصی کشف موسیقی در SoundCloud هستی.
+وظیفه تو پیدا کردن آهنگ‌های خاص، جدید، کمترشناخته‌شده و باکیفیت در سبک COMA MUSIC و تمام سبک‌های نزدیک به آن است.
 
-def _get_ydl_opts(extract_flat=False) -> dict:
-    opts = {
-        'quiet': True,
-        'no_warnings': True,
-        'noplaylist': True,
-        'ignoreerrors': True,
-        'no_color': True,
-        'no_cache_dir': True,
-        'impersonate': 'chrome',
-        'socket_timeout': 30,
-        'retries': 2,
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        },
-        'extractor_args': {
-            'soundcloud': {
-                'formats': ['*_mp3', 'http_aac']
-            }
-        }
-    }
-    if os.path.exists('cookies.txt'):
-        opts['cookiefile'] = 'cookies.txt'
-    if extract_flat:
-        opts['extract_flat'] = True
-    return opts
+## فرمت پاسخ (بسیار مهم!)
+فقط از تگ‌های HTML مثل <b> و <a href="..."> برای لینک‌ها استفاده کن. پاسخ باید فوق‌العاده جذاب و رویایی باشه. اگر آهنگ‌های مناسب کم بود، تعداد کمتری بفرست.
+"""
 
 # ==================== دیتابیس ====================
 async def _is_used(identifier: str) -> bool:
-    if not DB_ENABLED: return False
-    try:
-        async with session_scope() as session:
-            res = await session.execute(
-                select(MusicTrack).where(MusicTrack.identifier == identifier, MusicTrack.is_sent == True)
-            )
-            return res.scalar_one_or_none() is not None
-    except Exception:
-        return False
+    async with session_scope() as session:
+        res = await session.execute(
+            select(MusicTrack).where((MusicTrack.identifier == identifier) & (MusicTrack.is_sent == True))
+        )
+        return res.scalar_one_or_none() is not None
 
-async def _record_track(data: dict, file_id: str) -> None:
-    if not DB_ENABLED: return
-    try:
-        now_utc = datetime.now(timezone.utc)
-        async with session_scope() as session:
-            existing = await session.execute(select(MusicTrack).where(MusicTrack.identifier == data["identifier"]))
-            track = existing.scalar_one_or_none()
-            if track:
-                track.telegram_file_id = file_id
-                track.is_sent = True
-                track.sent_at = now_utc
-            else:
+async def _record_tracks(identifiers: List[str]) -> None:
+    async with session_scope() as session:
+        for ident in identifiers:
+            existing = await session.execute(select(MusicTrack).where(MusicTrack.identifier == ident))
+            if not existing.scalar_one_or_none():
                 session.add(MusicTrack(
-                    identifier=data["identifier"], title=data["title"], artist=data["artist"],
-                    filename=data.get("filename", ""), file_hash=data["hash"],
-                    telegram_file_id=file_id, is_sent=True, sent_at=now_utc
+                    identifier=ident, title="COMA Discovery", artist="Various",
+                    filename="", file_hash="", telegram_file_id="", is_sent=True, sent_at=datetime.now(timezone.utc)
                 ))
-            await session.flush()
-    except Exception as e:
-        logger.error(f"DB Record Error: {e}")
+        await session.flush()
 
-# ==================== جستجو و دانلود ====================
-def _search_soundcloud(query: str, max_results: int = 10) -> List[Dict]:
-    global LAST_ERROR
+# ==================== جستجو ====================
+def _search_metadata_sync(query: str, max_results: int = 10) -> List[Dict]:
+    ydl_opts = {
+        'quiet': True, 
+        'no_warnings': True, 
+        'extract_flat': True, 
+        'noplaylist': True,
+        'socket_timeout': 10, 
+        'ignoreerrors': True,
+        'no_cache_dir': True,
+        'impersonate': 'chrome', # برای عبور از بلاک در جستجو
+    }
+    results = []
     try:
-        with yt_dlp.YoutubeDL(_get_ydl_opts(extract_flat=True)) as ydl:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(f"scsearch{max_results}:{query}", download=False)
-            if not info:
-                LAST_ERROR = "نتیجه جستجو خالی بود."
-                return []
-            results = []
-            for e in info.get('entries', []):
+            for e in info.get('entries', []) or []:
                 if not e: continue
-                url = e.get('url') or e.get('webpage_url')
-                if url and 'soundcloud.com' in url:
+                url = e.get('webpage_url') or e.get('url')
+                if url and "soundcloud.com" in url:
                     results.append({
-                        "id": str(e.get('id', '')),
-                        "title": e.get('title', 'Unknown'),
-                        "artist": e.get('uploader', 'Unknown Artist'),
-                        "url": url,
-                        "source": "SoundCloud"
+                        "id": f"sc_{e.get('id')}", "title": e.get('title', 'Unknown'),
+                        "artist": e.get('uploader', 'Unknown Artist'), "url": url,
+                        "source": "SoundCloud", "upload_date": e.get('upload_date', 'جدید'),
+                        "genre": e.get('genre', 'COMA Vibe')
                     })
-            return results
     except Exception as e:
-        LAST_ERROR = f"خطای جستجو ({type(e).__name__}): {str(e)[:80]}"
+        logger.warning(f"SC Search Error: {e}")
+    return results
+
+async def _search_metadata(query: str, max_results: int = 10) -> List[Dict]:
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(_search_metadata_sync, query, max_results), timeout=15.0)
+    except asyncio.TimeoutError:
+        return []
+    except Exception:
         return []
 
-def _download_soundcloud(url: str, output_template: str) -> Optional[dict]:
-    global LAST_ERROR
-    opts = _get_ydl_opts()
-    opts.update({
+# ==================== دانلود (با خطای دقیق) ====================
+def _download_audio_sync(url: str, output_template: str) -> tuple[Optional[dict], str]:
+    """خروجی: (دیکشنری آهنگ، پیام خطا)"""
+    ydl_opts = {
         'format': 'bestaudio/best',
-        'postprocessors': [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'mp3',
-            'preferredquality': '128'
-        }],
+        'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '128'}],
         'outtmpl': output_template + '.%(ext)s',
-    })
+        'quiet': True, 'no_warnings': True, 'noplaylist': True,
+        'socket_timeout': 20, 'retries': 2,
+        'no_cache_dir': True,
+        'impersonate': 'chrome', # تنظیم ضدبلاک
+    }
     try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
-            if not info:
-                LAST_ERROR = "ساندکلود درخواست را بلاک کرد (IP مسدود است)."
-                return None
-            if 'requested_downloads' in info and info['requested_downloads']:
-                mp3_path = info['requested_downloads'][0].get('filepath')
-            else:
-                mp3_path = output_template + '.mp3'
-            if not mp3_path or not os.path.exists(mp3_path):
-                LAST_ERROR = "فایل MP3 پیدا نشد."
-                return None
+            if not info: 
+                return None, "اطلاعات آهنگ دریافت نشد (ممکن است IP بلاک شده باشد)."
+            
+            mp3_path = output_template + '.mp3'
+            if not os.path.exists(mp3_path):
+                base = os.path.basename(output_template)
+                for f in os.listdir(tempfile.gettempdir()):
+                    if f.startswith(base) and f.endswith('.mp3'):
+                        mp3_path = os.path.join(tempfile.gettempdir(), f)
+                        break
+            
+            if not os.path.exists(mp3_path): 
+                return None, "فایل MP3 ساخته نشد (خطا در FFmpeg)."
+            
             size = os.path.getsize(mp3_path)
-            if size < MIN_SIZE or size > MAX_SIZE:
-                LAST_ERROR = f"حجم فایل نامعتبر است: {size} بایت"
+            if size < MIN_SIZE: 
                 os.remove(mp3_path)
-                return None
+                return None, "حجم فایل دانلود شده بسیار کم است."
+                
+            if size > MAX_SIZE:
+                os.remove(mp3_path)
+                return None, "حجم فایل بیشتر از ۴۵ مگابایت است."
+            
             sha = hashlib.sha256()
             with open(mp3_path, 'rb') as f:
                 for chunk in iter(lambda: f.read(8192), b''):
                     sha.update(chunk)
+            
             return {
                 "path": mp3_path, "hash": sha.hexdigest(), "size": size,
                 "title": info.get('title', 'Unknown'),
                 "artist": info.get('uploader', 'Unknown Artist')
-            }
+            }, ""
     except Exception as e:
-        LAST_ERROR = f"خطای دانلود ({type(e).__name__}): {str(e)[:80]}"
-        mp3_check = output_template + '.mp3'
-        if os.path.exists(mp3_check): os.remove(mp3_check)
-    return None
+        err_msg = str(e)
+        if "403" in err_msg or "Forbidden" in err_msg:
+            return None, "سرور SoundCloud درخواست را رد کرد (403 Forbidden). سرورهای رایگان Render بلاک هستند."
+        elif "timed out" in err_msg.lower():
+            return None, "دانلود با تایم‌اوت مواجه شد (اینترنت سرور ضعیف است)."
+        else:
+            return None, f"خطای داخلی: {err_msg[:100]}"
 
-# ==================== ارسال ====================
-async def _send_and_record_audio(bot: Bot, chat_id: int, thread_id: int, item: dict, dl: dict) -> bool:
+async def _download_audio(url: str, output_template: str) -> tuple[Optional[dict], str]:
     try:
-        send_kwargs = {
-            "chat_id": chat_id,
-            "title": dl.get('title', item.get('title', 'Unknown'))[:64],
-            "performer": dl.get('artist', item.get('artist', 'Unknown Artist'))[:64],
-            "caption": f"🎵 <b>{dl.get('title', item.get('title', 'Unknown'))}</b>\n🎤 {dl.get('artist', item.get('artist', 'Unknown Artist'))}\n📦 SoundCloud\n🌌 KOMA | کُما",
-            "parse_mode": ParseMode.HTML,
-            "read_timeout": 180,
-            "write_timeout": 180
-        }
-        if thread_id:
-            send_kwargs["message_thread_id"] = thread_id
-        with open(dl["path"], "rb") as audio:
-            sent = await bot.send_audio(audio=audio, **send_kwargs)
-        await _record_track({
-            "identifier": item["id"],
-            "title": dl.get("title", item.get("title", "Unknown")),
-            "artist": dl.get("artist", item.get("artist", "Unknown Artist")),
-            "filename": os.path.basename(dl["path"]),
-            "hash": dl["hash"],
-        }, sent.audio.file_id)
-        return True
-    except Exception as e:
-        global LAST_ERROR
-        LAST_ERROR = f"ارسال تلگرام: {str(e)[:100]}"
-        return False
-    finally:
-        try: os.remove(dl["path"])
-        except Exception: pass
+        return await asyncio.wait_for(asyncio.to_thread(_download_audio_sync, url, output_template), timeout=45.0)
+    except asyncio.TimeoutError:
+        return None, "زمان دانلود به پایان رسید (بیشتر از ۴۵ ثانیه)."
 
-# ==================== توابع اصلی ====================
+# ==================== منطق اصلی COMA ====================
 async def fetch_and_send_music(bot: Bot, chat_id: int, thread_id: int = None) -> bool:
-    global LAST_ERROR  # 👈 انتقال به خط اول تابع
-    queries = random.sample(SEARCH_QUERIES, 2)
-    all_candidates = []
-    for query in queries:
-        results = await asyncio.to_thread(_search_soundcloud, query, 5)
-        all_candidates.extend(results)
-    if not all_candidates: return False
-    random.shuffle(all_candidates)
-    for item in all_candidates[:3]:
-        if await _is_used(item["id"]): continue
-        output_template = os.path.join(tempfile.gettempdir(), f"koma_sc_{item['id']}")
-        dl = await asyncio.to_thread(_download_soundcloud, item["url"], output_template)
-        if dl and await _send_and_record_audio(bot, chat_id, thread_id, item, dl):
-            return True
-    return False
+    queries = ["øneheart type beat", "dreamcore slowed reverb", "liminal space ambient", "dark ambient melancholic"]
+    random.shuffle(queries)
+    
+    all_results = []
+    for q in queries[:2]:
+        res = await _search_metadata(q, 8)
+        all_results.extend(res)
+        if len(all_results) >= 10: break
 
-async def fetch_and_send_custom_music(bot: Bot, chat_id: int, query: str, thread_id: int = None) -> bool:
-    global LAST_ERROR  # 👈 انتقال به خط اول تابع
-    item, dl = None, None
+    if not all_results: return False
+
+    unique_results = []
+    seen_ids = set()
+    for r in all_results:
+        if r["id"] in seen_ids or await _is_used(r["id"]): continue
+        seen_ids.add(r["id"])
+        unique_results.append(r)
+
+    if not unique_results: return False
+
+    results_text = "".join([f"{i+1}. Artist: {r['artist']} | Title: {r['title']} | URL: {r['url']}\n" for i, r in enumerate(unique_results[:10])])
+    prompt = f"این آهنگ‌ها رو پیدا کردم. با توجه به پرامپت COMA بهترین‌ها رو انتخاب کن:\n\n{results_text}"
+
+    ai_service = get_ai_service()
+    ai_reply_tuple = await ai_service.ask(user_message=prompt, user_name="COMA DJ", user_id=0, custom_system_prompt=COMA_SYSTEM_PROMPT)
+    ai_reply = ai_reply_tuple[0] if isinstance(ai_reply_tuple, tuple) else str(ai_reply_tuple)
+
+    if not ai_reply: return False
+
+    final_text = f"🌌 <b>COMA MUSIC DISCOVERY</b> 🖤\n\n{ai_reply}"
+    
+    try:
+        await bot.send_message(chat_id=chat_id, text=final_text, parse_mode=ParseMode.HTML, disable_web_page_preview=True, message_thread_id=thread_id)
+        await _record_tracks([r["id"] for r in unique_results[:10]])
+        return True
+    except Exception:
+        return False
+
+
+async def fetch_and_send_custom_music(bot: Bot, chat_id: int, query: str, thread_id: int = None) -> tuple[bool, str]:
+    """دانلود آهنگ خاص (برمی‌گرداند: (موفقیت؟، پیام خطا))"""
+    item = None
+    dl = None
+
     if query.startswith(("http://", "https://")):
-        if "soundcloud.com" not in query:
-            LAST_ERROR = "لینک وارد شده مربوط به ساندکلود نیست."
-            return False
         url_hash = hashlib.md5(query.encode()).hexdigest()
-        if await _is_used(url_hash): return False
+        if await _is_used(url_hash): return False, "این لینک قبلاً ارسال شده است."
+            
         output_template = os.path.join(tempfile.gettempdir(), f"koma_link_{url_hash}")
-        dl = await asyncio.to_thread(_download_soundcloud, query, output_template)
-        if dl: item = {"id": url_hash, "title": dl["title"], "artist": dl["artist"]}
+        dl, err = await _download_audio(query, output_template)
+        if dl: item = {"source": "لینک", "id": url_hash}
+        else: return False, err
     else:
-        sc_results = await asyncio.to_thread(_search_soundcloud, query, 10)
-        if not sc_results: return False
-        choices = [f"{r['title']} {r['artist']}" for r in sc_results]
-        best_matches = process.extract(query, choices, scorer=fuzz.WRatio, limit=3, score_cutoff=60)
-        candidates = [sc_results[idx] for _, _, idx in best_matches] if best_matches else sc_results[:3]
+        candidates = await _search_metadata(query, 5)
+        if not candidates: return False, "هیچ آهنگی با این اسم پیدا نشد."
+        
+        err_msg = ""
         for c in candidates:
             if await _is_used(c["id"]): continue
             output_template = os.path.join(tempfile.gettempdir(), f"koma_search_{c['id']}")
-            dl = await asyncio.to_thread(_download_soundcloud, c["url"], output_template)
+            dl, err_msg = await _download_audio(c["url"], output_template)
             if dl:
                 item = c
                 break
-    if not dl or not item: return False
-    return await _send_and_record_audio(bot, chat_id, thread_id, item, dl)
+
+    if not dl or not item: 
+        return False, err_msg or "دانلود ناموفق بود (احتمالاً IP سرور بلاک است)."
+        
+    try:
+        with open(dl["path"], "rb") as audio:
+            sent = await bot.send_audio(
+                chat_id=chat_id, audio=audio,
+                title=dl.get('title', 'Unknown')[:64], 
+                performer=dl.get('artist', 'Unknown Artist')[:64],
+                caption=f"🎵 <b>{dl.get('title', 'Unknown')}</b>\n🎤 {dl.get('artist', 'Unknown Artist')}\n🌌 KOMA",
+                parse_mode=ParseMode.HTML, read_timeout=120, write_timeout=120, message_thread_id=thread_id
+            )
+        
+        async with session_scope() as session:
+            session.add(MusicTrack(
+                identifier=item["id"], title=dl.get("title", "Unknown"), artist=dl.get("artist", "Unknown"),
+                filename=os.path.basename(dl["path"]), file_hash=dl["hash"],
+                telegram_file_id=sent.audio.file_id, is_sent=True, sent_at=datetime.now(timezone.utc)
+            ))
+            await session.flush()
+        
+        try: os.remove(dl["path"])
+        except: pass
+        return True, ""
+    except Exception as e:
+        logger.error(f"send_audio failed: {e}")
+        try: os.remove(dl["path"])
+        except: pass
+        return False, f"خطا در ارسال به تلگرام: {str(e)[:50]}"

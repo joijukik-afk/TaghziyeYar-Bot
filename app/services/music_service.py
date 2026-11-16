@@ -1,4 +1,4 @@
-"""موتور جستجوی KOMA (نسخه نهایی - yt-dlp با شبیه‌سازی مرورگر)"""
+"""موتور جستجوی KOMA (نسخه نهایی - yt-dlp با client_id دستی و مدیریت خطای دقیق)"""
 
 import os
 import random
@@ -43,7 +43,6 @@ SEARCH_QUERIES = [
 ]
 
 def _get_ydl_opts(extract_flat=False) -> dict:
-    """تنظیمات بهینه yt-dlp برای دور زدن بلاک ساندکلود در سرورهای ابری"""
     opts = {
         'quiet': True,
         'no_warnings': True,
@@ -51,13 +50,18 @@ def _get_ydl_opts(extract_flat=False) -> dict:
         'ignoreerrors': True,
         'no_color': True,
         'no_cache_dir': True,
-        'impersonate': 'chrome',  # 👈 کلید اصلی: شبیه‌سازی مرورگر کروم
         'socket_timeout': 30,
         'retries': 2,
         'http_headers': {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
         },
-        'extractor_args': {'soundcloud': {'formats': ['*_mp3', 'http_aac']}}
+        'extractor_args': {
+            'soundcloud': {
+                # 👈 تزریق client_id برای جلوگیری از خطای استخراج در سرور
+                'client_id': ['02gUJC0hH2ct1EGOcYXQIzRFU91c72Ea'],
+                'formats': ['*_mp3', 'http_aac']
+            }
+        }
     }
     if extract_flat:
         opts['extract_flat'] = True
@@ -119,7 +123,8 @@ def _search_soundcloud(query: str, max_results: int = 10) -> List[Dict]:
                     })
             return results
     except Exception as e:
-        LAST_ERROR = f"خطای جستجو: {str(e)[:100]}"
+        # 👈 نمایش دقیق نوع خطا (حتی اگر متن آن خالی باشد)
+        LAST_ERROR = f"خطای جستجو ({type(e).__name__}): {repr(e)}"
         logger.warning(f"SC search failed for '{query}': {e}")
         return []
 
@@ -163,7 +168,7 @@ def _download_soundcloud(url: str, output_template: str) -> Optional[dict]:
                 "artist": info.get('uploader', 'Unknown Artist')
             }
     except Exception as e:
-        LAST_ERROR = f"خطای دانلود: {str(e)[:100]}"
+        LAST_ERROR = f"خطای دانلود ({type(e).__name__}): {repr(e)}"
         logger.error(f"Download error for {url}: {e}")
         mp3_check = output_template + '.mp3'
         if os.path.exists(mp3_check): os.remove(mp3_check)

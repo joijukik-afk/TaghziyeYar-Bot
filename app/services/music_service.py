@@ -1,4 +1,4 @@
-"""موتور جستجوی KOMA (نسخه مستقیم scdl - بدون خطای آرگومان)"""
+"""موتور جستجوی KOMA (نسخه نهایی با scdl)"""
 
 import os
 import random
@@ -7,6 +7,7 @@ import logging
 import tempfile
 import asyncio
 import subprocess
+import shutil
 from typing import Optional, Dict
 from datetime import datetime, timezone
 from telegram import Bot
@@ -80,18 +81,18 @@ async def _record_track(data: dict, file_id: str) -> None:
     except Exception as e:
         logger.error(f"DB Record Error: {e}")
 
-# ==================== دانلود مستقیم با scdl ====================
+# ==================== دانلود با scdl ====================
 def _download_scdl_query(query: str) -> Optional[Dict]:
-    """جستجو و دانلود مستقیم با ابزار scdl"""
     global LAST_ERROR
     download_dir = tempfile.mkdtemp(prefix="koma_scdl_")
     
+    # استفاده از --path به جای -o
     cmd = [
         "scdl",
-        "-s", query,          # جستجو با عبارت
-        "-o", download_dir,   # مسیر ذخیره
-        "--onlymp3",          # فقط فایل mp3
-        "--overwrite"         # بازنویسی در صورت وجود
+        "-s", query,          # جستجو
+        "--path", download_dir, # مسیر خروجی
+        "--onlymp3",          # فقط mp3
+        "--overwrite"         # بازنویسی
     ]
 
     try:
@@ -101,10 +102,10 @@ def _download_scdl_query(query: str) -> Optional[Dict]:
         )
         
         if result.returncode != 0:
-            LAST_ERROR = f"خطای scdl: {result.stderr[:150] or result.stdout[:150]}"
+            err_msg = result.stderr.strip() or result.stdout.strip()
+            LAST_ERROR = f"خطای scdl: {err_msg[:120]}"
             return None
 
-        # پیدا کردن فایل MP3 در مسیر دانلود
         mp3_file = None
         for f in os.listdir(download_dir):
             if f.lower().endswith('.mp3'):
@@ -181,13 +182,14 @@ async def _send_and_record_audio(bot: Bot, chat_id: int, thread_id: int, item: d
         return False
     finally:
         try:
+            # پاک کردن فایل و پوشه موقت
             os.remove(dl["path"])
+            shutil.rmtree(os.path.dirname(dl["path"]), ignore_errors=True)
         except Exception:
             pass
 
 # ==================== توابع اصلی ====================
 async def fetch_and_send_music(bot: Bot, chat_id: int, thread_id: int = None) -> bool:
-    """دستور /koma - انتخاب یک عبارت تصادفی و دانلود"""
     query = random.choice(SEARCH_QUERIES)
     dl = await asyncio.to_thread(_download_scdl_query, query)
     
@@ -196,7 +198,6 @@ async def fetch_and_send_music(bot: Bot, chat_id: int, thread_id: int = None) ->
     return False
 
 async def fetch_and_send_custom_music(bot: Bot, chat_id: int, query: str, thread_id: int = None) -> bool:
-    """دستور /music - جستجوی دقیق عبارت کاربر"""
     if query.startswith(("http://", "https://")):
         if "soundcloud.com" not in query:
             global LAST_ERROR
@@ -207,7 +208,6 @@ async def fetch_and_send_custom_music(bot: Bot, chat_id: int, query: str, thread
             return await _send_and_record_audio(bot, chat_id, thread_id, {"id": hashlib.md5(query.encode()).hexdigest()}, dl)
         return False
 
-    # جستجوی متنی با scdl
     dl = await asyncio.to_thread(_download_scdl_query, query)
     if dl and await _send_and_record_audio(bot, chat_id, thread_id, {"id": hashlib.md5(query.encode()).hexdigest()}, dl):
         return True

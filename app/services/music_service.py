@@ -1,4 +1,4 @@
-"""موتور جستجوی KOMA (نسخه دیباگ برای نمایش خطا)"""
+"""موتور جستجوی KOMA (نسخه پایدار - بدون client_id ثابت + پشتیبانی از پروکسی)"""
 
 import os
 import random
@@ -15,7 +15,13 @@ from rapidfuzz import fuzz, process
 
 logger = logging.getLogger(__name__)
 
-# متغیر سراسری برای نگه داشتن آخرین خطا
+# ==================== تنظیمات پروکسی (اختیاری) ====================
+# اگر IP سرور شما توسط ساندکلود مسدود شده باشد، می‌توانید آدرس پروکسی خود را اینجا وارد کنید.
+# مثال: PROXY_URL = "http://username:password@your-proxy-address:port"
+# اگر از پروکسی استفاده نمی‌کنید، این متغیر را خالی بگذارید.
+PROXY_URL = os.environ.get("MUSIC_PROXY_URL", "").strip()
+
+# ==================== متغیر سراسری برای نمایش خطا ====================
 LAST_ERROR = "بدون خطای مشخص"
 
 try:
@@ -44,6 +50,7 @@ SEARCH_QUERIES = [
     "analog mannequin", "coma music", "koma music", "coma vibe", "coma aesthetic",
 ]
 
+# ==================== دیتابیس ====================
 async def _is_used(identifier: str) -> bool:
     if not DB_ENABLED: return False
     try:
@@ -81,6 +88,7 @@ async def _record_track(data: dict, file_id: str) -> None:
     except Exception as e:
         logger.error(f"DB Record Error: {e}")
 
+# ==================== جستجو و دانلود ====================
 def _search_soundcloud(query: str, max_results: int = 10) -> List[Dict]:
     global LAST_ERROR
     ydl_opts = {
@@ -89,13 +97,16 @@ def _search_soundcloud(query: str, max_results: int = 10) -> List[Dict]:
         'extract_flat': True,
         'noplaylist': True,
         'ignoreerrors': True,
+        # استفاده از تنظیمات پیش‌فرض yt-dlp برای استخراج خودکار client_id
         'extractor_args': {
             'soundcloud': {
                 'formats': ['*_mp3', 'http_aac'],
-                'client_id': '02gUJC0hH2ct1EGOcYXQIzRFU91c72Ea',
             }
         },
     }
+    # اضافه کردن پروکسی به تنظیمات در صورت وجود
+    if PROXY_URL:
+        ydl_opts['proxy'] = PROXY_URL
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -145,15 +156,17 @@ def _download_soundcloud(url: str, output_template: str) -> Optional[dict]:
         'extractor_args': {
             'soundcloud': {
                 'formats': ['*_mp3', 'http_aac'],
-                'client_id': '02gUJC0hH2ct1EGOcYXQIzRFU91c72Ea',
             }
         },
     }
+    if PROXY_URL:
+        ydl_opts['proxy'] = PROXY_URL
+
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             if not info:
-                LAST_ERROR = "دانلود اطلاعاتی برنگرداند (None)."
+                LAST_ERROR = "دانلود اطلاعاتی برنگرداند (None). احتمالاً IP سرور مسدود شده است."
                 return None
 
             if 'requested_downloads' in info and info['requested_downloads']:
@@ -189,6 +202,7 @@ def _download_soundcloud(url: str, output_template: str) -> Optional[dict]:
             os.remove(mp3_check)
     return None
 
+# ==================== ارسال ====================
 async def _send_and_record_audio(bot: Bot, chat_id: int, thread_id: int, item: dict, dl: dict) -> bool:
     try:
         send_kwargs = {
@@ -226,6 +240,7 @@ async def _send_and_record_audio(bot: Bot, chat_id: int, thread_id: int, item: d
         except Exception:
             pass
 
+# ==================== توابع اصلی ====================
 async def fetch_and_send_music(bot: Bot, chat_id: int, thread_id: int = None) -> bool:
     query = random.choice(SEARCH_QUERIES)
     candidates = await asyncio.to_thread(_search_soundcloud, query, 5)

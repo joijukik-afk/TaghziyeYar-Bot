@@ -1,4 +1,4 @@
-"""موتور جستجوی KOMA (نسخه نهایی - yt-dlp با client_id دستی و مدیریت خطای دقیق)"""
+"""موتور جستجوی KOMA (نسخه نهایی - با شبیه‌سازی مرورگر و مدیریت دقیق خطا)"""
 
 import os
 import random
@@ -43,13 +43,15 @@ SEARCH_QUERIES = [
 ]
 
 def _get_ydl_opts(extract_flat=False) -> dict:
+    """تنظیمات yt-dlp با شبیه‌سازی مرورگر کروم"""
     opts = {
         'quiet': True,
         'no_warnings': True,
         'noplaylist': True,
         'ignoreerrors': True,
         'no_color': True,
-        'no_cache_dir': True,
+        'no_cache_dir': True, # جلوگیری از استفاده از client_id قدیمی
+        'impersonate': 'chrome', # شبیه‌سازی مرورگر واقعی
         'socket_timeout': 30,
         'retries': 2,
         'http_headers': {
@@ -57,8 +59,6 @@ def _get_ydl_opts(extract_flat=False) -> dict:
         },
         'extractor_args': {
             'soundcloud': {
-                # 👈 تزریق client_id برای جلوگیری از خطای استخراج در سرور
-                'client_id': ['02gUJC0hH2ct1EGOcYXQIzRFU91c72Ea'],
                 'formats': ['*_mp3', 'http_aac']
             }
         }
@@ -100,7 +100,7 @@ async def _record_track(data: dict, file_id: str) -> None:
     except Exception as e:
         logger.error(f"DB Record Error: {e}")
 
-# ==================== جستجو و دانلود (yt-dlp) ====================
+# ==================== جستجو و دانلود ====================
 def _search_soundcloud(query: str, max_results: int = 10) -> List[Dict]:
     global LAST_ERROR
     try:
@@ -123,8 +123,7 @@ def _search_soundcloud(query: str, max_results: int = 10) -> List[Dict]:
                     })
             return results
     except Exception as e:
-        # 👈 نمایش دقیق نوع خطا (حتی اگر متن آن خالی باشد)
-        LAST_ERROR = f"خطای جستجو ({type(e).__name__}): {repr(e)}"
+        LAST_ERROR = f"خطای جستجو ({type(e).__name__}): {str(e)[:80]}"
         logger.warning(f"SC search failed for '{query}': {e}")
         return []
 
@@ -144,7 +143,7 @@ def _download_soundcloud(url: str, output_template: str) -> Optional[dict]:
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=True)
             if not info:
-                LAST_ERROR = "دانلود اطلاعاتی برنگرداند."
+                LAST_ERROR = "ساندکلود درخواست را بلاک کرد (IP سرور رندر مسدود است)."
                 return None
             if 'requested_downloads' in info and info['requested_downloads']:
                 mp3_path = info['requested_downloads'][0].get('filepath')
@@ -168,7 +167,7 @@ def _download_soundcloud(url: str, output_template: str) -> Optional[dict]:
                 "artist": info.get('uploader', 'Unknown Artist')
             }
     except Exception as e:
-        LAST_ERROR = f"خطای دانلود ({type(e).__name__}): {repr(e)}"
+        LAST_ERROR = f"خطای دانلود ({type(e).__name__}): {str(e)[:80]}"
         logger.error(f"Download error for {url}: {e}")
         mp3_check = output_template + '.mp3'
         if os.path.exists(mp3_check): os.remove(mp3_check)

@@ -1,4 +1,4 @@
-"""موتور جستجوی KOMA (فقط ساندکلود - بهینه برای سرورهای ابری)"""
+"""موتور جستجوی KOMA (فقط ساندکلود - بدون آرشیو و کاملاً جدید)"""
 
 import os
 import random
@@ -9,7 +9,7 @@ import asyncio
 from typing import Optional, List, Dict
 from datetime import datetime, timezone
 import yt_dlp
-from sqlalchemy import select, func, and_
+from sqlalchemy import select
 from telegram import Bot
 from telegram.constants import ParseMode
 
@@ -18,11 +18,10 @@ from app.database.session import session_scope
 
 logger = logging.getLogger(__name__)
 
-# محدودیت حجم فایل‌ها برای تلگرام
 MAX_SIZE = 45 * 1024 * 1024 
 MIN_SIZE = 100 * 1024
 
-# لیست کلمات کلیدی برای کشف موسیقی جدید و خاص در ساندکلود
+# کلمات کلیدی بسیار گسترده برای پیدا کردن بهترین آهنگ‌های سبک KOMA
 SEARCH_QUERIES = [
     "øneheart", "oneheart slowed", "reidenshi", "dreamcore", "dark ambient melancholic",
     "sad ambient", "slowed reverb aesthetic", "my head is empty", "daniel.mp3",
@@ -39,6 +38,7 @@ SEARCH_QUERIES = [
 
 # ==================== دیتابیس ====================
 async def _is_used(identifier: str) -> bool:
+    """بررسی می‌کند که آیا این آهنگ قبلاً ارسال شده است یا خیر (جلوگیری از تکرار)"""
     async with session_scope() as session:
         res = await session.execute(
             select(MusicTrack).where(
@@ -49,6 +49,7 @@ async def _is_used(identifier: str) -> bool:
         return res.scalar_one_or_none() is not None
 
 async def _record_track(data: dict, file_id: str) -> None:
+    """ثبت آهنگ در دیتابیس"""
     now_utc = datetime.now(timezone.utc)
     async with session_scope() as session:
         existing = await session.execute(select(MusicTrack).where(MusicTrack.identifier == data["identifier"]))
@@ -65,44 +66,9 @@ async def _record_track(data: dict, file_id: str) -> None:
             ))
         await session.flush()
 
-async def _get_random_cached(bot: Bot, chat_id: int, thread_id: int = None) -> bool:
-    """Fallback: اگر دانلود از ساندکلود شکست خورد، یک آهنگ از کش دیتابیس بفرست"""
-    try:
-        async with session_scope() as session:
-            count_res = await session.execute(
-                select(func.count(MusicTrack.id)).where(
-                    MusicTrack.telegram_file_id.isnot(None),
-                    MusicTrack.telegram_file_id != ""
-                )
-            )
-            total = count_res.scalar_one()
-            if total == 0: return False
-
-            random_offset = random.randint(0, total - 1)
-            res = await session.execute(
-                select(MusicTrack)
-                .where(MusicTrack.telegram_file_id.isnot(None), MusicTrack.telegram_file_id != "")
-                .offset(random_offset).limit(1)
-            )
-            track = res.scalar_one_or_none()
-            if not track or not track.telegram_file_id: return False
-
-            await bot.send_audio(
-                chat_id=chat_id, audio=track.telegram_file_id,
-                title=(track.title or "Unknown")[:64],
-                performer=(track.artist or "Unknown Artist")[:64],
-                caption=f"🎵 <b>{track.title}</b>\n🎤 {track.artist}\n♻️ آرشیو کُما\n🌌 KOMA | کُما",
-                parse_mode=ParseMode.HTML, read_timeout=120, write_timeout=120,
-                message_thread_id=thread_id
-            )
-            return True
-    except Exception as e:
-        logger.error(f"Cache fallback failed: {e}", exc_info=True)
-        return False
-
 # ==================== جستجو و دانلود ====================
 def _search_soundcloud(query: str, max_results: int = 10) -> List[Dict]:
-    """جستجو در ساندکلود با استفاده از yt-dlp"""
+    """جستجو در ساندکلود"""
     ydl_opts = {
         'quiet': True, 
         'no_warnings': True, 
@@ -133,7 +99,7 @@ def _search_soundcloud(query: str, max_results: int = 10) -> List[Dict]:
         return []
 
 def _download_soundcloud(url: str, output_template: str) -> Optional[dict]:
-    """دانلود از ساندکلود و تبدیل به MP3 با FFmpeg"""
+    """دانلود از ساندکلود"""
     ydl_opts = {
         'format': 'bestaudio/best',
         'postprocessors': [{
@@ -150,14 +116,13 @@ def _download_soundcloud(url: str, output_template: str) -> Optional[dict]:
         'retries': 3,
         'fragment_retries': 3,
         'socket_timeout': 30,
-        'sleep_interval': 2, # جلوگیری از بلاک شدن توسط ساندکلود
+        'sleep_interval': 1, # تاخیر خیلی کم چون قرار نیست از یوتیوب دانلود کنیم
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             if not info: return None
             
-            # پیدا کردن مسیر دقیق فایل
             if 'requested_downloads' in info and info['requested_downloads']:
                 mp3_path = info['requested_downloads'][0].get('filepath')
             else:
@@ -166,13 +131,11 @@ def _download_soundcloud(url: str, output_template: str) -> Optional[dict]:
             if not mp3_path or not os.path.exists(mp3_path):
                 return None
             
-            # چک کردن حجم فایل
             size = os.path.getsize(mp3_path)
             if size < MIN_SIZE or size > MAX_SIZE:
                 os.remove(mp3_path)
                 return None
             
-            # محاسبه هش فایل
             sha = hashlib.sha256()
             with open(mp3_path, 'rb') as f:
                 for chunk in iter(lambda: f.read(8192), b''):
@@ -191,7 +154,6 @@ def _download_soundcloud(url: str, output_template: str) -> Optional[dict]:
 
 # ==================== ارسال ====================
 async def _send_and_record_audio(bot: Bot, chat_id: int, thread_id: int, item: dict, dl: dict) -> bool:
-    """ارسال فایل به تلگرام و ذخیره در دیتابیس"""
     try:
         with open(dl["path"], "rb") as audio:
             sent = await bot.send_audio(
@@ -220,25 +182,28 @@ async def _send_and_record_audio(bot: Bot, chat_id: int, thread_id: int, item: d
         except Exception: pass
 
 async def fetch_and_send_music(bot: Bot, chat_id: int, thread_id: int = None) -> bool:
-    """برای دستور /koma (تصادفی و هوشمند)"""
-    queries = random.sample(SEARCH_QUERIES, min(3, len(SEARCH_QUERIES)))
+    """برای دستور /koma (بدون آرشیو، فقط آهنگ جدید و با تلاش بالا)"""
+    # انتخاب ۵ کوئری تصادفی برای شانس بیشتر پیدا کردن آهنگ جدید
+    queries = random.sample(SEARCH_QUERIES, min(5, len(SEARCH_QUERIES)))
     all_candidates = []
     
     for query in queries:
-        results = await asyncio.to_thread(_search_soundcloud, query, 8)
+        results = await asyncio.to_thread(_search_soundcloud, query, 10)
         all_candidates.extend(results)
     
     if not all_candidates:
-        logger.warning("No candidates found from SoundCloud, trying cache...")
-        return await _get_random_cached(bot, chat_id, thread_id)
+        logger.warning("No candidates found from SoundCloud.")
+        return False # دیگر به آرشیو برنمی‌گردد
     
     random.shuffle(all_candidates)
     attempts = 0
     
+    # تلاش حداکثر 15 باره برای پیدا کردن یک آهنگ جدید
     for item in all_candidates:
-        if attempts >= min(10, len(all_candidates)): break
+        if attempts >= min(15, len(all_candidates)): break
         attempts += 1
         
+        # چک کردن اینکه قبلا فرستاده نشده باشه
         if await _is_used(item["id"]): continue
         
         output_template = os.path.join(tempfile.gettempdir(), f"koma_sc_{item['id']}")
@@ -249,19 +214,16 @@ async def fetch_and_send_music(bot: Bot, chat_id: int, thread_id: int = None) ->
         if await _send_and_record_audio(bot, chat_id, thread_id, item, dl):
             return True
             
-    logger.warning("All attempts failed, falling back to cache...")
-    return await _get_random_cached(bot, chat_id, thread_id)
+    logger.warning("Tried 15 times but couldn't find a NEW song. No archive fallback.")
+    return False # هیچ آهنگی پیدا نشد
 
 
 async def fetch_and_send_custom_music(bot: Bot, chat_id: int, query: str, thread_id: int = None) -> bool:
-    """برای دستور /music (جستجوی دقیق با اسم یا لینک)"""
+    """برای دستور /music (جستجوی دقیق)"""
     item, dl = None, None
 
     if query.startswith(("http://", "https://")):
-        # اگر کاربر لینک فرستاد
-        if "soundcloud.com" not in query:
-            logger.info("Direct link is not from SoundCloud.")
-            return False
+        if "soundcloud.com" not in query: return False
             
         url_hash = hashlib.md5(query.encode()).hexdigest()
         if await _is_used(url_hash): return False
@@ -270,8 +232,7 @@ async def fetch_and_send_custom_music(bot: Bot, chat_id: int, query: str, thread
         dl = await asyncio.to_thread(_download_soundcloud, query, output_template)
         if dl: item = {"source": "لینک", "id": url_hash}
     else:
-        # جستجوی متنی در ساندکلود
-        sc_results = await asyncio.to_thread(_search_soundcloud, query, 10)
+        sc_results = await asyncio.to_thread(_search_soundcloud, query, 15)
         if not sc_results: return False
             
         query_words = query.lower().split()

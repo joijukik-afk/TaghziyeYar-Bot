@@ -1,4 +1,4 @@
-"""موتور جستجوی KOMA (نسخه نهایی و ضدخطا - soundcloud-v2 + Cobalt API)"""
+"""موتور جستجوی KOMA (نسخه نهایی - soundcloud-v2 + Cobalt API)"""
 
 import os
 import random
@@ -23,7 +23,7 @@ except ImportError:
 logger = logging.getLogger(__name__)
 LAST_ERROR = "بدون خطای مشخص"
 
-# مدیریت دیتابیس
+# مدیریت دیتابیس (در صورت خطا، موزیک قطع نمی‌شود)
 try:
     from sqlalchemy import select
     from app.database.music_models import MusicTrack
@@ -51,11 +51,12 @@ SEARCH_QUERIES = [
     "analog mannequin", "coma music", "koma music", "coma vibe", "coma aesthetic",
 ]
 
-# لیست نمونه‌های Cobalt برای استفاده به عنوان جایگزین در صورت خطا
+# 👈 لیست سرورهای جدید و فعال Cobalt
 COBALT_INSTANCES = [
     "https://cobalt.lamps-dev.dev/",
-    "https://api.cobalt.tools/",
-    "https://co.wuk.sh/"
+    "https://cobalt.meowing.de/",
+    "https://cobalt-api.kwiatekmiki.com/",
+    "https://co.eepy.today/"
 ]
 
 # ==================== دیتابیس ====================
@@ -103,13 +104,14 @@ def _search_soundcloud(query: str, limit: int = 10) -> List[Dict]:
         tracks_generator = sc.search_tracks(query, limit=limit)
         
         results = []
-        # حلقه زدن روی ژنراتور (مشکل قبلی اینجا بود)
         for track in tracks_generator:
             track_url = getattr(track, 'permalink_url', None)
             if not track_url or 'soundcloud.com' not in track_url:
                 continue
             
-            artist_name = getattr(track.user, 'username', 'Unknown Artist') if hasattr(track, 'user') and track.user else 'Unknown Artist'
+            artist_name = "Unknown Artist"
+            if hasattr(track, 'user') and track.user:
+                artist_name = getattr(track.user, 'username', 'Unknown Artist')
 
             results.append({
                 "id": str(getattr(track, 'id', '')),
@@ -128,72 +130,72 @@ def _search_soundcloud(query: str, limit: int = 10) -> List[Dict]:
         return []
 
 # ==================== دانلود با Cobalt API ====================
-async def _download_with_cobalt(url: str) -> Optional[Dict]:
+async def _download_with_cobalt(url: str, max_retries: int = 2) -> Optional[Dict]:
     global LAST_ERROR
     payload = {"url": url, "downloadMode": "audio", "audioFormat": "mp3"}
     headers = {"Accept": "application/json", "Content-Type": "application/json"}
 
     for api_url in COBALT_INSTANCES:
-        try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                # 1. درخواست به Cobalt
-                logger.info(f"Trying Cobalt: {api_url} for {url}")
-                response = await client.post(api_url, json=payload, headers=headers)
-                
-                if response.status_code != 200:
-                    continue # برو سراغ نمونه بعدی
-                
-                data = response.json()
-                
-                # بررسی خطای Cobalt
-                if data.get("status") == "error":
-                    LAST_ERROR = f"Cobalt ({api_url}): {data.get('error', {}).get('code', 'unknown')}"
-                    continue
-                
-                download_url = data.get("url")
-                if not download_url:
-                    continue
-                
-                # 2. دانلود فایل از لینک دریافتی
-                audio_response = await client.get(download_url)
-                audio_response.raise_for_status()
-                
-                # 3. ذخیره فایل
-                fd, temp_path = tempfile.mkstemp(suffix=".mp3", prefix="koma_")
-                with os.fdopen(fd, 'wb') as f:
-                    f.write(audio_response.content)
-                
-                size = os.path.getsize(temp_path)
-                if size < MIN_SIZE or size > MAX_SIZE:
-                    os.remove(temp_path)
-                    continue
-                
-                # 4. هش و متادیتا
-                sha = hashlib.sha256()
-                with open(temp_path, 'rb') as f:
-                    for chunk in iter(lambda: f.read(8192), b''):
-                        sha.update(chunk)
-                
-                title = "Unknown Title"
-                artist = "Unknown Artist"
-                cd = audio_response.headers.get("content-disposition", "")
-                if "filename=" in cd:
-                    fn = cd.split("filename=")[-1].strip('"')
-                    base = os.path.splitext(fn)[0]
-                    if " - " in base:
-                        parts = base.split(" - ", 1)
-                        artist, title = parts[0].strip(), parts[1].strip()
-                    else:
-                        title = base
+        for attempt in range(max_retries):
+            try:
+                async with httpx.AsyncClient(timeout=60.0) as client:
+                    logger.info(f"Trying Cobalt: {api_url} (attempt {attempt+1}) for {url}")
+                    response = await client.post(api_url, json=payload, headers=headers)
+                    
+                    if response.status_code != 200:
+                        break # سراغ سرور بعدی برو
+                    
+                    data = response.json()
+                    
+                    if data.get("status") == "error":
+                        LAST_ERROR = f"Cobalt ({api_url}): {data.get('error', {}).get('code', 'unknown')}"
+                        break
+                    
+                    download_url = data.get("url")
+                    if not download_url:
+                        break
+                    
+                    # دانلود فایل از لینک دریافتی
+                    audio_response = await client.get(download_url)
+                    audio_response.raise_for_status()
+                    
+                    fd, temp_path = tempfile.mkstemp(suffix=".mp3", prefix="koma_")
+                    with os.fdopen(fd, 'wb') as f:
+                        f.write(audio_response.content)
+                    
+                    size = os.path.getsize(temp_path)
+                    if size < MIN_SIZE or size > MAX_SIZE:
+                        os.remove(temp_path)
+                        break
+                    
+                    sha = hashlib.sha256()
+                    with open(temp_path, 'rb') as f:
+                        for chunk in iter(lambda: f.read(8192), b''):
+                            sha.update(chunk)
+                    
+                    title = "Unknown Title"
+                    artist = "Unknown Artist"
+                    cd = audio_response.headers.get("content-disposition", "")
+                    if "filename=" in cd:
+                        fn = cd.split("filename=")[-1].strip('"')
+                        base = os.path.splitext(fn)[0]
+                        if " - " in base:
+                            parts = base.split(" - ", 1)
+                            artist, title = parts[0].strip(), parts[1].strip()
+                        else:
+                            title = base
 
-                return {
-                    "path": temp_path, "hash": sha.hexdigest(), "size": size,
-                    "title": title, "artist": artist
-                }
-                
-        except Exception as e:
-            LAST_ERROR = f"خطای دانلود ({api_url}): {str(e)[:80]}"
-            continue # برو سراغ نمونه بعدی
+                    return {
+                        "path": temp_path, "hash": sha.hexdigest(), "size": size,
+                        "title": title, "artist": artist
+                    }
+                    
+            except Exception as e:
+                LAST_ERROR = f"خطای دانلود ({api_url}): {str(e)[:80]}"
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(1) # 1 ثانیه صبر و تلاش مجدد
+                else:
+                    break # سراغ سرور بعدی برو
 
     return None
 
@@ -257,7 +259,7 @@ async def fetch_and_send_custom_music(bot: Bot, chat_id: int, query: str, thread
             return False
         url_hash = hashlib.md5(query.encode()).hexdigest()
         dl = await _download_with_cobalt(query)
-        if dl: item = {"id": url_hash}
+        if dl: item = {"id": url_hash, "title": dl["title"], "artist": dl["artist"]}
     else:
         sc_results = await asyncio.to_thread(_search_soundcloud, query, 10)
         if not sc_results: return False

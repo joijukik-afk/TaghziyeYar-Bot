@@ -1,100 +1,86 @@
-"""دستورات موزیک KOMA"""
+"""دستورات موزیک (koma برای کشف هوشمند، music برای دانلود)"""
 
-import logging
-import time
 import asyncio
-import re
+import logging
 from telegram import Update
 from telegram.ext import ContextTypes
-from telegram.error import BadRequest, Forbidden, NetworkError
-import app.services.music_service as ms
-from app.utils.message_formatter import with_signature
+from telegram.error import Forbidden
+from app.services.music_service import fetch_and_send_music, fetch_and_send_custom_music
 
 logger = logging.getLogger(__name__)
-
-_MUSIC_COOLDOWN = 5
-_last_music_time: dict[int, float] = {}
-_chat_locks: dict[int, asyncio.Lock] = {}
-
-def _get_chat_lock(chat_id: int) -> asyncio.Lock:
-    if chat_id not in _chat_locks:
-        _chat_locks[chat_id] = asyncio.Lock()
-    return _chat_locks[chat_id]
-
-async def _safe_edit(msg, text: str, parse_mode: str = "HTML"):
-    try:
-        await msg.edit_text(text, parse_mode=parse_mode)
-    except (BadRequest, NetworkError):
-        clean = re.sub(r"<[^>]+>", "", text)
-        try: await msg.edit_text(clean)
-        except Exception: pass
-    except Exception: pass
+_chat_locks = set()
 
 async def cmd_koma(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_chat is None or update.message is None: return
     chat_id = update.effective_chat.id
-    user_id = update.effective_user.id if update.effective_user else 0
     thread_id = update.message.message_thread_id if update.effective_chat.is_forum else None
 
-    now = time.time()
-    if user_id in _last_music_time and now - _last_music_time[user_id] < _MUSIC_COOLDOWN:
-        return await update.message.reply_text(with_signature(f"⏳ لطفاً {_MUSIC_COOLDOWN} ثانیه صبر کنید."), parse_mode="HTML")
-    _last_music_time[user_id] = now
+    if chat_id in _chat_locks:
+        return await update.message.reply_text("⏳ لطفاً صبر کنید...")
+    _chat_locks.add(chat_id)
+    
+    try:
+        status_msg = await update.message.reply_text("🎧 در حال کشف موسیقی...")
+    except Forbidden:
+        _chat_locks.discard(chat_id); return 
 
-    lock = _get_chat_lock(chat_id)
-    if lock.locked():
-        return await update.message.reply_text(with_signature("⏳ لطفاً صبر کنید، درخواست قبلی در حال انجام است."), parse_mode="HTML")
+    try:
+        success = await asyncio.wait_for(fetch_and_send_music(context.bot, chat_id, thread_id=thread_id), timeout=60.0)
+        if success:
+            try: await status_msg.delete()
+            except: pass
+        else:
+            await status_msg.edit_text("❌ آهنگ جدیدی پیدا نشد. دوباره تلاش کنید.")
+    except asyncio.TimeoutError:
+        await status_msg.edit_text("⏱️ جستجو طول کشید و متوقف شد.")
+    except Exception as e:
+        logger.error(f"cmd_koma error: {e}")
+        await status_msg.edit_text("⚠️ خطایی رخ داد.")
+    finally:
+        _chat_locks.discard(chat_id)
 
-    async with lock:
-        try:
-            status_msg = await update.message.reply_text("🎧 در حال جستجو...")
-        except (Forbidden, NetworkError):
-            return
-
-        try:
-            success = await ms.fetch_and_send_music(context.bot, chat_id, thread_id=thread_id)
-            if success:
-                try: await status_msg.delete()
-                except Exception: pass
-            else:
-                error_text = f"❌ خطای دیباگ (Koma):\n<code>{ms.LAST_ERROR}</code>"
-                await _safe_edit(status_msg, with_signature(error_text))
-        except Exception as e:
-            await _safe_edit(status_msg, with_signature(f"⚠️ خطای داخلی: <code>{str(e)}</code>"))
 
 async def cmd_music(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_chat is None or update.message is None: return
     chat_id = update.effective_chat.id
-    user_id = update.effective_user.id if update.effective_user else 0
     thread_id = update.message.message_thread_id if update.effective_chat.is_forum else None
 
     if not context.args:
-        return await update.message.reply_text("🎵 <code>/music نام آهنگ</code>", parse_mode="HTML")
-
-    now = time.time()
-    if user_id in _last_music_time and now - _last_music_time[user_id] < _MUSIC_COOLDOWN:
-        return await update.message.reply_text(with_signature(f"⏳ لطفاً {_MUSIC_COOLDOWN} ثانیه صبر کنید."), parse_mode="HTML")
-    _last_music_time[user_id] = now
+        return await update.message.reply_text(
+            "🎵 **راهنمای دستور /music**\n\n"
+            "`/music øneheart`\n"
+            "`/music https://soundcloud.com/...`",
+            parse_mode="Markdown"
+        )
 
     query = " ".join(context.args).strip()
-    lock = _get_chat_lock(chat_id)
+
+    if chat_id in _chat_locks:
+        return await update.message.reply_text("⏳ لطفاً صبر کنید...")
+    _chat_locks.add(chat_id)
     
-    if lock.locked():
-        return await update.message.reply_text(with_signature("⏳ لطفاً صبر کنید، درخواست قبلی در حال انجام است."), parse_mode="HTML")
+    try:
+        status_msg = await update.message.reply_text(f"🔍 در حال جستجو و دانلود: {query[:30]}...")
+    except Forbidden:
+        _chat_locks.discard(chat_id); return 
 
-    async with lock:
-        try:
-            status_msg = await update.message.reply_text(f"🔍 در حال جستجو برای: {query}")
-        except (Forbidden, NetworkError):
-            return
-
-        try:
-            success = await ms.fetch_and_send_custom_music(context.bot, chat_id, query, thread_id=thread_id)
-            if success:
-                try: await status_msg.delete()
-                except Exception: pass
-            else:
-                error_text = f"❌ خطای دیباگ (Music):\n<code>{ms.LAST_ERROR}</code>"
-                await _safe_edit(status_msg, with_signature(error_text))
-        except Exception as e:
-            await _safe_edit(status_msg, with_signature(f"⚠️ خطای داخلی: <code>{str(e)}</code>"))
+    try:
+        success, error_msg = await asyncio.wait_for(
+            fetch_and_send_custom_music(context.bot, chat_id, query, thread_id=thread_id),
+            timeout=60.0
+        )
+        
+        if success:
+            try: await status_msg.delete()
+            except: pass
+        else:
+            # 👇 نمایش دقیق خطا به کاربر
+            await status_msg.edit_text(f"❌ دانلود ناموفق بود.\n\n💡 <b>علت:</b>\n{error_msg}", parse_mode="HTML")
+            
+    except asyncio.TimeoutError:
+        await status_msg.edit_text("⏱️ دانلود بیش از ۶۰ ثانیه طول کشید و متوقف شد.")
+    except Exception as e:
+        logger.error(f"cmd_music error: {e}")
+        await status_msg.edit_text(f"⚠️ خطا: {str(e)[:100]}")
+    finally:
+        _chat_locks.discard(chat_id)

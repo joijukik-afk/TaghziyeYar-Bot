@@ -60,7 +60,7 @@ def _search_metadata_sync(query: str, max_results: int = 10) -> List[Dict]:
         'socket_timeout': 10, 
         'ignoreerrors': True,
         'no_cache_dir': True,
-        'impersonate': 'chrome', # برای عبور از بلاک در جستجو
+        'impersonate': 'chrome',
     }
     results = []
     try:
@@ -88,9 +88,8 @@ async def _search_metadata(query: str, max_results: int = 10) -> List[Dict]:
     except Exception:
         return []
 
-# ==================== دانلود (با خطای دقیق) ====================
+# ==================== دانلود ====================
 def _download_audio_sync(url: str, output_template: str) -> tuple[Optional[dict], str]:
-    """خروجی: (دیکشنری آهنگ، پیام خطا)"""
     ydl_opts = {
         'format': 'bestaudio/best',
         'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '128'}],
@@ -98,7 +97,7 @@ def _download_audio_sync(url: str, output_template: str) -> tuple[Optional[dict]
         'quiet': True, 'no_warnings': True, 'noplaylist': True,
         'socket_timeout': 20, 'retries': 2,
         'no_cache_dir': True,
-        'impersonate': 'chrome', # تنظیم ضدبلاک
+        'impersonate': 'chrome',
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -151,7 +150,7 @@ async def _download_audio(url: str, output_template: str) -> tuple[Optional[dict
     except asyncio.TimeoutError:
         return None, "زمان دانلود به پایان رسید (بیشتر از ۴۵ ثانیه)."
 
-# ==================== منطق اصلی COMA ====================
+# ==================== منطق اصلی ====================
 async def fetch_and_send_music(bot: Bot, chat_id: int, thread_id: int = None) -> bool:
     queries = ["øneheart type beat", "dreamcore slowed reverb", "liminal space ambient", "dark ambient melancholic"]
     random.shuffle(queries)
@@ -193,7 +192,6 @@ async def fetch_and_send_music(bot: Bot, chat_id: int, thread_id: int = None) ->
 
 
 async def fetch_and_send_custom_music(bot: Bot, chat_id: int, query: str, thread_id: int = None) -> tuple[bool, str]:
-    """دانلود آهنگ خاص (برمی‌گرداند: (موفقیت؟، پیام خطا))"""
     item = None
     dl = None
 

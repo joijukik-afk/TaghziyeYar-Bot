@@ -3,6 +3,7 @@
 import logging
 import time
 import asyncio
+import re
 from telegram import Update
 from telegram.ext import ContextTypes
 from telegram.error import BadRequest, Forbidden
@@ -24,10 +25,13 @@ async def _safe_edit(msg, text: str, parse_mode: str = "HTML"):
     try:
         await msg.edit_text(text, parse_mode=parse_mode)
     except BadRequest:
-        import re
         clean = re.sub(r"<[^>]+>", "", text)
-        try: await msg.edit_text(clean)
-        except Exception: pass
+        try: 
+            await msg.edit_text(clean)
+        except Exception: 
+            pass
+    except Exception:
+        pass
 
 async def cmd_koma(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_chat is None or update.message is None: return
@@ -60,8 +64,7 @@ async def cmd_koma(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 try: await status_msg.delete()
                 except Exception: pass
             else:
-                # 👈 اینجا پیام دقیق میدهیم که چرا آهنگ نیامد (چون آرشیو حذف شده)
-                await _safe_edit(status_msg, with_signature("❌ متأسفانه آهنگ **جدید** و تکراری‌نشده‌ای در ساندکلود پیدا نشد. لطفاً چند دقیقه بعد دوباره تلاش کنید."))
+                await _safe_edit(status_msg, with_signature("❌ متأسفانه آهنگ <b>جدید</b> و تکراری‌نشده‌ای در ساندکلود پیدا نشد. لطفاً چند دقیقه بعد دوباره تلاش کنید."))
         except Exception as e:
             logger.error(f"cmd_koma error: {e}", exc_info=True)
             await _safe_edit(status_msg, with_signature("⚠️ متأسفانه خطایی در ارتباط با ساندکلود رخ داد."))

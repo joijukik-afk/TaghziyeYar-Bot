@@ -14,6 +14,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+# کپی کردن فایل اجرایی و دادن دسترسی اجرا
+COPY entrypoint.sh .
+RUN chmod +x entrypoint.sh
+
 ENV PORT=8080
 
-CMD ["python", "-m", "app.main"]
+# استفاده از اسکریپت راه‌اندازی
+CMD ["./entrypoint.sh"]

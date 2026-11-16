@@ -1,4 +1,4 @@
-"""موتور جستجوی KOMA (نسخه نهایی - soundcloud-lib بدون نیاز به client_id)"""
+"""موتور جستجوی KOMA (نسخه اصلاح شده - yt-dlp + ایمپرسونیت)"""
 
 import os
 import random
@@ -8,16 +8,10 @@ import tempfile
 import asyncio
 from typing import Optional, List, Dict
 from datetime import datetime, timezone
+import yt_dlp
 from telegram import Bot
 from telegram.constants import ParseMode
 from rapidfuzz import fuzz, process
-
-# ایمپورت کتابخانه جدید
-try:
-    from sclib import SoundcloudAPI, Track
-    SCLIB_AVAILABLE = True
-except ImportError:
-    SCLIB_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 LAST_ERROR = "بدون خطای مشخص"
@@ -48,15 +42,31 @@ SEARCH_QUERIES = [
     "analog mannequin", "coma music", "koma music", "coma vibe", "coma aesthetic",
 ]
 
-def _get_api():
-    """ساخت نمونه از SoundcloudAPI"""
-    if not SCLIB_AVAILABLE:
-        return None
-    try:
-        return SoundcloudAPI()
-    except Exception as e:
-        logger.warning(f"Failed to init SoundcloudAPI: {e}")
-        return None
+def _get_ydl_opts(extract_flat=False) -> dict:
+    opts = {
+        'quiet': True,
+        'no_warnings': True,
+        'noplaylist': True,
+        'ignoreerrors': True,
+        'no_color': True,
+        'no_cache_dir': True,
+        'impersonate': 'chrome',
+        'socket_timeout': 30,
+        'retries': 2,
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        },
+        'extractor_args': {
+            'soundcloud': {
+                'formats': ['*_mp3', 'http_aac']
+            }
+        }
+    }
+    if os.path.exists('cookies.txt'):
+        opts['cookiefile'] = 'cookies.txt'
+    if extract_flat:
+        opts['extract_flat'] = True
+    return opts
 
 # ==================== دیتابیس ====================
 async def _is_used(identifier: str) -> bool:
@@ -91,65 +101,76 @@ async def _record_track(data: dict, file_id: str) -> None:
     except Exception as e:
         logger.error(f"DB Record Error: {e}")
 
-# ==================== جستجو و دانلود با soundcloud-lib ====================
-def _search_soundcloud(query: str, limit: int = 10) -> List[Dict]:
+# ==================== جستجو و دانلود ====================
+def _search_soundcloud(query: str, max_results: int = 10) -> List[Dict]:
     global LAST_ERROR
-    api = _get_api()
-    if not api:
-        LAST_ERROR = "ساخت API ساندکلود با خطا مواجه شد."
-        return []
-
     try:
-        # soundcloud-lib متد جستجوی مستقیم ندارد، بنابراین از resolve برای URLها استفاده می‌کنیم
-        # اما می‌توانیم از یک روش غیرمستقیم استفاده کنیم: جستجو از طریق صفحه ساندکلود
-        # در اینجا از resolve برای دریافت اطلاعات آهنگ‌های یافت شده استفاده می‌کنیم.
-        # برای سادگی، فعلاً از همان روش قبلی (scsearch) استفاده می‌کنیم.
-        # این بخش نیاز به تکمیل دارد.
-        # ...
-        return []
+        with yt_dlp.YoutubeDL(_get_ydl_opts(extract_flat=True)) as ydl:
+            info = ydl.extract_info(f"scsearch{max_results}:{query}", download=False)
+            if not info:
+                LAST_ERROR = "نتیجه جستجو خالی بود."
+                return []
+            results = []
+            for e in info.get('entries', []):
+                if not e: continue
+                url = e.get('url') or e.get('webpage_url')
+                if url and 'soundcloud.com' in url:
+                    results.append({
+                        "id": str(e.get('id', '')),
+                        "title": e.get('title', 'Unknown'),
+                        "artist": e.get('uploader', 'Unknown Artist'),
+                        "url": url,
+                        "source": "SoundCloud"
+                    })
+            return results
     except Exception as e:
-        LAST_ERROR = f"خطای جستجو (sclib): {str(e)[:100]}"
-        logger.error(f"SC search failed for '{query}': {e}")
+        LAST_ERROR = f"خطای جستجو ({type(e).__name__}): {str(e)[:80]}"
         return []
 
-async def _download_with_sclib(url: str) -> Optional[Dict]:
+def _download_soundcloud(url: str, output_template: str) -> Optional[dict]:
     global LAST_ERROR
-    api = _get_api()
-    if not api:
-        LAST_ERROR = "ساخت API ساندکلود با خطا مواجه شد."
-        return None
-
+    opts = _get_ydl_opts()
+    opts.update({
+        'format': 'bestaudio/best',
+        'postprocessors': [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'mp3',
+            'preferredquality': '128'
+        }],
+        'outtmpl': output_template + '.%(ext)s',
+    })
     try:
-        # حل کردن URL و دریافت اطلاعات آهنگ
-        track = await asyncio.to_thread(api.resolve, url)
-        if not isinstance(track, Track):
-            LAST_ERROR = "لینک وارد شده یک آهنگ نیست."
-            return None
-
-        # دانلود فایل MP3 در یک فایل موقت
-        fd, temp_path = tempfile.mkstemp(suffix=".mp3", prefix="koma_sclib_")
-        with os.fdopen(fd, 'wb+') as f:
-            await asyncio.to_thread(track.write_mp3_to, f)
-
-        size = os.path.getsize(temp_path)
-        if size < MIN_SIZE or size > MAX_SIZE:
-            LAST_ERROR = f"حجم فایل غیرمجاز است: {size} بایت."
-            os.remove(temp_path)
-            return None
-
-        sha = hashlib.sha256()
-        with open(temp_path, 'rb') as f:
-            for chunk in iter(lambda: f.read(8192), b''):
-                sha.update(chunk)
-
-        return {
-            "path": temp_path, "hash": sha.hexdigest(), "size": size,
-            "title": track.title, "artist": track.artist
-        }
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            if not info:
+                LAST_ERROR = "ساندکلود درخواست را بلاک کرد (IP مسدود است)."
+                return None
+            if 'requested_downloads' in info and info['requested_downloads']:
+                mp3_path = info['requested_downloads'][0].get('filepath')
+            else:
+                mp3_path = output_template + '.mp3'
+            if not mp3_path or not os.path.exists(mp3_path):
+                LAST_ERROR = "فایل MP3 پیدا نشد."
+                return None
+            size = os.path.getsize(mp3_path)
+            if size < MIN_SIZE or size > MAX_SIZE:
+                LAST_ERROR = f"حجم فایل نامعتبر است: {size} بایت"
+                os.remove(mp3_path)
+                return None
+            sha = hashlib.sha256()
+            with open(mp3_path, 'rb') as f:
+                for chunk in iter(lambda: f.read(8192), b''):
+                    sha.update(chunk)
+            return {
+                "path": mp3_path, "hash": sha.hexdigest(), "size": size,
+                "title": info.get('title', 'Unknown'),
+                "artist": info.get('uploader', 'Unknown Artist')
+            }
     except Exception as e:
-        LAST_ERROR = f"خطای دانلود (sclib): {str(e)[:100]}"
-        logger.error(f"sclib download failed for {url}: {e}")
-        return None
+        LAST_ERROR = f"خطای دانلود ({type(e).__name__}): {str(e)[:80]}"
+        mp3_check = output_template + '.mp3'
+        if os.path.exists(mp3_check): os.remove(mp3_check)
+    return None
 
 # ==================== ارسال ====================
 async def _send_and_record_audio(bot: Bot, chat_id: int, thread_id: int, item: dict, dl: dict) -> bool:
@@ -178,7 +199,6 @@ async def _send_and_record_audio(bot: Bot, chat_id: int, thread_id: int, item: d
     except Exception as e:
         global LAST_ERROR
         LAST_ERROR = f"ارسال تلگرام: {str(e)[:100]}"
-        logger.error(f"send_audio failed: {e}")
         return False
     finally:
         try: os.remove(dl["path"])
@@ -186,24 +206,46 @@ async def _send_and_record_audio(bot: Bot, chat_id: int, thread_id: int, item: d
 
 # ==================== توابع اصلی ====================
 async def fetch_and_send_music(bot: Bot, chat_id: int, thread_id: int = None) -> bool:
-    # از آنجایی که soundcloud-lib جستجوی مستقیم ندارد، از URLهای تصادفی استفاده می‌کنیم
-    # این بخش نیاز به تکمیل دارد. فعلاً یک پیام خطا برمی‌گردانیم.
-    global LAST_ERROR
-    LAST_ERROR = "جستجو با soundcloud-lib در حال حاضر پشتیبانی نمی‌شود."
+    global LAST_ERROR  # 👈 انتقال به خط اول تابع
+    queries = random.sample(SEARCH_QUERIES, 2)
+    all_candidates = []
+    for query in queries:
+        results = await asyncio.to_thread(_search_soundcloud, query, 5)
+        all_candidates.extend(results)
+    if not all_candidates: return False
+    random.shuffle(all_candidates)
+    for item in all_candidates[:3]:
+        if await _is_used(item["id"]): continue
+        output_template = os.path.join(tempfile.gettempdir(), f"koma_sc_{item['id']}")
+        dl = await asyncio.to_thread(_download_soundcloud, item["url"], output_template)
+        if dl and await _send_and_record_audio(bot, chat_id, thread_id, item, dl):
+            return True
     return False
 
 async def fetch_and_send_custom_music(bot: Bot, chat_id: int, query: str, thread_id: int = None) -> bool:
+    global LAST_ERROR  # 👈 انتقال به خط اول تابع
+    item, dl = None, None
     if query.startswith(("http://", "https://")):
         if "soundcloud.com" not in query:
-            global LAST_ERROR
             LAST_ERROR = "لینک وارد شده مربوط به ساندکلود نیست."
             return False
         url_hash = hashlib.md5(query.encode()).hexdigest()
-        dl = await _download_with_sclib(query)
-        if dl:
-            item = {"id": url_hash, "title": dl["title"], "artist": dl["artist"]}
-            return await _send_and_record_audio(bot, chat_id, thread_id, item, dl)
+        if await _is_used(url_hash): return False
+        output_template = os.path.join(tempfile.gettempdir(), f"koma_link_{url_hash}")
+        dl = await asyncio.to_thread(_download_soundcloud, query, output_template)
+        if dl: item = {"id": url_hash, "title": dl["title"], "artist": dl["artist"]}
     else:
-        global LAST_ERROR
-        LAST_ERROR = "جستجوی متنی با soundcloud-lib در حال حاضر پشتیبانی نمی‌شود. لطفاً از لینک مستقیم استفاده کنید."
-    return False
+        sc_results = await asyncio.to_thread(_search_soundcloud, query, 10)
+        if not sc_results: return False
+        choices = [f"{r['title']} {r['artist']}" for r in sc_results]
+        best_matches = process.extract(query, choices, scorer=fuzz.WRatio, limit=3, score_cutoff=60)
+        candidates = [sc_results[idx] for _, _, idx in best_matches] if best_matches else sc_results[:3]
+        for c in candidates:
+            if await _is_used(c["id"]): continue
+            output_template = os.path.join(tempfile.gettempdir(), f"koma_search_{c['id']}")
+            dl = await asyncio.to_thread(_download_soundcloud, c["url"], output_template)
+            if dl:
+                item = c
+                break
+    if not dl or not item: return False
+    return await _send_and_record_audio(bot, chat_id, thread_id, item, dl)

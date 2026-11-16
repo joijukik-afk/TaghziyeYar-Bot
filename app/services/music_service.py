@@ -1,4 +1,4 @@
-"""موتور جستجوی KOMA (نسخه پایدار - بدون client_id ثابت + پشتیبانی از پروکسی)"""
+"""موتور جستجوی KOMA (نسخه پایدار - با پشتیبانی از پروکسی و آپدیت خودکار)"""
 
 import os
 import random
@@ -15,13 +15,11 @@ from rapidfuzz import fuzz, process
 
 logger = logging.getLogger(__name__)
 
-# ==================== تنظیمات پروکسی (اختیاری) ====================
-# اگر IP سرور شما توسط ساندکلود مسدود شده باشد، می‌توانید آدرس پروکسی خود را اینجا وارد کنید.
-# مثال: PROXY_URL = "http://username:password@your-proxy-address:port"
-# اگر از پروکسی استفاده نمی‌کنید، این متغیر را خالی بگذارید.
+# ==================== تنظیمات پروکسی ====================
+# این متغیر از Environment Variable های Render خونده میشه
 PROXY_URL = os.environ.get("MUSIC_PROXY_URL", "").strip()
 
-# ==================== متغیر سراسری برای نمایش خطا ====================
+# متغیر سراسری برای نمایش خطا
 LAST_ERROR = "بدون خطای مشخص"
 
 try:
@@ -97,14 +95,13 @@ def _search_soundcloud(query: str, max_results: int = 10) -> List[Dict]:
         'extract_flat': True,
         'noplaylist': True,
         'ignoreerrors': True,
-        # استفاده از تنظیمات پیش‌فرض yt-dlp برای استخراج خودکار client_id
         'extractor_args': {
             'soundcloud': {
                 'formats': ['*_mp3', 'http_aac'],
             }
         },
     }
-    # اضافه کردن پروکسی به تنظیمات در صورت وجود
+    
     if PROXY_URL:
         ydl_opts['proxy'] = PROXY_URL
 
@@ -159,6 +156,7 @@ def _download_soundcloud(url: str, output_template: str) -> Optional[dict]:
             }
         },
     }
+    
     if PROXY_URL:
         ydl_opts['proxy'] = PROXY_URL
 
@@ -166,7 +164,7 @@ def _download_soundcloud(url: str, output_template: str) -> Optional[dict]:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             if not info:
-                LAST_ERROR = "دانلود اطلاعاتی برنگرداند (None). احتمالاً IP سرور مسدود شده است."
+                LAST_ERROR = "دانلود اطلاعاتی برنگرداند (None). احتمالاً IP مسدود شده یا پروکسی کار نمی‌کند."
                 return None
 
             if 'requested_downloads' in info and info['requested_downloads']:

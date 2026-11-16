@@ -1,4 +1,4 @@
-"""موتور جستجوی KOMA (نسخه نهایی - با شبیه‌سازی مرورگر و مدیریت دقیق خطا)"""
+"""موتور جستجوی KOMA (نسخه نهایی - Master yt-dlp + Impersonate + Cookies)"""
 
 import os
 import random
@@ -43,17 +43,16 @@ SEARCH_QUERIES = [
 ]
 
 def _get_ydl_opts(extract_flat=False) -> dict:
-    """تنظیمات yt-dlp با شبیه‌سازی مرورگر کروم"""
     opts = {
         'quiet': True,
         'no_warnings': True,
         'noplaylist': True,
         'ignoreerrors': True,
         'no_color': True,
-        'no_cache_dir': True, # جلوگیری از استفاده از client_id قدیمی
-        'impersonate': 'chrome', # شبیه‌سازی مرورگر واقعی
+        'no_cache_dir': True,
+        'impersonate': 'chrome', # شبیه سازی مرورگر
         'socket_timeout': 30,
-        'retries': 2,
+        'retries': 3,
         'http_headers': {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
         },
@@ -63,6 +62,11 @@ def _get_ydl_opts(extract_flat=False) -> dict:
             }
         }
     }
+    
+    # اگر فایل کوکی وجود داشت، از آن استفاده کن (بهترین روش دور زدن بلاک)
+    if os.path.exists('cookies.txt'):
+        opts['cookiefile'] = 'cookies.txt'
+
     if extract_flat:
         opts['extract_flat'] = True
     return opts
@@ -143,7 +147,7 @@ def _download_soundcloud(url: str, output_template: str) -> Optional[dict]:
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=True)
             if not info:
-                LAST_ERROR = "ساندکلود درخواست را بلاک کرد (IP سرور رندر مسدود است)."
+                LAST_ERROR = "ساندکلود درخواست را بلاک کرد (IP سرور مسدود است)."
                 return None
             if 'requested_downloads' in info and info['requested_downloads']:
                 mp3_path = info['requested_downloads'][0].get('filepath')
@@ -200,7 +204,6 @@ async def _send_and_record_audio(bot: Bot, chat_id: int, thread_id: int, item: d
     except Exception as e:
         global LAST_ERROR
         LAST_ERROR = f"ارسال تلگرام: {str(e)[:100]}"
-        logger.error(f"send_audio failed: {e}")
         return False
     finally:
         try: os.remove(dl["path"])

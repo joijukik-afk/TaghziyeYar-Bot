@@ -7,7 +7,6 @@ import re
 from telegram import Update
 from telegram.ext import ContextTypes
 from telegram.error import BadRequest, Forbidden
-# ایمپورت ماژول برای دسترسی به متغیر سراسری LAST_ERROR
 import app.services.music_service as ms
 from app.utils.message_formatter import with_signature
 
@@ -61,7 +60,6 @@ async def cmd_koma(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 try: await status_msg.delete()
                 except Exception: pass
             else:
-                # 👈 اینجا خطای دقیق رو نشون میده
                 error_text = f"❌ خطای دیباگ (Koma):\n<code>{ms.LAST_ERROR}</code>"
                 await _safe_edit(status_msg, with_signature(error_text))
         except Exception as e:
@@ -99,7 +97,6 @@ async def cmd_music(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 try: await status_msg.delete()
                 except Exception: pass
             else:
-                # 👈 اینجا خطای دقیق رو نشون میده
                 error_text = f"❌ خطای دیباگ (Music):\n<code>{ms.LAST_ERROR}</code>"
                 await _safe_edit(status_msg, with_signature(error_text))
         except Exception as e:

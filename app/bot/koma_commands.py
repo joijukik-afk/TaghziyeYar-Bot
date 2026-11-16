@@ -1,4 +1,4 @@
-"""دستورات موزیک KOMA (با نمایش خطای دقیق برای دیباگ)"""
+"""دستورات موزیک KOMA (با مدیریت خطای شبکه)"""
 
 import logging
 import time
@@ -6,7 +6,7 @@ import asyncio
 import re
 from telegram import Update
 from telegram.ext import ContextTypes
-from telegram.error import BadRequest, Forbidden
+from telegram.error import BadRequest, Forbidden, NetworkError
 import app.services.music_service as ms
 from app.utils.message_formatter import with_signature
 
@@ -24,14 +24,11 @@ def _get_chat_lock(chat_id: int) -> asyncio.Lock:
 async def _safe_edit(msg, text: str, parse_mode: str = "HTML"):
     try:
         await msg.edit_text(text, parse_mode=parse_mode)
-    except BadRequest:
+    except (BadRequest, NetworkError):
         clean = re.sub(r"<[^>]+>", "", text)
-        try: 
-            await msg.edit_text(clean)
-        except Exception: 
-            pass
-    except Exception:
-        pass
+        try: await msg.edit_text(clean)
+        except Exception: pass
+    except Exception: pass
 
 async def cmd_koma(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_chat is None or update.message is None: return
@@ -51,7 +48,7 @@ async def cmd_koma(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     async with lock:
         try:
             status_msg = await update.message.reply_text("🎧 در حال جستجو...")
-        except Forbidden:
+        except (Forbidden, NetworkError):
             return
 
         try:
@@ -80,15 +77,15 @@ async def cmd_music(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     _last_music_time[user_id] = now
 
     query = " ".join(context.args).strip()
-    
     lock = _get_chat_lock(chat_id)
+    
     if lock.locked():
         return await update.message.reply_text(with_signature("⏳ لطفاً صبر کنید، درخواست قبلی در حال انجام است."), parse_mode="HTML")
 
     async with lock:
         try:
             status_msg = await update.message.reply_text(f"🔍 در حال جستجو برای: {query}")
-        except Forbidden:
+        except (Forbidden, NetworkError):
             return
 
         try:

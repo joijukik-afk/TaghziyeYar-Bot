@@ -77,7 +77,8 @@ async def start_setup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await update.message.reply_text(with_signature(msg.ERROR_GENERIC), parse_mode="HTML")
         return
 
-    await repo.update_profile(db_user.id, setup_step=STEP_AGE, setup_complete=False)
+    # 👈 فیکس: تبدیل عدد به متن
+    await repo.update_profile(db_user.id, setup_step=str(STEP_AGE), setup_complete=False)
 
     await update.message.reply_text(
         with_signature(
@@ -123,32 +124,38 @@ async def handle_setup_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
     profile = await repo.get_profile(db_user.id)
     if profile is None or profile.setup_complete:
         return False
-    if profile.setup_step == STEP_IDLE:
+
+    # 👈 فیکس: تبدیل متن دریافتی از دیتابیس به عدد برای مقایسه
+    try:
+        step = int(profile.setup_step) if profile.setup_step is not None else STEP_IDLE
+    except (ValueError, TypeError):
+        step = STEP_IDLE
+
+    if step == STEP_IDLE:
         return False
 
-    step = profile.setup_step
     text = update.message.text.strip()
 
     try:
         if step == STEP_AGE:
             age = parse_int(text, AGE_MIN, AGE_MAX, field="سن")
-            await repo.update_profile(db_user.id, age=age, setup_step=STEP_GENDER)
+            await repo.update_profile(db_user.id, age=age, setup_step=str(STEP_GENDER))
             await _ask(update, context, STEP_GENDER)
 
         elif step == STEP_GENDER:
             gender = validate_gender(text)
             if gender is None: raise ValueError("جنسیت نامعتبر. یکی از دکمه‌ها رو بزن.")
-            await repo.update_profile(db_user.id, gender=gender, setup_step=STEP_HEIGHT)
+            await repo.update_profile(db_user.id, gender=gender, setup_step=str(STEP_HEIGHT))
             await _ask(update, context, STEP_HEIGHT)
 
         elif step == STEP_HEIGHT:
             h = parse_float(text, HEIGHT_MIN, HEIGHT_MAX, field="قد")
-            await repo.update_profile(db_user.id, height_cm=h, setup_step=STEP_WEIGHT)
+            await repo.update_profile(db_user.id, height_cm=h, setup_step=str(STEP_WEIGHT))
             await _ask(update, context, STEP_WEIGHT)
 
         elif step == STEP_WEIGHT:
             w = parse_float(text, WEIGHT_MIN, WEIGHT_MAX, field="وزن")
-            await repo.update_profile(db_user.id, weight_kg=w, setup_step=STEP_TARGET_WEIGHT)
+            await repo.update_profile(db_user.id, weight_kg=w, setup_step=str(STEP_TARGET_WEIGHT))
             await repo.log_weight(db_user.id, w)
             await _ask(update, context, STEP_TARGET_WEIGHT)
 
@@ -157,25 +164,25 @@ async def handle_setup_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 target = None
             else:
                 target = parse_float(text, WEIGHT_MIN, WEIGHT_MAX, field="وزن هدف")
-            await repo.update_profile(db_user.id, target_weight_kg=target, setup_step=STEP_GOAL)
+            await repo.update_profile(db_user.id, target_weight_kg=target, setup_step=str(STEP_GOAL))
             await _ask(update, context, STEP_GOAL)
 
         elif step == STEP_GOAL:
             goal = validate_goal(text)
             if goal is None: raise ValueError("هدف نامعتبر. یکی از دکمه‌ها رو بزن.")
-            await repo.update_profile(db_user.id, goal=goal, setup_step=STEP_ACTIVITY)
+            await repo.update_profile(db_user.id, goal=goal, setup_step=str(STEP_ACTIVITY))
             await _ask(update, context, STEP_ACTIVITY)
 
         elif step == STEP_ACTIVITY:
             activity = validate_activity(text)
             if activity is None: raise ValueError("سطح فعالیت نامعتبر. یکی از دکمه‌ها رو بزن.")
-            await repo.update_profile(db_user.id, activity_level=activity, setup_step=STEP_MEDICAL)
+            await repo.update_profile(db_user.id, activity_level=activity, setup_step=str(STEP_MEDICAL))
             await _ask(update, context, STEP_MEDICAL)
 
         elif step == STEP_MEDICAL:
             notes = None if text in ("هیچ", "هیچی", "ندارم", "-", "خیر") else text
             await repo.update_profile(
-                db_user.id, medical_notes=notes, setup_step=STEP_DONE, setup_complete=True,
+                db_user.id, medical_notes=notes, setup_step=str(STEP_DONE), setup_complete=True,
             )
             await update.message.reply_text(
                 with_signature(
@@ -212,7 +219,9 @@ async def cancel_setup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     db_user = await repo.get_user_by_telegram_id(user.id)
     if db_user is None:
         return
-    await repo.update_profile(db_user.id, setup_step=STEP_IDLE)
+    
+    # 👈 فیکس: تبدیل عدد به متن
+    await repo.update_profile(db_user.id, setup_step=str(STEP_IDLE))
     await update.message.reply_text(
         with_signature("✅ راه‌اندازی لغو شد. هر وقت خواستی /setup رو بزن."),
         reply_markup=ReplyKeyboardRemove(),

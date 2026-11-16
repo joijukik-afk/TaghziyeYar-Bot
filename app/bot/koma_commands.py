@@ -1,4 +1,4 @@
-"""دستورات موزیک KOMA (فقط ساندکلود)"""
+"""دستورات موزیک KOMA (بدون آرشیو)"""
 
 import logging
 import time
@@ -11,7 +11,7 @@ from app.utils.message_formatter import with_signature
 
 logger = logging.getLogger(__name__)
 
-_MUSIC_COOLDOWN = 10 # ثانیه
+_MUSIC_COOLDOWN = 10
 _last_music_time: dict[int, float] = {}
 _chat_locks: dict[int, asyncio.Lock] = {}
 
@@ -46,7 +46,7 @@ async def cmd_koma(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     async with lock:
         try:
-            status_msg = await update.message.reply_text("🎧 در حال جستجو در آرشیو KOMA (ساندکلود)...")
+            status_msg = await update.message.reply_text("🎧 در حال جستجوی یک آهنگ جدید در ساندکلود...")
         except Forbidden:
             return
 
@@ -60,10 +60,11 @@ async def cmd_koma(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 try: await status_msg.delete()
                 except Exception: pass
             else:
-                await _safe_edit(status_msg, with_signature("❌ آهنگ جدیدی پیدا نشد. لطفاً دوباره تلاش کنید."))
+                # 👈 اینجا پیام دقیق میدهیم که چرا آهنگ نیامد (چون آرشیو حذف شده)
+                await _safe_edit(status_msg, with_signature("❌ متأسفانه آهنگ **جدید** و تکراری‌نشده‌ای در ساندکلود پیدا نشد. لطفاً چند دقیقه بعد دوباره تلاش کنید."))
         except Exception as e:
             logger.error(f"cmd_koma error: {e}", exc_info=True)
-            await _safe_edit(status_msg, with_signature("⚠️ متأسفانه خطایی رخ داد. لطفاً بعداً تلاش کنید."))
+            await _safe_edit(status_msg, with_signature("⚠️ متأسفانه خطایی در ارتباط با ساندکلود رخ داد."))
 
 
 async def cmd_music(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

@@ -1,4 +1,4 @@
-"""موتور جستجوی KOMA (نسخه پایدار - با پشتیبانی از پروکسی و آپدیت خودکار)"""
+"""موتور جستجوی KOMA (نسخه مقاوم - بدون کش + شبیه‌سازی مرورگر + تلاش خودکار)"""
 
 import os
 import random
@@ -15,11 +15,7 @@ from rapidfuzz import fuzz, process
 
 logger = logging.getLogger(__name__)
 
-# ==================== تنظیمات پروکسی ====================
-# این متغیر از Environment Variable های Render خونده میشه
 PROXY_URL = os.environ.get("MUSIC_PROXY_URL", "").strip()
-
-# متغیر سراسری برای نمایش خطا
 LAST_ERROR = "بدون خطای مشخص"
 
 try:
@@ -47,6 +43,27 @@ SEARCH_QUERIES = [
     "sad girl lofi", "post rock ambient", "dark wave slowed", "comatose ambient",
     "analog mannequin", "coma music", "koma music", "coma vibe", "coma aesthetic",
 ]
+
+# ==================== تنظیمات مشترک yt-dlp ====================
+def _get_base_ydl_opts(use_proxy=True) -> dict:
+    """تنظیمات پایه برای شبیه‌سازی مرورگر و جلوگیری از کش"""
+    opts = {
+        'quiet': True,
+        'no_warnings': True,
+        'no_cache_dir': True,  # 👈 بسیار مهم: جلوگیری از استفاده از client_id قدیمی
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Sec-Fetch-User': '?1',
+        }
+    }
+    if use_proxy and PROXY_URL:
+        opts['proxy'] = PROXY_URL
+    return opts
 
 # ==================== دیتابیس ====================
 async def _is_used(identifier: str) -> bool:
@@ -89,115 +106,135 @@ async def _record_track(data: dict, file_id: str) -> None:
 # ==================== جستجو و دانلود ====================
 def _search_soundcloud(query: str, max_results: int = 10) -> List[Dict]:
     global LAST_ERROR
-    ydl_opts = {
-        'quiet': True,
-        'no_warnings': True,
-        'extract_flat': True,
-        'noplaylist': True,
-        'ignoreerrors': True,
-        'extractor_args': {
-            'soundcloud': {
-                'formats': ['*_mp3', 'http_aac'],
-            }
-        },
-    }
     
+    # تلاش اول: با پروکسی (اگر تنظیم شده باشد)
+    # تلاش دوم: بدون پروکسی (اگر اولی شکست خورد)
+    proxies_to_try = []
     if PROXY_URL:
-        ydl_opts['proxy'] = PROXY_URL
+        proxies_to_try.append(True)  # استفاده از پروکسی
+    proxies_to_try.append(False)     # عدم استفاده از پروکسی (به عنوان جایگزین)
 
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            search_url = f"scsearch{max_results}:{query}"
-            info = ydl.extract_info(search_url, download=False)
-            if not info:
-                LAST_ERROR = f"جستجو نتیجه‌ای برنگرداند (None) برای: {query}"
-                return []
+    for use_proxy in proxies_to_try:
+        ydl_opts = _get_base_ydl_opts(use_proxy=use_proxy)
+        ydl_opts.update({
+            'extract_flat': True,
+            'noplaylist': True,
+            'ignoreerrors': True,
+            'extractor_args': {
+                'soundcloud': {
+                    'formats': ['*_mp3', 'http_aac'],
+                }
+            },
+        })
 
-            results = []
-            entries = info.get('entries', []) if 'entries' in info else [info]
-            for e in entries:
-                if not e:
-                    continue
-                track_url = e.get('url') or e.get('webpage_url')
-                if track_url and ('soundcloud.com' in track_url):
-                    results.append({
-                        "id": str(e.get('id', '')),
-                        "title": e.get('title', 'Unknown'),
-                        "artist": e.get('uploader', 'Unknown Artist'),
-                        "url": track_url,
-                        "source": "SoundCloud"
-                    })
-            
-            if not results:
-                LAST_ERROR = "هیچ لینک ساندکلودی در نتایج پیدا نشد."
-            return results[:max_results]
-    except Exception as e:
-        LAST_ERROR = f"Search Error: {str(e)}"
-        logger.error(f"Search failed for '{query}': {e}")
-        return []
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                search_url = f"scsearch{max_results}:{query}"
+                logger.info(f"Trying search (proxy={use_proxy}) for: {query}")
+                info = ydl.extract_info(search_url, download=False)
+                
+                if not info:
+                    continue  # برو سراغ روش بعدی
+
+                results = []
+                entries = info.get('entries', []) if 'entries' in info else [info]
+                for e in entries:
+                    if not e:
+                        continue
+                    track_url = e.get('url') or e.get('webpage_url')
+                    if track_url and ('soundcloud.com' in track_url):
+                        results.append({
+                            "id": str(e.get('id', '')),
+                            "title": e.get('title', 'Unknown'),
+                            "artist": e.get('uploader', 'Unknown Artist'),
+                            "url": track_url,
+                            "source": "SoundCloud"
+                        })
+                
+                if results:
+                    LAST_ERROR = f"موفق با پروکسی={use_proxy}"
+                    return results[:max_results]
+                else:
+                    LAST_ERROR = "هیچ لینک ساندکلودی در نتایج پیدا نشد."
+                    
+        except Exception as e:
+            LAST_ERROR = f"Search Error (proxy={use_proxy}): {str(e)[:100]}"
+            logger.warning(f"Search failed (proxy={use_proxy}): {e}")
+            continue  # برو سراغ روش بعدی
+
+    return []
 
 def _download_soundcloud(url: str, output_template: str) -> Optional[dict]:
     global LAST_ERROR
-    ydl_opts = {
-        'format': 'bestaudio/best',
-        'postprocessors': [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'mp3',
-            'preferredquality': '128'
-        }],
-        'outtmpl': output_template + '.%(ext)s',
-        'quiet': True, 'no_warnings': True, 'noplaylist': True,
-        'ignoreerrors': True, 'no_color': True,
-        'retries': 2, 'fragment_retries': 2,
-        'socket_timeout': 20,
-        'extractor_args': {
-            'soundcloud': {
-                'formats': ['*_mp3', 'http_aac'],
-            }
-        },
-    }
     
+    proxies_to_try = []
     if PROXY_URL:
-        ydl_opts['proxy'] = PROXY_URL
+        proxies_to_try.append(True)
+    proxies_to_try.append(False)
 
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            if not info:
-                LAST_ERROR = "دانلود اطلاعاتی برنگرداند (None). احتمالاً IP مسدود شده یا پروکسی کار نمی‌کند."
-                return None
+    for use_proxy in proxies_to_try:
+        ydl_opts = _get_base_ydl_opts(use_proxy=use_proxy)
+        ydl_opts.update({
+            'format': 'bestaudio/best',
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '128'
+            }],
+            'outtmpl': output_template + '.%(ext)s',
+            'noplaylist': True,
+            'ignoreerrors': True,
+            'no_color': True,
+            'retries': 2,
+            'fragment_retries': 2,
+            'socket_timeout': 20,
+            'extractor_args': {
+                'soundcloud': {
+                    'formats': ['*_mp3', 'http_aac'],
+                }
+            },
+        })
 
-            if 'requested_downloads' in info and info['requested_downloads']:
-                mp3_path = info['requested_downloads'][0].get('filepath')
-            else:
-                mp3_path = output_template + '.mp3'
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                logger.info(f"Trying download (proxy={use_proxy}) for: {url[:50]}...")
+                info = ydl.extract_info(url, download=True)
+                
+                if not info:
+                    continue
 
-            if not mp3_path or not os.path.exists(mp3_path):
-                LAST_ERROR = "فایل MP3 بعد از دانلود پیدا نشد."
-                return None
+                if 'requested_downloads' in info and info['requested_downloads']:
+                    mp3_path = info['requested_downloads'][0].get('filepath')
+                else:
+                    mp3_path = output_template + '.mp3'
 
-            size = os.path.getsize(mp3_path)
-            if size < MIN_SIZE or size > MAX_SIZE:
-                LAST_ERROR = f"حجم فایل غیرمجاز است: {size} bytes"
-                os.remove(mp3_path)
-                return None
+                if not mp3_path or not os.path.exists(mp3_path):
+                    continue
 
-            sha = hashlib.sha256()
-            with open(mp3_path, 'rb') as f:
-                for chunk in iter(lambda: f.read(8192), b''):
-                    sha.update(chunk)
+                size = os.path.getsize(mp3_path)
+                if size < MIN_SIZE or size > MAX_SIZE:
+                    os.remove(mp3_path)
+                    continue
 
-            return {
-                "path": mp3_path, "hash": sha.hexdigest(), "size": size,
-                "title": info.get('title', 'Unknown'),
-                "artist": info.get('uploader', 'Unknown Artist')
-            }
-    except Exception as e:
-        LAST_ERROR = f"Download Error: {str(e)}"
-        logger.error(f"Download error for {url}: {e}")
-        mp3_check = output_template + '.mp3'
-        if os.path.exists(mp3_check):
-            os.remove(mp3_check)
+                sha = hashlib.sha256()
+                with open(mp3_path, 'rb') as f:
+                    for chunk in iter(lambda: f.read(8192), b''):
+                        sha.update(chunk)
+
+                return {
+                    "path": mp3_path, "hash": sha.hexdigest(), "size": size,
+                    "title": info.get('title', 'Unknown'),
+                    "artist": info.get('uploader', 'Unknown Artist')
+                }
+                
+        except Exception as e:
+            LAST_ERROR = f"Download Error (proxy={use_proxy}): {str(e)[:100]}"
+            logger.warning(f"Download failed (proxy={use_proxy}): {e}")
+            mp3_check = output_template + '.mp3'
+            if os.path.exists(mp3_check):
+                os.remove(mp3_check)
+            continue
+
     return None
 
 # ==================== ارسال ====================
@@ -229,7 +266,7 @@ async def _send_and_record_audio(bot: Bot, chat_id: int, thread_id: int, item: d
         return True
     except Exception as e:
         global LAST_ERROR
-        LAST_ERROR = f"ارسال تلگرام با خطا مواجه شد: {str(e)}"
+        LAST_ERROR = f"ارسال تلگرام: {str(e)}"
         logger.error(f"send_audio failed: {e}")
         return False
     finally:
@@ -267,7 +304,7 @@ async def fetch_and_send_custom_music(bot: Bot, chat_id: int, query: str, thread
     if query.startswith(("http://", "https://")):
         if "soundcloud.com" not in query:
             global LAST_ERROR
-            LAST_ERROR = "لینک وارد شده مربوط به ساندکلود نیست."
+            LAST_ERROR = "لینک ساندکلود نیست."
             return False
         url_hash = hashlib.md5(query.encode()).hexdigest()
         output = os.path.join(tempfile.gettempdir(), f"koma_link_{url_hash}")

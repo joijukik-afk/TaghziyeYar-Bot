@@ -1,4 +1,4 @@
-"""موتور جستجوی KOMA (نسخه مبتنی بر soundcloud-downloader - بدون پروکسی)"""
+"""موتور جستجوی KOMA (نسخه مستقیم scdl - بدون خطای آرگومان)"""
 
 import os
 import random
@@ -6,17 +6,11 @@ import hashlib
 import logging
 import tempfile
 import asyncio
-from typing import Optional, List, Dict
+import subprocess
+from typing import Optional, Dict
 from datetime import datetime, timezone
 from telegram import Bot
 from telegram.constants import ParseMode
-
-try:
-    from soundcloud_downloader import SoundCloudDownloader
-except ImportError:
-    SoundCloudDownloader = None
-
-from rapidfuzz import fuzz, process
 
 logger = logging.getLogger(__name__)
 
@@ -86,53 +80,31 @@ async def _record_track(data: dict, file_id: str) -> None:
     except Exception as e:
         logger.error(f"DB Record Error: {e}")
 
-# ==================== جستجو و دانلود با SoundCloudDownloader ====================
-def _search_scdl(query: str, limit: int = 10) -> List[Dict]:
-    """جستجو در ساندکلود با کتابخانه soundcloud-downloader"""
+# ==================== دانلود مستقیم با scdl ====================
+def _download_scdl_query(query: str) -> Optional[Dict]:
+    """جستجو و دانلود مستقیم با ابزار scdl"""
     global LAST_ERROR
-    if SoundCloudDownloader is None:
-        LAST_ERROR = "کتابخانه soundcloud-downloader نصب نشده است."
-        return []
+    download_dir = tempfile.mkdtemp(prefix="koma_scdl_")
+    
+    cmd = [
+        "scdl",
+        "-s", query,          # جستجو با عبارت
+        "-o", download_dir,   # مسیر ذخیره
+        "--onlymp3",          # فقط فایل mp3
+        "--overwrite"         # بازنویسی در صورت وجود
+    ]
 
     try:
-        downloader = SoundCloudDownloader(output_dir=tempfile.gettempdir())
-        urls = downloader.search(query, limit=limit)
-
-        results = []
-        for url in urls:
-            identifier = url.rstrip('/').split('/')[-1]
-            results.append({
-                "id": identifier,
-                "title": "Unknown Title",
-                "artist": "Unknown Artist",
-                "url": url,
-                "source": "SoundCloud"
-            })
-
-        if not results:
-            LAST_ERROR = f"هیچ نتیجه‌ای برای «{query}» یافت نشد."
-        return results
-    except Exception as e:
-        LAST_ERROR = f"خطای جستجو (scdl): {str(e)[:120]}"
-        logger.error(f"scdl search failed for '{query}': {e}")
-        return []
-
-def _download_scdl(url: str) -> Optional[Dict]:
-    """دانلود از ساندکلود با کتابخانه soundcloud-downloader"""
-    global LAST_ERROR
-    if SoundCloudDownloader is None:
-        LAST_ERROR = "کتابخانه soundcloud-downloader نصب نشده است."
-        return None
-
-    try:
-        download_dir = tempfile.mkdtemp(prefix="koma_scdl_")
-        downloader = SoundCloudDownloader(output_dir=download_dir)
-        result = downloader.download_track(url, overwrite=True)
-
-        if not result:
-            LAST_ERROR = "دانلود با scdl نتیجه‌ای برنگرداند."
+        logger.info(f"Running scdl for query: {query}")
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=90
+        )
+        
+        if result.returncode != 0:
+            LAST_ERROR = f"خطای scdl: {result.stderr[:150] or result.stdout[:150]}"
             return None
 
+        # پیدا کردن فایل MP3 در مسیر دانلود
         mp3_file = None
         for f in os.listdir(download_dir):
             if f.lower().endswith('.mp3'):
@@ -155,12 +127,10 @@ def _download_scdl(url: str) -> Optional[Dict]:
                 sha.update(chunk)
 
         base_name = os.path.splitext(os.path.basename(mp3_file))[0]
-        title = base_name
-        artist = "Unknown Artist"
+        title, artist = base_name, "Unknown Artist"
         if " - " in base_name:
             parts = base_name.split(" - ", 1)
-            artist = parts[0].strip()
-            title = parts[1].strip()
+            artist, title = parts[0].strip(), parts[1].strip()
 
         return {
             "path": mp3_file,
@@ -169,9 +139,12 @@ def _download_scdl(url: str) -> Optional[Dict]:
             "title": title,
             "artist": artist
         }
+
+    except subprocess.TimeoutExpired:
+        LAST_ERROR = "زمان اجرای scdl (۹۰ ثانیه) به پایان رسید."
+        return None
     except Exception as e:
-        LAST_ERROR = f"خطای دانلود (scdl): {str(e)[:120]}"
-        logger.error(f"scdl download failed for {url}: {e}")
+        LAST_ERROR = f"خطای غیرمنتظره در scdl: {str(e)[:120]}"
         return None
 
 # ==================== ارسال ====================
@@ -193,7 +166,7 @@ async def _send_and_record_audio(bot: Bot, chat_id: int, thread_id: int, item: d
             sent = await bot.send_audio(audio=audio, **send_kwargs)
 
         await _record_track({
-            "identifier": item["id"],
+            "identifier": item.get("id", hashlib.md5(dl["path"].encode()).hexdigest()),
             "title": dl.get("title", item.get("title", "Unknown")),
             "artist": dl.get("artist", item.get("artist", "Unknown Artist")),
             "filename": os.path.basename(dl["path"]),
@@ -214,57 +187,29 @@ async def _send_and_record_audio(bot: Bot, chat_id: int, thread_id: int, item: d
 
 # ==================== توابع اصلی ====================
 async def fetch_and_send_music(bot: Bot, chat_id: int, thread_id: int = None) -> bool:
+    """دستور /koma - انتخاب یک عبارت تصادفی و دانلود"""
     query = random.choice(SEARCH_QUERIES)
-    candidates = await asyncio.to_thread(_search_scdl, query, 5)
-
-    if not candidates:
-        return False
-
-    random.shuffle(candidates)
-    attempts = 0
-    for item in candidates:
-        if attempts >= 3:
-            break
-        attempts += 1
-
-        if await _is_used(item["id"]):
-            continue
-
-        dl = await asyncio.to_thread(_download_scdl, item["url"])
-        if dl and await _send_and_record_audio(bot, chat_id, thread_id, item, dl):
-            return True
-
+    dl = await asyncio.to_thread(_download_scdl_query, query)
+    
+    if dl and await _send_and_record_audio(bot, chat_id, thread_id, {"id": hashlib.md5(query.encode()).hexdigest()}, dl):
+        return True
     return False
 
 async def fetch_and_send_custom_music(bot: Bot, chat_id: int, query: str, thread_id: int = None) -> bool:
+    """دستور /music - جستجوی دقیق عبارت کاربر"""
     if query.startswith(("http://", "https://")):
         if "soundcloud.com" not in query:
             global LAST_ERROR
             LAST_ERROR = "لینک وارد شده مربوط به ساندکلود نیست."
             return False
-        url_hash = hashlib.md5(query.encode()).hexdigest()
-        dl = await asyncio.to_thread(_download_scdl, query)
+        dl = await asyncio.to_thread(_download_scdl_query, query)
         if dl:
-            return await _send_and_record_audio(bot, chat_id, thread_id, {"id": url_hash}, dl)
+            return await _send_and_record_audio(bot, chat_id, thread_id, {"id": hashlib.md5(query.encode()).hexdigest()}, dl)
         return False
 
-    results = await asyncio.to_thread(_search_scdl, query, 10)
-    if not results:
-        return False
-
-    candidates = results[:3]
-
-    attempts = 0
-    for c in candidates:
-        if attempts >= 3:
-            break
-        attempts += 1
-
-        if await _is_used(c["id"]):
-            continue
-
-        dl = await asyncio.to_thread(_download_scdl, c["url"])
-        if dl and await _send_and_record_audio(bot, chat_id, thread_id, c, dl):
-            return True
+    # جستجوی متنی با scdl
+    dl = await asyncio.to_thread(_download_scdl_query, query)
+    if dl and await _send_and_record_audio(bot, chat_id, thread_id, {"id": hashlib.md5(query.encode()).hexdigest()}, dl):
+        return True
 
     return False

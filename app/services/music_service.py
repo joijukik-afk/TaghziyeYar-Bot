@@ -1,13 +1,9 @@
-"""موتور جستجوی هوشمند KOMA - نسخه 2.0
+"""موتور جستجوی هوشمند KOMA - نسخه 2.1 (با پشتیبانی از OAuth ساندکلود)
 
-بهبودها:
-- جستجوی موازی چندکوئری با وزن‌دهی
-- تشخیص تکرار چندمعیاره (identifier + عنوان + آرتیست)
-- تنوع آرتیست در ارسال‌های متوالی
-- کش شکست‌ها با cooldown
-- دانلود آبشاری کیفیت
-- اعتبارسنجی حجم/مدت/بیت‌ریت
-- پاکسازی متن برای ارسال ایمن
+تغییرات کلیدی نسبت به نسخه قبل:
+- افزودن احراز هویت OAuth به تمام درخواست‌های جستجو و دانلود
+- استفاده از پارامترهای استاندارد yt-dlp برای توکن (username/password)
+- مقاوم‌سازی بیشتر در برابر خطاهای 401 و محدودیت‌های IP
 """
 import os
 import re
@@ -42,9 +38,16 @@ ARTIST_COOLDOWN = 3                  # در 3 ارسال اخیر آرتیست �
 FAILED_URL_COOLDOWN_HOURS = 6
 TITLE_SIM_THRESHOLD = 0.85           # آستانه شباهت عنوان
 
+# ==================== توکن OAuth ساندکلود ====================
+# توکن خود را از حساب ساندکلود دریافت و در اینجا قرار دهید.
+# برای امنیت بیشتر می‌توانید آن را از متغیر محیطی بخوانید.
+SOUNDCLOUD_OAUTH_TOKEN = os.getenv(
+    "SOUNDCLOUD_OAUTH_TOKEN",
+    "YOUR_OAUTH_TOKEN_HERE"
+)
+
 # ==================== مخزن کوئری با وزن ====================
 QUERY_POOL: List[Tuple[str, int]] = [
-    # انگلیسی - اتمسفریک
     ("øneheart", 3), ("oneheart", 2), ("reidenshi", 3),
     ("my head is empty", 2), ("daniel.mp3", 2), ("analog mannequin", 2),
     ("dreamcore", 2), ("dark ambient", 2), ("sad ambient", 2),
@@ -56,7 +59,6 @@ QUERY_POOL: List[Tuple[str, int]] = [
     ("lonely piano", 2), ("nostalgic", 2), ("midnight ambient", 2),
     ("coma music", 2), ("coma vibe", 2), ("koma vibe", 2),
     ("post rock ambient", 1), ("dark wave", 2), ("lofi sad", 2),
-    # فارسی
     ("غمگین", 3), ("غمگین slowed", 3), ("غمگین ریورب", 3),
     ("احساسی slowed", 2), ("آرام slowed", 2), ("تنها slowed", 2),
     ("غمگین ایرانی", 2), ("آهنگ غمگین", 2), ("سوزناک", 1),
@@ -176,13 +178,15 @@ async def _record_track(data: dict, file_id: str) -> None:
             ))
         await session.flush()
 
-# ==================== جستجو ====================
+# ==================== جستجو (با OAuth) ====================
 def _search_soundcloud(query: str, max_results: int) -> List[Dict]:
     opts = {
         'quiet': True, 'no_warnings': True, 'extract_flat': True,
         'noplaylist': True, 'ignoreerrors': True, 'no_color': True,
         'geo_bypass': True, 'nocheckcertificate': True,
         'socket_timeout': 30, 'retries': 3,
+        'username': 'oauth',
+        'password': SOUNDCLOUD_OAUTH_TOKEN,
         'extractor_args': {'soundcloud': {'formats': ['http_mp3_128', 'http_mp3_original']}},
     }
     try:
@@ -212,7 +216,7 @@ def _search_soundcloud(query: str, max_results: int) -> List[Dict]:
         logger.warning(f"SC search failed for '{query}': {e}")
         return []
 
-# ==================== دانلود آبشاری ====================
+# ==================== دانلود آبشاری (با OAuth) ====================
 def _download_soundcloud(url: str, output_template: str) -> Optional[dict]:
     for quality in ('192', '128', 'best'):
         opts = {
@@ -226,6 +230,8 @@ def _download_soundcloud(url: str, output_template: str) -> Optional[dict]:
             'quiet': True, 'no_warnings': True, 'noplaylist': True,
             'ignoreerrors': True, 'no_color': True,
             'retries': 3, 'fragment_retries': 3, 'socket_timeout': 60,
+            'username': 'oauth',
+            'password': SOUNDCLOUD_OAUTH_TOKEN,
         }
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:

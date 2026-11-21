@@ -4,7 +4,6 @@ import re
 import html
 
 
-# تگ‌هایی که تلگرام در parse_mode="HTML" پشتیبانی می‌کنه
 ALLOWED_TAGS = {
     "b", "strong", "i", "em", "u", "ins", "s", "strike", "del",
     "code", "pre", "a", "tg-spoiler", "span",
@@ -12,15 +11,10 @@ ALLOWED_TAGS = {
 
 
 def sanitize_telegram_html(text: str) -> str:
-    """
-    متن رو برای parse_mode="HTML" تلگرام آماده می‌کنه:
-    - تگ‌های غیرمجاز رو حذف یا به معادل متنی تبدیل می‌کنه
-    - کاراکترهای &, <, > که escape نشدن رو escape می‌کنه (به‌جز داخل تگ‌ها)
-    """
+    """متن رو برای parse_mode="HTML" تلگرام آماده می‌کنه."""
     if not text:
         return ""
 
-    # 1) تبدیل تگ‌های ساختاری به متن
     text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
     text = re.sub(r"<p[^>]*>", "\n", text, flags=re.IGNORECASE)
     text = re.sub(r"</p>", "\n", text, flags=re.IGNORECASE)
@@ -34,10 +28,8 @@ def sanitize_telegram_html(text: str) -> str:
     text = re.sub(r"</?h[1-6][^>]*>", "\n", text, flags=re.IGNORECASE)
     text = re.sub(r"<hr\s*/?>", "─" * 20, text, flags=re.IGNORECASE)
 
-    # 2) فقط تگ‌های مجاز رو نگه دار، بقیه رو حذف کن (ولی محتوا رو حفظ کن)
     def _strip_tag(match: re.Match) -> str:
         raw = match.group(0)
-        # استخراج اسم تگ
         tag_match = re.match(r"</?\s*([a-zA-Z][\w-]*)", raw)
         if not tag_match:
             return ""
@@ -47,8 +39,5 @@ def sanitize_telegram_html(text: str) -> str:
         return ""
 
     text = re.sub(r"<[^>]+>", _strip_tag, text)
-
-    # 3) فشرده‌سازی خطوط خالی پشت سر هم
     text = re.sub(r"\n{3,}", "\n\n", text)
-
     return text.strip()

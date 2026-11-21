@@ -11,6 +11,7 @@ GENERAL_COMMANDS = [
     BotCommand("start", "🚀 شروع کار با ربات"),
     BotCommand("help", "📖 راهنمای کامل"),
     BotCommand("menu", "🏠 منوی اصلی"),
+    BotCommand("blackfriday", "🛍️ تخفیف‌های بلک‌فرایدی"),
     BotCommand("search", "🔍 جستجوی هوشمند"),
     BotCommand("translate", "🌐 ترجمه هوشمند"),
     BotCommand("voice", "🎙️ چت صوتی"),
@@ -83,7 +84,6 @@ async def setup_commands(bot: Bot) -> None:
         await bot.set_my_commands(GENERAL_COMMANDS + PRIVATE_COMMANDS, scope=BotCommandScopeAllPrivateChats())
         await bot.set_my_commands(GENERAL_COMMANDS, scope=BotCommandScopeAllGroupChats())
         
-        # منوی اختصاصی برای ادمین‌ها
         for admin_id in settings.admin_ids:
             try:
                 await bot.set_my_commands(

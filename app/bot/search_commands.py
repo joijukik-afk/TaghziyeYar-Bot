@@ -32,7 +32,6 @@ async def cmd_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         agent = get_agent_search_service()
         result_text = await agent.process(query)
 
-        # اگر جواب مستقیم بود (قیمت یا کد تخفیف)، همون رو بفرست
         if result_text.startswith(("💰", "🎟️", "⚠️")):
             await status_msg.edit_text(result_text, parse_mode="HTML")
             return
@@ -57,7 +56,6 @@ async def cmd_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             user_id=update.effective_user.id,
         )
 
-        # 👈 سانیتایز HTML قبل از ارسال
         safe_answer = sanitize_telegram_html(answer)
 
         try:
@@ -65,10 +63,8 @@ async def cmd_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
                 safe_answer, parse_mode="HTML", disable_web_page_preview=True
             )
         except BadRequest:
-            # fallback: بدون HTML
-            plain = sanitize_telegram_html(safe_answer)
             import re as _re
-            plain = _re.sub(r"<[^>]+>", "", plain)
+            plain = _re.sub(r"<[^>]+>", "", safe_answer)
             await status_msg.edit_text(plain, disable_web_page_preview=True)
 
     except Exception as e:

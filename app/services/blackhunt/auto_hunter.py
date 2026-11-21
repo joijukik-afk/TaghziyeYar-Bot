@@ -7,17 +7,14 @@ Responsibilities
 3. Send qualified deals to every registered target group in the DB.
 4. Log everything and NEVER crash the bot if a source is down.
 
-Integration
------------
-    hunter = AutoHunter(bot)
-    await hunter.start()        # background asyncio task
-    ...
-    await hunter.stop()
+Usage in main.py
+----------------
+    from app.services.blackhunt import get_auto_hunter
 
-or (APScheduler):
-    hunter = AutoHunter(bot)
-    scheduler.add_job(hunter.run_once, "interval",
-                      seconds=settings.auto_hunter_interval_seconds)
+    hunter = get_auto_hunter(application.bot)
+    task   = asyncio.create_task(hunter.run_forever(), name="AutoHunter")
+    ...
+    task.cancel()
 """
 
 from __future__ import annotations
@@ -26,7 +23,7 @@ import asyncio
 import html
 import logging
 from datetime import datetime
-from typing import Any, Iterable, List, Optional, Sequence
+from typing import Any, List, Optional, Sequence
 
 from app.config import get_settings
 from app.services.blackhunt.adapters import search_all_adapters
@@ -36,25 +33,20 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# DB helpers (defensive imports so a project layout change can't break us)
+# DB helpers (defensive: work even if project layout changes)
 # ---------------------------------------------------------------------------
 
 async def _load_target_groups() -> List[Any]:
-    """Return every group registered as a target in the DB.
-
-    Supports several common layouts and silently returns [] if no model is
-    found, so AutoHunter keeps working (with a warning) instead of crashing.
-    """
-    # Try the common project layouts one by one.
-    candidates: Sequence[tuple[str, str]] = (
+    """Return every group registered as a target in the DB."""
+    model_candidates: Sequence[tuple[str, str]] = (
         ("app.database.models", "Group"),
         ("app.database.models", "TargetGroup"),
         ("app.database.models", "Chat"),
+        ("app.database.group_models", "Group"),
         ("app.models", "Group"),
         ("app.models.group", "Group"),
     )
-
-    session_makers: Sequence[tuple[str, str]] = (
+    session_candidates: Sequence[tuple[str, str]] = (
         ("app.database.session", "async_session_maker"),
         ("app.database.session", "async_session"),
         ("app.database.session", "SessionLocal"),
@@ -63,7 +55,7 @@ async def _load_target_groups() -> List[Any]:
     )
 
     model = None
-    for module_name, attr in candidates:
+    for module_name, attr in model_candidates:
         try:
             module = __import__(module_name, fromlist=[attr])
             model = getattr(module, attr, None)
@@ -73,13 +65,11 @@ async def _load_target_groups() -> List[Any]:
             continue
 
     if model is None:
-        logger.warning(
-            "AutoHunter: گروه‌ها در دیتابیس پیدا نشدند (مدل Group/TargetGroup موجود نیست)."
-        )
+        logger.warning("AutoHunter: no Group/TargetGroup model found in DB layer.")
         return []
 
     session_factory = None
-    for module_name, attr in session_makers:
+    for module_name, attr in session_candidates:
         try:
             module = __import__(module_name, fromlist=[attr])
             session_factory = getattr(module, attr, None)
@@ -89,11 +79,10 @@ async def _load_target_groups() -> List[Any]:
             continue
 
     if session_factory is None:
-        logger.warning("AutoHunter: session factory در دیتابیس پیدا نشد.")
+        logger.warning("AutoHunter: no session factory found in DB layer.")
         return []
 
     try:
-        # Simple call path: factory() -> async session
         session = session_factory()
         if hasattr(session, "__aenter__"):
             async with session as db:
@@ -106,16 +95,15 @@ async def _load_target_groups() -> List[Any]:
                 result = closer()
                 if asyncio.iscoroutine(result):
                     await result
-        return []
     except Exception as exc:
-        logger.warning("AutoHunter: خواندن گروه‌ها از دیتابیس شکست خورد: %s", exc)
+        logger.warning("AutoHunter: failed to read groups from DB: %s", exc)
         return []
+    return []
 
 
 async def _select_groups(db: Any, model: Any) -> List[Any]:
-    """Run SELECT * on the group model using SQLAlchemy (async or sync)."""
     try:
-        from sqlalchemy import select  # local import to keep module light
+        from sqlalchemy import select
     except Exception:
         return []
 
@@ -142,14 +130,13 @@ async def _select_groups(db: Any, model: Any) -> List[Any]:
             items = rows()
             if asyncio.iscoroutine(items):
                 items = await items
-            return [row[0] if isinstance(row, (tuple, list)) else row for row in (items or [])]
+            return [r[0] if isinstance(r, (tuple, list)) else r for r in (items or [])]
     except Exception as exc:
         logger.debug("AutoHunter select failed: %s", exc)
     return []
 
 
 def _group_chat_id(group: Any) -> Optional[int]:
-    """Extract a usable chat_id from whatever the ORM returns."""
     for attr in ("chat_id", "group_id", "tg_id", "telegram_id", "id"):
         value = getattr(group, attr, None)
         if value is not None:
@@ -179,7 +166,6 @@ def _fmt_price(value: int) -> str:
 
 
 def format_deal(deal: DealResult) -> str:
-    """Render a single deal as a Telegram-friendly HTML message."""
     lines = [
         f"🔥 <b>تخفیف {deal.discount:.0f}٪</b>",
         f"🛍 <b>{html.escape(deal.title or 'بدون عنوان')}</b>",
@@ -202,7 +188,7 @@ def format_deal(deal: DealResult) -> str:
 class AutoHunter:
     """Periodic hunter that scans stores and announces deals."""
 
-    def __init__(self, bot: Any, settings=None):
+    def __init__(self, bot: Any = None, settings=None):
         self.bot = bot
         self.settings = settings or get_settings()
         self._task: Optional[asyncio.Task] = None
@@ -214,16 +200,16 @@ class AutoHunter:
     # -- lifecycle ----------------------------------------------------------
 
     async def start(self) -> None:
+        """Spawn the hunter as a background asyncio task."""
         if not self.settings.auto_hunter_enabled:
             logger.info("AutoHunter is disabled via settings; not starting.")
             return
         if self._task and not self._task.done():
             logger.info("AutoHunter already running.")
             return
-
         self._stop_event = asyncio.Event()
         self._running = True
-        self._task = asyncio.create_task(self._loop(), name="AutoHunter")
+        self._task = asyncio.create_task(self.run_forever(), name="AutoHunter")
         logger.info(
             "AutoHunter started: min_discount=%s%%, interval=%ss",
             self.settings.auto_hunter_min_discount,
@@ -242,22 +228,21 @@ class AutoHunter:
             self._task = None
         logger.info("AutoHunter stopped.")
 
-    @property
-    def is_running(self) -> bool:
-        return self._running
+    async def run_forever(self) -> None:
+        """Main loop. Can be run directly (via asyncio.create_task)."""
+        if not self.settings.auto_hunter_enabled:
+            logger.info("AutoHunter is disabled via settings; run_forever exits.")
+            return
+        if not self._running:
+            self._stop_event = asyncio.Event()
+            self._running = True
 
-    @property
-    def last_report(self) -> Optional[HuntReport]:
-        return self._last_report
-
-    # -- main loop ----------------------------------------------------------
-
-    async def _loop(self) -> None:
         interval = max(30, int(self.settings.auto_hunter_interval_seconds))
-        # Small initial delay so the bot finishes startup cleanly.
+
+        # Small delay so the bot can finish startup cleanly.
         try:
             await asyncio.wait_for(self._stop_event.wait(), timeout=5)
-            return  # stopped before first run
+            return
         except asyncio.TimeoutError:
             pass
 
@@ -266,7 +251,7 @@ class AutoHunter:
                 await self.run_once()
             except asyncio.CancelledError:
                 raise
-            except Exception as exc:  # never let the loop die
+            except Exception as exc:
                 logger.exception("AutoHunter round crashed: %s", exc)
 
             try:
@@ -275,6 +260,14 @@ class AutoHunter:
             except asyncio.TimeoutError:
                 continue
 
+    @property
+    def is_running(self) -> bool:
+        return self._running
+
+    @property
+    def last_report(self) -> Optional[HuntReport]:
+        return self._last_report
+
     # -- a single round -----------------------------------------------------
 
     async def run_once(self) -> HuntReport:
@@ -282,21 +275,23 @@ class AutoHunter:
         report = HuntReport()
         min_discount = self.settings.auto_hunter_min_discount
 
-        # 1. load target groups
+        if not self.bot:
+            logger.warning("AutoHunter has no bot instance; skipping round.")
+            report.finish()
+            self._last_report = report
+            return report
+
         groups = await _load_target_groups()
         report.groups_count = len(groups)
         logger.info("AutoHunter: %d گروه از دیتابیس پیدا شد", len(groups))
-
         if not groups:
             report.finish()
             self._last_report = report
             return report
 
-        # 2. build the search query (you can customize this)
         query = getattr(self.settings, "auto_hunter_query", None) or "تخفیف ویژه"
         max_per_store = self.settings.auto_hunter_max_results_per_store
 
-        # 3. fetch deals from all MCP adapters
         try:
             deals = await search_all_adapters(query, max_per_store)
         except Exception as exc:
@@ -308,7 +303,6 @@ class AutoHunter:
 
         report.deals_found = len(deals)
 
-        # 4. filter by threshold + dedupe against previous rounds
         qualified: List[DealResult] = []
         for deal in deals:
             if deal.product_url in self._seen_urls:
@@ -316,7 +310,6 @@ class AutoHunter:
             if not deal.is_qualified(min_discount):
                 continue
             qualified.append(deal)
-
         report.deals_qualified = len(qualified)
 
         if not qualified:
@@ -327,7 +320,6 @@ class AutoHunter:
             self._last_report = report
             return report
 
-        # 5. broadcast
         for deal in qualified:
             text = format_deal(deal)
             sent_for_deal = 0
@@ -357,7 +349,6 @@ class AutoHunter:
     # -- helpers ------------------------------------------------------------
 
     async def _send(self, chat_id: int, text: str) -> bool:
-        """Send one message, swallowing per-group errors."""
         try:
             await self.bot.send_message(
                 chat_id=chat_id,
@@ -373,13 +364,34 @@ class AutoHunter:
             return False
 
     def reset_seen(self) -> None:
-        """Clear the 'already announced' cache (useful in tests)."""
         self._seen_urls.clear()
 
 
-# Convenience API used by app startup
+# ---------------------------------------------------------------------------
+# Public helpers (what main.py / __init__.py use)
+# ---------------------------------------------------------------------------
+
+# Process-wide singleton
+_auto_hunter_singleton: Optional[AutoHunter] = None
+
+
+def get_auto_hunter(bot: Any = None, settings=None) -> AutoHunter:
+    """Return the process-wide AutoHunter singleton.
+
+    - First call with no bot is allowed (main.py then attaches it later).
+    - Subsequent calls with a bot update the reference.
+    """
+    global _auto_hunter_singleton
+    if _auto_hunter_singleton is None:
+        _auto_hunter_singleton = AutoHunter(bot=bot, settings=settings)
+    elif bot is not None:
+        _auto_hunter_singleton.bot = bot
+    return _auto_hunter_singleton
+
+
 async def start_auto_hunter(bot: Any, settings=None) -> AutoHunter:
-    hunter = AutoHunter(bot, settings=settings)
+    """Convenience: create (or reuse) the singleton and start it."""
+    hunter = get_auto_hunter(bot=bot, settings=settings)
     await hunter.start()
     return hunter
 
@@ -387,5 +399,6 @@ async def start_auto_hunter(bot: Any, settings=None) -> AutoHunter:
 __all__ = [
     "AutoHunter",
     "start_auto_hunter",
+    "get_auto_hunter",
     "format_deal",
 ]

@@ -4,14 +4,7 @@ Sources:
     - MCP servers for Digikala, Torob and SnappShop.
     - Optional Tavily web fallback (only when TAVILY_API_KEY is configured).
 
-All endpoints / toggles / timeouts are read from app.config.get_settings(),
-so switching between localhost and production (Render) does NOT require
-touching this file — only the environment variables.
-
-Note:
-    In a container (e.g. Render) the address "localhost" points to the
-    container itself, NOT to any MCP service. You MUST set MCP_*_URL to the
-    public URL of each MCP server in production.
+Handles both plain JSON and SSE (text/event-stream) MCP responses.
 """
 
 from __future__ import annotations
@@ -76,7 +69,6 @@ MAX_PRICE = 500_000_000
 # ---------------------------------------------------------------------------
 
 def normalize_numbers(text: str) -> str:
-    """Convert Persian / Arabic digits to Latin, drop thousands separators."""
     if not text:
         return ""
     text = str(text).translate(_NUM_TRANS)
@@ -84,7 +76,6 @@ def normalize_numbers(text: str) -> str:
 
 
 def extract_prices(text: str) -> List[int]:
-    """Extract plausible product prices (in Rial/Toman) from free text."""
     if not text:
         return []
     found: List[int] = []
@@ -103,7 +94,6 @@ def extract_prices(text: str) -> List[int]:
 
 
 def store_from_url(url: str) -> str:
-    """Infer the store name from a product URL."""
     if not url:
         return "unknown"
     lowered = url.lower()
@@ -118,7 +108,6 @@ def store_from_url(url: str) -> str:
 
 
 def is_valid_product_url(url: str) -> bool:
-    """Reject obvious non-product / fake URLs before surfacing them to users."""
     if not url or not url.startswith(("http://", "https://")):
         return False
     if any(fake in url for fake in FAKE_ID_HINTS):
@@ -133,7 +122,6 @@ def is_valid_product_url(url: str) -> bool:
 
 
 def _compute_discount(price: int, old_price: int, listed: float) -> float:
-    """Prefer a computed discount when both prices are known; else use listed."""
     try:
         if old_price and price and old_price > price:
             return round((old_price - price) / old_price * 100, 1)
@@ -168,6 +156,63 @@ def _first(*values: Any) -> Any:
 
 
 # ---------------------------------------------------------------------------
+# 🆕 MCP response parser (handles JSON + SSE)
+# ---------------------------------------------------------------------------
+
+def _parse_mcp_response(resp: httpx.Response) -> Any:
+    """
+    Parse an MCP response that may be:
+      - plain JSON (application/json)
+      - SSE stream (text/event-stream), where each event has `data: {json}`
+
+    Returns the parsed Python object, or None if parsing fails.
+    """
+    content_type = (resp.headers.get("content-type") or "").lower()
+
+    # --- SSE branch ---
+    if "text/event-stream" in content_type:
+        events_data: List[str] = []
+        current: List[str] = []
+
+        for line in resp.text.splitlines():
+            if line.startswith("data:"):
+                current.append(line[5:].lstrip())
+            elif line.strip() == "":
+                if current:
+                    events_data.append("\n".join(current))
+                    current = []
+        if current:
+            events_data.append("\n".join(current))
+
+        last_valid: Any = None
+        for block in events_data:
+            if not block:
+                continue
+            try:
+                parsed = json.loads(block)
+            except json.JSONDecodeError:
+                continue
+            last_valid = parsed
+            # Prefer a payload that actually contains a result/error.
+            if isinstance(parsed, dict) and ("result" in parsed or "error" in parsed):
+                return parsed
+
+        return last_valid
+
+    # --- Plain JSON branch ---
+    if not resp.content:
+        return None
+    try:
+        return resp.json()
+    except json.JSONDecodeError:
+        # Some servers return JSON with a wrong content-type; try text fallback.
+        try:
+            return json.loads(resp.text)
+        except Exception:
+            return None
+
+
+# ---------------------------------------------------------------------------
 # MCP Adapter
 # ---------------------------------------------------------------------------
 
@@ -180,6 +225,7 @@ class MCPAdapter:
         self.endpoint = endpoint
         self._session_id: Optional[str] = None
         self._tool_name: Optional[str] = None
+        self._initialized: bool = False
         self._http = httpx.AsyncClient(
             timeout=httpx.Timeout(
                 self.settings.mcp_timeout_seconds,
@@ -188,6 +234,7 @@ class MCPAdapter:
             headers={
                 "User-Agent": USER_AGENT,
                 "Accept": "application/json, text/event-stream",
+                "Content-Type": "application/json",
             },
             follow_redirects=True,
         )
@@ -215,6 +262,9 @@ class MCPAdapter:
 
     async def _initialize(self) -> bool:
         """Best-effort MCP initialize. Returns True if the server responded."""
+        if self._initialized:
+            return True
+
         payload = {
             "jsonrpc": "2.0",
             "id": 1,
@@ -235,10 +285,22 @@ class MCPAdapter:
             logger.debug(f"MCP {self.name} initialize returned {resp.status_code}")
             return False
 
+        if resp.status_code >= 400:
+            logger.warning(
+                f"MCP {self.name} initialize HTTP {resp.status_code}: "
+                f"{resp.text[:150]}"
+            )
+            return False
+
         self._session_id = (
             resp.headers.get("Mcp-Session-Id")
             or resp.headers.get("mcp-session-id")
         )
+
+        # Parse response body (SSE or JSON) — not strictly needed, but validates.
+        parsed = _parse_mcp_response(resp)
+        if parsed is None:
+            logger.debug(f"MCP {self.name} initialize: unparsable body (ignored)")
 
         # Send the "initialized" notification (some servers require it).
         try:
@@ -250,6 +312,7 @@ class MCPAdapter:
         except Exception:
             pass
 
+        self._initialized = True
         return True
 
     async def _discover_tool(self) -> Optional[str]:
@@ -265,9 +328,12 @@ class MCPAdapter:
                 self.endpoint, json=payload, headers=self._session_headers()
             )
             resp.raise_for_status()
-            data = resp.json()
+            data = _parse_mcp_response(resp)
         except Exception as exc:
             logger.debug(f"MCP {self.name} tools/list failed: {exc}")
+            return None
+
+        if not isinstance(data, dict):
             return None
 
         tools = (data.get("result") or {}).get("tools") or []
@@ -275,13 +341,14 @@ class MCPAdapter:
             return None
 
         for tool in tools:
+            if not isinstance(tool, dict):
+                continue
             name = (tool.get("name") or "").lower()
-            if any(keyword in name for keyword in ("search", "query", "find", "product")):
+            if any(kw in name for kw in ("search", "query", "find", "product")):
                 return tool.get("name")
-        return tools[0].get("name")
+        return tools[0].get("name") if isinstance(tools[0], dict) else None
 
     async def _ensure_ready(self) -> bool:
-        """Initialize the session and discover a tool once."""
         if self._tool_name:
             return True
 
@@ -297,17 +364,12 @@ class MCPAdapter:
     async def search(self, query: str, max_results: Optional[int] = None) -> List[DealResult]:
         max_results = max_results or self.settings.auto_hunter_max_results_per_store
 
-        if self.settings.mcp_healthcheck_enabled:
-            if not await self._initialize():
-                logger.warning(
-                    "MCP %s is unreachable (%s). Skipping this source. "
-                    "Tip: set a public MCP_*_URL in production.",
-                    self.name, self.endpoint,
-                )
-                return []
-
         try:
             if not await self._ensure_ready():
+                logger.warning(
+                    "MCP %s is unreachable (%s). Skipping this source.",
+                    self.name, self.endpoint,
+                )
                 return []
 
             raw = await self._call_search_tool(query, max_results)
@@ -319,7 +381,7 @@ class MCPAdapter:
             )
         except (httpx.RequestError, httpx.TimeoutException) as exc:
             logger.warning("MCP %s connection error: %s", self.name, exc)
-        except Exception as exc:  # pragma: no cover - safety net
+        except Exception as exc:
             logger.warning("MCP %s unexpected error: %s", self.name, exc, exc_info=True)
         return []
 
@@ -348,7 +410,13 @@ class MCPAdapter:
                     self.endpoint, json=payload, headers=self._session_headers()
                 )
                 resp.raise_for_status()
-                return resp.json()
+
+                # ✅ FIX: use the SSE-aware parser instead of resp.json()
+                parsed = _parse_mcp_response(resp)
+                if parsed is None:
+                    # Empty or unparsable — treat as no result.
+                    return {}
+                return parsed
             except httpx.HTTPStatusError as exc:
                 last_error = exc
                 if exc.response.status_code in (400, 422):
@@ -393,7 +461,6 @@ class MCPAdapter:
         if not isinstance(result, dict):
             return []
 
-        # Standard MCP: result.content -> [{type: "text", text: "...json..."}]
         content = result.get("content")
         if isinstance(content, list):
             for block in content:
@@ -542,7 +609,6 @@ class TavilyAdapter:
 # ---------------------------------------------------------------------------
 
 def build_adapters(settings=None) -> List[MCPAdapter]:
-    """Build one MCPAdapter per enabled store."""
     settings = settings or get_settings()
     adapters: List[MCPAdapter] = []
     for store in settings.enabled_mcp_stores:
@@ -562,7 +628,6 @@ async def search_all_adapters(
     max_results: Optional[int] = None,
     use_tavily_fallback: bool = True,
 ) -> List[DealResult]:
-    """Search every enabled MCP store in parallel and (optionally) Tavily."""
     settings = get_settings()
     per_store = max_results or settings.auto_hunter_max_results_per_store
 
@@ -588,7 +653,6 @@ async def search_all_adapters(
 
 
 async def close_adapters(adapters: Iterable[MCPAdapter]) -> None:
-    """Close a batch of adapters (use in shutdown hooks if you keep them)."""
     await asyncio.gather(*(a.close() for a in adapters), return_exceptions=True)
 
 

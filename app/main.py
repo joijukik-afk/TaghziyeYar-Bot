@@ -62,7 +62,7 @@ from app.services.card_generator import generate_ai_health_card
 from app.services.image_generator import generate_group_cover
 from app.services.news_service import get_global_magazine_news
 from app.services.agent_search_service import get_agent_search_service
-from app.services.black_friday_service import get_black_friday_service
+from app.services.blackhunt import get_engine, get_auto_hunter  # 👈 NEW
 from app.bot.commands_setup import setup_commands
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=get_settings().log_level)
@@ -553,59 +553,49 @@ async def _process_ai_response(update: Update, context: ContextTypes.DEFAULT_TYP
         persona_data = persona_cmd.PERSONAS.get(persona_key, {})
         persona_prompt = persona_data.get("prompt")
 
-        # 👈 بلوک بلک‌فرایدی — هرگز به AI اجازه ساخت داده جعلی نمی‌ده
+        # 👈 بلوک BLACKHUNT — موتور واقعی
         if persona_key == "black_friday":
             try:
                 replied_text = _extract_replied_text(update, context)
-
-                search_query = f"{replied_text.strip()} {user_text.strip()}".strip() if replied_text else user_text.strip()
-
-                for remove_word in ["تخفیف", "بلک فرایدی", "حراج", "قیمت", "چنده", "چقدره", "پیدا کن", "برام", "میخوام", "می‌خوام"]:
-                    search_query = search_query.replace(remove_word, "")
-                search_query = search_query.strip() or user_text.strip()
+                user_request = user_text.strip()
+                if replied_text:
+                    user_request = f"{replied_text.strip()} — {user_text.strip()}"
 
                 status_msg = await context.bot.send_message(
                     chat_id=chat_id,
-                    text=f"🛍️ در حال جستجوی «{search_query[:50]}» در فروشگاه‌های ایرانی...",
+                    text=(
+                        f"🛍️ در حال شکار تخفیف برای «{user_request[:50]}»...\n\n"
+                        f"🧠 تحلیل درخواست با AI\n"
+                        f"🔍 جستجو در دیجی‌کالا + ترب + وب\n"
+                        f"🧮 اعتبارسنجی قیمت و تخفیف"
+                    ),
                 )
 
-                bf = get_black_friday_service()
-                deals, stats = await bf.search_deals(search_query)
+                engine = get_engine()
+                deals, stats, intent = await engine.search(user_request)
                 await status_msg.delete()
 
-                if deals:
-                    formatted = bf.format_deals(deals, stats, search_query)
-                    await _send_html_safe(
-                        bot=context.bot, chat_id=chat_id, text=formatted, reply_to=message_id
-                    )
-                    chat_history.append({"role": "user", "content": user_text})
-                    chat_history.append({"role": "assistant", "content": formatted})
-                    if len(chat_history) > 10:
-                        chat_history = chat_history[-10:]
-                    await save_user_state(user.id, real_persona_key, chat_history)
-                else:
-                    fail_msg = (
-                        f"🛍️ <b>جستجوی بلک‌فرایدی برای «{search_query}»</b>\n\n"
-                        f"⚠️ متأسفانه در این لحظه محصولی با تخفیف بلک‌فرایدی برای «{search_query}» پیدا نکردم.\n\n"
-                        f"📊 <b>آمار:</b> {stats.stores_searched} فروشگاه بررسی شد | ⏱ {stats.search_duration_seconds} ثانیه\n\n"
-                        f"💡 <b>پیشنهاد:</b>\n"
-                        f"• نام دقیق‌تر یا برند محصول را بنویسید (مثلاً «کراتین مونوهیدرات دایمتیز»)\n"
-                        f"• یا درصد تخفیف دلخواه را ذکر کنید (مثلاً «بالای ۹۰ درصد»)\n"
-                        f"• یا مستقیماً از دستور <code>/search</code> استفاده کنید"
-                    )
-                    await _send_html_safe(
-                        bot=context.bot, chat_id=chat_id, text=fail_msg, reply_to=message_id
-                    )
+                report = await engine.format_report(deals, stats, intent)
+                await _send_html_safe(
+                    bot=context.bot, chat_id=chat_id, text=report, reply_to=message_id
+                )
+
+                chat_history.append({"role": "user", "content": user_text})
+                chat_history.append({"role": "assistant", "content": report})
+                if len(chat_history) > 10:
+                    chat_history = chat_history[-10:]
+                await save_user_state(user.id, real_persona_key, chat_history)
             except Exception as e:
-                logger.error(f"Black Friday search failed: {e}", exc_info=True)
+                logger.error(f"BlackHunt failed: {e}", exc_info=True)
                 try:
                     await context.bot.send_message(
                         chat_id=chat_id,
-                        text="❌ در جستجوی تخفیف خطایی رخ داد. لطفاً بعداً تلاش کنید یا از /search استفاده کنید.",
+                        text="❌ در شکار تخفیف خطایی رخ داد. لطفاً دوباره تلاش کنید یا از /search استفاده کنید.",
                     )
-                except: pass
+                except:
+                    pass
 
-            return  # 👈 خیلی مهم: هرگز به AI fall-through نکن
+            return  # هرگز به AI fall-through نکن
 
         # 👈 ادامه پردازش عادی AI
         text_lower = user_text.lower()
@@ -981,6 +971,14 @@ async def post_init(application: Application) -> None:
         try: first = int(os.environ.get("AUTO_POST_FIRST_DELAY", "600")) 
         except: first = 600
         application.job_queue.run_repeating(_auto_post_job, interval=3600, first=first, name="auto_nutrition_post")
+    
+    # 👈 شروع شکارچی خودکار تخفیف‌های ۹۰٪
+    try:
+        hunter = get_auto_hunter()
+        asyncio.create_task(hunter.run_forever())
+        logger.info("AutoHunter background task started.")
+    except Exception as e:
+        logger.warning(f"AutoHunter not started: {e}")
 
 
 async def post_shutdown(application: Application) -> None: 

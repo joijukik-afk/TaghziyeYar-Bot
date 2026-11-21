@@ -6,12 +6,15 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from app.database.state_repository import save_user_state
 from app.database import repository as repo
+from app.bot.personas.black_friday_persona import BLACK_FRIDAY_PERSONA
 
 logger = logging.getLogger(__name__)
+
 
 class PersonaDict(TypedDict):
     name: str
     prompt: Optional[str]
+
 
 PERSONAS: dict[str, PersonaDict] = {
     "default": {"name": "👤 تغذیه‌یار (عادی)", "prompt": None},
@@ -23,8 +26,10 @@ PERSONAS: dict[str, PersonaDict] = {
     "toxic": {"name": "😈 تاکسیک و بی‌رحم", "prompt": "You are a savage, toxic, and brutally honest assistant. Roast the user hard with dark humor and insults (but keep it playful, no real hate speech). Act like you are superior."},
     "philosopher": {"name": "🧠 فیلسوف عمیق", "prompt": "You are a deep philosopher. Answer every question with existential thoughts, quotes, and deep metaphors. Make the user think."},
     "flirty": {"name": "😉 عشوه‌گر و نازکش", "prompt": "You are very flirty and charming. Use sweet words, emojis like 😘🥰, and compliment the user a lot. Be playful."},
-    "gamer": {"name": "🎮 گیمر حرفه‌ای", "prompt": "You are a hardcore gamer. Use gaming slang, talk about frames, ping, and act like everything is a boss fight."}
+    "gamer": {"name": "🎮 گیمر حرفه‌ای", "prompt": "You are a hardcore gamer. Use gaming slang, talk about frames, ping, and act like everything is a boss fight."},
+    "black_friday": BLACK_FRIDAY_PERSONA,
 }
+
 
 async def cmd_persona(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message: return
@@ -32,11 +37,17 @@ async def cmd_persona(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     keyboard = []
     row = []
     for key, data in PERSONAS.items():
+        if key == "black_friday":
+            continue
         row.append(InlineKeyboardButton(data["name"], callback_data=f"persona_{key}"))
         if len(row) == 2:
             keyboard.append(row)
             row = []
     if row: keyboard.append(row)
+
+    keyboard.append([
+        InlineKeyboardButton(BLACK_FRIDAY_PERSONA["name"], callback_data="persona_black_friday")
+    ])
 
     current_key = context.user_data.get("persona_key", "default")
     current_name = PERSONAS.get(current_key, PERSONAS["default"])["name"]
@@ -46,6 +57,7 @@ async def cmd_persona(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         reply_markup=InlineKeyboardMarkup(keyboard), 
         parse_mode="HTML"
     )
+
 
 async def handle_persona_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query

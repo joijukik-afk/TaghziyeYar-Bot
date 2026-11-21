@@ -30,7 +30,7 @@ class AutoHunter:
 
     async def _get_target_chats(self) -> List[str]:
         """
-        لیست گروه‌های هدف رو برمی‌گردونه:
+        لیست گروه‌های هدف:
         1. گروه‌های ثبت‌شده با /setgroup در دیتابیس
         2. اگه دیتابیس خالی بود، از fallback_chat_id (env) استفاده می‌کنه
         """
@@ -56,6 +56,8 @@ class AutoHunter:
         logger.info(
             f"AutoHunter started: min_discount={self.min_discount}%, interval={self.interval}s"
         )
+        # اولین اجرا با تأخیر کوتاه (برای اطمینان از آماده بودن DB)
+        await asyncio.sleep(10)
         while True:
             try:
                 await self._scan_and_send()
@@ -130,19 +132,21 @@ _auto_hunter = None
 
 
 def get_auto_hunter() -> AutoHunter:
+    """
+    ساخت AutoHunter — توکن از settings (همان توکنی که بات با آن اجرا شده) گرفته می‌شود.
+    این قطعی‌ترین راه است چون اگر settings.telegram_bot_token نباشد، خود بات هم نمی‌تواند اجرا شود.
+    """
     global _auto_hunter
     if _auto_hunter is None:
-        # 👈 توکن رو از اسم‌های مختلف env امتحان می‌کنیم
-        token = (
-            os.getenv("TELEGRAM_BOT_TOKEN")
-            or os.getenv("BOT_TOKEN")
-            or os.getenv("TG_BOT_TOKEN")
-            or ""
-        )
-        if not token:
-            raise RuntimeError("TELEGRAM_BOT_TOKEN در env تنظیم نشده")
+        from app.config import get_settings
+        settings = get_settings()
 
-        # fallback اختیاری — اگه دیتابیس خالی بود
+        # 👈 توکن از settings — همیشه موجود است چون بات با همین اجرا شده
+        token = settings.telegram_bot_token
+        if not token:
+            raise RuntimeError("telegram_bot_token در settings خالی است — این نباید اتفاق بیفتد")
+
+        # fallback اختیاری — اگه دیتابیس خالی بود (معمولاً لازم نیست چون /setgroup داریم)
         fallback = os.getenv("DEAL_CHAT_ID", "").strip()
 
         _auto_hunter = AutoHunter(
@@ -151,4 +155,5 @@ def get_auto_hunter() -> AutoHunter:
             min_discount=90,
             fallback_chat_id=fallback,
         )
+        logger.info("AutoHunter initialized successfully.")
     return _auto_hunter

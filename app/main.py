@@ -62,7 +62,7 @@ from app.services.card_generator import generate_ai_health_card
 from app.services.image_generator import generate_group_cover
 from app.services.news_service import get_global_magazine_news
 from app.services.agent_search_service import get_agent_search_service
-from app.services.blackhunt import get_engine, get_auto_hunter  # 👈 NEW
+from app.services.blackhunt import get_engine, get_auto_hunter
 from app.bot.commands_setup import setup_commands
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=get_settings().log_level)
@@ -537,7 +537,7 @@ async def cmd_remind(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 # ---------------------------------------------------------------------------
-#  Text -> AI (با پشتیبانی کامل از بلک‌فرایدی و ریپلای)
+#  Text -> AI (با پشتیبانی کامل از BLACKHUNT و ریپلای)
 # ---------------------------------------------------------------------------
 async def _process_ai_response(update: Update, context: ContextTypes.DEFAULT_TYPE, user_text: str, reply_context: str):
     user = update.effective_user
@@ -972,16 +972,23 @@ async def post_init(application: Application) -> None:
         except: first = 600
         application.job_queue.run_repeating(_auto_post_job, interval=3600, first=first, name="auto_nutrition_post")
     
-    # 👈 شروع شکارچی خودکار تخفیف‌های ۹۰٪
+    # 👈 شروع شکارچی خودکار تخفیف‌های ۹۰٪ (با لاگ کامل برای دیباگ)
     try:
         hunter = get_auto_hunter()
-        asyncio.create_task(hunter.run_forever())
-        logger.info("AutoHunter background task started.")
+        task = asyncio.create_task(hunter.run_forever())
+        # ذخیره در bot_data برای دسترسی/کنسل در آینده
+        application.bot_data["auto_hunter_task"] = task
+        logger.info("✅ AutoHunter background task started successfully.")
     except Exception as e:
-        logger.warning(f"AutoHunter not started: {e}")
+        logger.error(f"❌ AutoHunter not started: {e}", exc_info=True)
 
 
 async def post_shutdown(application: Application) -> None: 
+    # کنسل کردن AutoHunter قبل از خروج
+    task = application.bot_data.get("auto_hunter_task")
+    if task and not task.done():
+        task.cancel()
+        logger.info("AutoHunter task cancelled.")
     await dispose_engine()
 
 

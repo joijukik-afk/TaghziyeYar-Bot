@@ -23,7 +23,7 @@ from telegram.ext import (
     CommandHandler, ContextTypes, MessageHandler, PollAnswerHandler,
     TypeHandler, ApplicationHandlerStop, filters,
 )
-from telegram.request import HTTPXRequest # 👈 برای تایم اوت
+from telegram.request import HTTPXRequest
 
 # --- Core Imports ---
 from app.config import get_settings
@@ -62,11 +62,39 @@ from app.services.card_generator import generate_ai_health_card
 from app.services.image_generator import generate_group_cover
 from app.services.news_service import get_global_magazine_news
 from app.services.agent_search_service import get_agent_search_service
+from app.services.black_friday_service import get_black_friday_service
 from app.bot.commands_setup import setup_commands
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=get_settings().log_level)
 logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
+
+
+# ---------------------------------------------------------------------------
+#  🛍️ Black Friday Helpers
+# ---------------------------------------------------------------------------
+BLACK_FRIDAY_KEYWORDS = [
+    "بلک فرایدی", "بلک‌فرایدی", "black friday", "جمعه سیاه", "حراج",
+    "تخفیف", "آف", "کد تخفیف", "حراج پاییزه", "بانی جمعه", "بلک فرایدی ۱۴۰۵",
+]
+
+
+def _is_black_friday_period() -> bool:
+    """بازه میلادی معادل ۱ تا ۱۰ آذر ۱۴۰۵."""
+    now = datetime.datetime.now()
+    return datetime.datetime(2026, 11, 22) <= now <= datetime.datetime(2026, 12, 1)
+
+
+def _should_auto_black_friday(user_text: str, replied_text: str = "") -> bool:
+    """تشخیص خودکار نیاز به کارشناس بلک‌فرایدی."""
+    combined = (user_text + " " + replied_text).lower()
+    if any(kw in combined for kw in BLACK_FRIDAY_KEYWORDS):
+        return True
+    if _is_black_friday_period():
+        shopping_kw = ["قیمت", "خرید", "تخفیف", "حراج", "کد تخفیف"]
+        return any(kw in combined for kw in shopping_kw)
+    return False
+
 
 # ---------------------------------------------------------------------------
 #  🚨 Global Error Handler
@@ -88,6 +116,7 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
             except Exception:
                 pass
 
+
 # ---------------------------------------------------------------------------
 #  Helper: Dynamic Admin Check & Monitoring
 # ---------------------------------------------------------------------------
@@ -95,6 +124,7 @@ async def is_admin_user(user_id: int) -> bool:
     if get_settings().is_admin(user_id): return True
     dyn_admins = await repo.get_dynamic_admins()
     return user_id in dyn_admins
+
 
 async def notify_owner(context: ContextTypes.DEFAULT_TYPE, actor: User, action: str):
     settings = get_settings()
@@ -111,6 +141,7 @@ async def notify_owner(context: ContextTypes.DEFAULT_TYPE, actor: User, action: 
     except Exception as e:
         logger.error(f"Failed to send monitor msg to owner: {e}")
 
+
 # ---------------------------------------------------------------------------
 #  🚫 Global Ban System
 # ---------------------------------------------------------------------------
@@ -119,11 +150,13 @@ async def check_user_ban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if user and await repo.is_user_banned(user.id): 
         raise ApplicationHandlerStop
 
+
 async def save_member_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     chat = update.effective_chat
     if user and chat and chat.type in (ChatType.GROUP, ChatType.SUPERGROUP):
         await repo.save_group_member(chat.id, user.id, user.first_name or "کاربر", user.username)
+
 
 async def track_new_members(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat = update.effective_chat
@@ -132,6 +165,7 @@ async def track_new_members(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         for member in update.message.new_chat_members:
             if member.is_bot: continue
             await repo.save_group_member(chat.id, member.id, member.first_name or "کاربر", member.username)
+
 
 # ---------------------------------------------------------------------------
 #  Health server (For Render)
@@ -143,10 +177,12 @@ class _HealthHandler(BaseHTTPRequestHandler):
     def do_HEAD(self): self.send_response(200); self.end_headers()
     def log_message(self, format, *args): pass
 
+
 def _start_health_server() -> None:
     port = int(os.environ.get("PORT", "8080"))
     server = HTTPServer(("0.0.0.0", port), _HealthHandler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
+
 
 # ---------------------------------------------------------------------------
 #  🤖 Auto-post Job
@@ -170,11 +206,13 @@ async def _auto_post_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     except Exception as e:
         logger.error("❌ خطا در _auto_post_job: %s", e, exc_info=True)
 
+
 # ---------------------------------------------------------------------------
 #  Helpers
 # ---------------------------------------------------------------------------
 def is_group(update: Update) -> bool:
     return update.effective_chat and update.effective_chat.type in (ChatType.GROUP, ChatType.SUPERGROUP)
+
 
 def is_for_me(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     if not is_group(update): return True
@@ -189,12 +227,14 @@ def is_for_me(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     replied = update.message.reply_to_message
     return replied and replied.from_user and replied.from_user.id == context.bot.id
 
+
 def clean_mention(text: str, bot_username: str) -> str: 
     text = text.replace(f"@{bot_username}", "").strip()
     bot_names = ["تغذیه‌یار", "تغذیه یار", "taghziyeyar", "taghziye yar", "تغذیهیار"]
     for name in bot_names:
         text = text.replace(name, "")
     return text.strip()
+
 
 def remove_leading_greeting(text: str) -> str:
     if not text: return text
@@ -204,8 +244,10 @@ def remove_leading_greeting(text: str) -> str:
         return "چطور می‌تونم کمکت کنم؟" 
     return cleaned[0].upper() + cleaned[1:]
 
+
 def main_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🛍️ بلک‌فرایدی", callback_data="menu_black_friday")],
         [InlineKeyboardButton("🎭 تغییر شخصیت", callback_data="menu_persona"), InlineKeyboardButton("👁️ تحلیل عکس", callback_data="menu_vision")],
         [InlineKeyboardButton("🎨 تصویرسازی AI", callback_data="menu_imagine"), InlineKeyboardButton("🔍 جستجوی هوشمند", callback_data="menu_search")],
         [InlineKeyboardButton("🌐 ترجمه", callback_data="menu_translate"), InlineKeyboardButton("🔊 تبدیل متن به صدا", callback_data="menu_tts")],
@@ -221,19 +263,22 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("💬 سوال از AI", callback_data="menu_ai"), InlineKeyboardButton("📖 راهنما", callback_data="menu_help")],
     ])
 
+
 async def ensure_user_and_group(update: Update) -> None:
     user, chat = update.effective_user, update.effective_chat
     if user: await repo.get_or_create_user(telegram_id=user.id, username=user.username, first_name=user.first_name, last_name=user.last_name)
     if chat and chat.type in (ChatType.GROUP, ChatType.SUPERGROUP): await repo.get_or_create_group(chat_id=chat.id, title=chat.title)
 
+
 async def _send_html_safe(bot, chat_id: int, text: str, reply_to: int | None = None) -> None:
     try: 
-        await bot.send_message(chat_id=chat_id, text=with_signature(text), parse_mode="HTML", reply_to_message_id=reply_to)
+        await bot.send_message(chat_id=chat_id, text=with_signature(text), parse_mode="HTML", reply_to_message_id=reply_to, disable_web_page_preview=True)
     except BadRequest: 
         try: 
             clean_text = re.sub(r"<[^>]+>", "", text)
             await bot.send_message(chat_id=chat_id, text=with_signature(clean_text), reply_to_message_id=reply_to)
         except Exception: pass
+
 
 # ---------------------------------------------------------------------------
 #  Commands: Core
@@ -254,24 +299,60 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     await update.message.reply_text(with_signature(msg.WELCOME), reply_markup=main_menu_keyboard(), parse_mode="HTML")
 
+
 @rate_limited
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     if update.message: await update.message.reply_text(with_signature(msg.HELP), parse_mode="HTML")
+
 
 @rate_limited
 async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     if update.message: await update.message.reply_text(with_signature(msg.MENU_TEXT), reply_markup=main_menu_keyboard(), parse_mode="HTML")
 
+
 async def cmd_about(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message: await update.message.reply_text(with_signature(msg.ABOUT), parse_mode="HTML")
+
 
 async def cmd_privacy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message: await update.message.reply_text(with_signature(msg.PRIVACY), parse_mode="HTML")
 
+
 async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message: await update.message.reply_text(with_signature(msg.SETTINGS_TEXT), parse_mode="HTML")
+
+
+# ---------------------------------------------------------------------------
+#  🛍️ Black Friday Command
+# ---------------------------------------------------------------------------
+@rate_limited
+async def cmd_blackfriday(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """فعال‌سازی دستی کارشناس بلک‌فرایدی."""
+    await ensure_user_and_group(update)
+    context.user_data["override_persona"] = "black_friday"
+    
+    text = (
+        "🛍️ <b>کارشناس بلک‌فرایدی فعال شد!</b>\n\n"
+        "حالا هر محصولی که می‌خوای رو بفرست تا بهترین تخفیف‌های بلک‌فرایدی رو برات پیدا کنم.\n"
+        "می‌تونی روی پیام یک محصول هم <b>ریپلای</b> کنی تا دقیق‌تر جستجو کنم.\n\n"
+        "📅 <b>تاریخ‌های مهم:</b>\n"
+        "• شروع حراج‌های ایران: <b>۱ آذر ۱۴۰۵</b>\n"
+        "• روز اصلی بلک‌فرایدی: <b>جمعه ۶ آذر ۱۴۰۵</b>\n"
+        "• پایان معمول: <b>۱۰ آذر ۱۴۰۵</b>\n\n"
+        "📍 فروشگاه‌های تحت پوشش: دیجی‌کالا، اسنپ‌شاپ، تکنولایف، بانی‌مد، خانومی، جانبی، دیجی‌استایل، ترب.\n\n"
+        "💡 <i>این شخصیت تا پیام بعدی شما فعال است و بعد از آن به شخصیت قبلی برمی‌گردید.</i>"
+    )
+    
+    if update.callback_query:
+        try:
+            await update.callback_query.edit_message_text(with_signature(text), parse_mode="HTML", disable_web_page_preview=True)
+        except BadRequest:
+            await update.callback_query.message.reply_text(with_signature(text), parse_mode="HTML", disable_web_page_preview=True)
+    elif update.message:
+        await update.message.reply_text(with_signature(text), parse_mode="HTML", disable_web_page_preview=True)
+
 
 @rate_limited
 async def cmd_tagall(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -329,6 +410,7 @@ async def cmd_tagall(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     try: await status_msg.delete()
     except: pass
 
+
 @private_only
 @rate_limited
 async def cmd_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -348,6 +430,7 @@ async def cmd_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if profile.goal: lines.append(f"• هدف: {profile.goal}")
     lines.append("\n✏️ برای ویرایش، /setup رو بزن.")
     await update.message.reply_text(with_signature("\n".join(lines)), parse_mode="HTML")
+
 
 @private_only
 @rate_limited
@@ -381,14 +464,17 @@ async def cmd_mycard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         logger.error("Error generating card: %s", e, exc_info=True)
         await status_msg.edit_text("❌ متأسفانه خطایی پیش آمد. لطفاً بعداً تلاش کنید.")
 
+
 @private_only
 @rate_limited
 async def cmd_setup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     await wizard.start_setup(update, context)
 
+
 async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message: context.user_data["awaiting_weight"] = False; await wizard.cancel_setup(update, context)
+
 
 @private_only
 @rate_limited
@@ -437,12 +523,14 @@ async def cmd_shopping(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 @rate_limited
 async def cmd_food(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None: await ensure_user_and_group(update); await mcmd.cmd_food(update, context)
 
+
 # ---------------------------------------------------------------------------
 #  Smart Reminder
 # ---------------------------------------------------------------------------
 async def _send_reminder(context: ContextTypes.DEFAULT_TYPE) -> None:
     job = context.job
     await context.bot.send_message(chat_id=job.chat_id, text=job.data["text"])
+
 
 async def cmd_remind(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message: return
@@ -463,8 +551,9 @@ async def cmd_remind(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     context.job_queue.run_once(_send_reminder, when=seconds, chat_id=update.effective_chat.id, data={"text": f"⏰ <b>یادآوری:</b>\n{text}"})
     await update.message.reply_text(f"✅ ثبت شد! بعد از {amount}{unit} یادآوری می‌کنم.")
 
+
 # ---------------------------------------------------------------------------
-#  Text -> AI (Real Search)
+#  Text -> AI (با پشتیبانی از بلک‌فرایدی و ریپلای)
 # ---------------------------------------------------------------------------
 async def _process_ai_response(update: Update, context: ContextTypes.DEFAULT_TYPE, user_text: str, reply_context: str):
     user = update.effective_user
@@ -472,12 +561,46 @@ async def _process_ai_response(update: Update, context: ContextTypes.DEFAULT_TYP
     message_id = update.message.message_id
     
     try:
+        override_persona = context.user_data.pop("override_persona", None)
         state = await get_user_state(user.id)
+        
+        real_persona_key = state.persona_key if state else "default"
+        persona_key = override_persona if override_persona else real_persona_key
+        
         chat_history = json.loads(state.chat_history_json) if state else []
-        persona_key = state.persona_key if state else "default"
         persona_data = persona_cmd.PERSONAS.get(persona_key, {})
         persona_prompt = persona_data.get("prompt")
-        
+
+        # 👈 اگر شخصیت بلک‌فرایدی فعال است، جستجوی هدفمند تخفیف انجام بده
+        if persona_key == "black_friday":
+            try:
+                replied_text = ""
+                if update.message.reply_to_message and update.message.reply_to_message.text:
+                    replied_text = update.message.reply_to_message.text
+                
+                search_query = user_text if not replied_text else f"{replied_text} {user_text}"
+                search_query = search_query.strip()
+                
+                status_msg = await context.bot.send_message(
+                    chat_id=chat_id, text="🛍️ در حال جستجوی تخفیف‌های بلک‌فرایدی..."
+                )
+                bf = get_black_friday_service()
+                deals = await bf.search_deals(search_query)
+                await status_msg.delete()
+                
+                if deals:
+                    formatted = bf.format_deals(
+                        deals, title=f"تخفیف‌های بلک‌فرایدی برای «{search_query[:60]}»"
+                    )
+                    await _send_html_safe(bot=context.bot, chat_id=chat_id, text=formatted, reply_to=message_id)
+                    chat_history.append({"role": "user", "content": user_text})
+                    chat_history.append({"role": "assistant", "content": formatted})
+                    if len(chat_history) > 10: chat_history = chat_history[-10:]
+                    await save_user_state(user.id, real_persona_key, chat_history)
+                    return
+            except Exception as e:
+                logger.error(f"Black Friday search failed: {e}", exc_info=True)
+
         text_lower = user_text.lower()
         voice_triggers = ["ویس", "صوتی", "صدا", "بخون", "ضبط کن"]
         is_voice_request = any(w in text_lower for w in voice_triggers)
@@ -538,7 +661,7 @@ async def _process_ai_response(update: Update, context: ContextTypes.DEFAULT_TYP
         chat_history.append({"role": "user", "content": clean_text})
         chat_history.append({"role": "assistant", "content": reply})
         if len(chat_history) > 10: chat_history = chat_history[-10:]
-        await save_user_state(user.id, persona_key, chat_history)
+        await save_user_state(user.id, real_persona_key, chat_history)
 
         if is_voice_request and reply:
             await voice_cmd.generate_and_send_voice(context.bot, chat_id, reply, voice_type)
@@ -550,6 +673,7 @@ async def _process_ai_response(update: Update, context: ContextTypes.DEFAULT_TYP
         try:
             await context.bot.send_message(chat_id=chat_id, text="❌ متأسفانه در پردازش درخواست شما خطایی رخ داد. لطفاً بعداً تلاش کنید.")
         except: pass
+
 
 @rate_limited
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -579,19 +703,32 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     else:
         if await wizard.handle_setup_input(update, context) or await pcmd.handle_weight_input(update, context): return
 
+    replied_text = ""
+    if update.message.reply_to_message and update.message.reply_to_message.text:
+        replied_text = update.message.reply_to_message.text
+
+    if _should_auto_black_friday(original_text, replied_text):
+        context.user_data["override_persona"] = "black_friday"
+
     reply_context = ""
     if update.message.reply_to_message:
         replied_user = update.message.reply_to_message.from_user
         if replied_user:
             reply_context = f"[کاربر در حال ریپلای کردن به {replied_user.first_name} است] "
+        if replied_text:
+            reply_context += f"[متن پیام ریپلای‌شده: {replied_text[:500]}] "
 
     asyncio.create_task(_process_ai_response(update, context, original_text, reply_context))
+
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     if not query: return
     await query.answer(); data = query.data or ""
     
+    if data == "menu_black_friday":
+        await cmd_blackfriday(update, context)
+        return
     if data == "menu_persona": await persona_cmd.cmd_persona(update, context); return
     if data == "menu_vision":
         await query.edit_message_text(with_signature("👁️ <b>تحلیل عکس</b>\n\nیک عکس بفرست و بزن:\n<code>/vision</code>\n<code>/roast</code>\n<code>/ocr</code>\n<code>/food</code>\n<code>/barcode</code>"), parse_mode="HTML"); return
@@ -624,6 +761,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     
     await query.edit_message_text(with_signature(text), parse_mode="HTML")
 
+
 # ---------------------------------------------------------------------------
 #  Admin Management Commands
 # ---------------------------------------------------------------------------
@@ -648,6 +786,7 @@ async def cmd_addadmin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await repo.add_dynamic_admin(target_id)
     await update.message.reply_text(f"✅ کاربر <b>{target_name}</b> ادمین شد.", parse_mode="HTML")
 
+
 async def cmd_removeadmin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     if not user or not get_settings().is_admin(user.id): 
@@ -667,6 +806,7 @@ async def cmd_removeadmin(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await repo.remove_dynamic_admin(target_id)
     await update.message.reply_text(f"✅ دسترسی ادمینی برداشته شد.", parse_mode="HTML")
 
+
 async def cmd_admins(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     if not user or not get_settings().is_admin(user.id): 
@@ -676,6 +816,7 @@ async def cmd_admins(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     text = "👑 <b>لیست ادمین‌های ربات:</b>\n\n"
     for adm in dyn_admins: text += f"• <code>{adm}</code>\n"
     await update.message.reply_text(text, parse_mode="HTML")
+
 
 async def cmd_advertise(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
@@ -704,6 +845,7 @@ async def cmd_advertise(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         except Exception: fail += 1
     await status_msg.edit_text(f"✅ تبلیغ به {success} گروه ارسال شد.\n❌ {fail} ناموفق.")
 
+
 async def cmd_broadcast_covers(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     if not user or not await is_admin_user(user.id): return
@@ -719,6 +861,7 @@ async def cmd_broadcast_covers(update: Update, context: ContextTypes.DEFAULT_TYP
         except Forbidden: await repo.deactivate_group(chat_id=g.chat_id); dead += 1
         except Exception: pass
     await status_msg.edit_text(f"✅ کاور برای {success} گروه ارسال شد.\n🧹 {dead} گروه حذف شد.")
+
 
 async def cmd_leave_group(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user, chat = update.effective_user, update.effective_chat
@@ -737,6 +880,7 @@ async def cmd_leave_group(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         try: await context.bot.leave_chat(chat_id=chat.id); await repo.deactivate_group(chat_id=chat.id)
         except: pass
 
+
 async def cmd_send_to_group(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     if not user or not await is_admin_user(user.id): return
@@ -750,6 +894,7 @@ async def cmd_send_to_group(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await update.message.reply_text(f"✅ پیام ارسال شد.")
     except Forbidden: await repo.deactivate_group(chat_id=target.chat_id); await update.message.reply_text(f"❌ ربات در گروه نیست.")
     except Exception as e: await update.message.reply_text(f"❌ خطا: {e}")
+
 
 async def cmd_global_news(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
@@ -771,6 +916,7 @@ async def cmd_global_news(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     except Exception as e:
         try: await context.bot.send_message(chat_id=target.chat_id, text=text, parse_mode="HTML"); await status_msg.edit_text("✅ خبر ارسال شد (بدون عکس).")
         except Exception as e2: await status_msg.edit_text(f"❌ خطا: {e2}")
+
 
 async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
@@ -796,6 +942,7 @@ async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         except: pass
     except Exception as e: await update.message.reply_text(f"❌ خطای دیتابیسی: `{e}`", parse_mode="HTML")
 
+
 async def cmd_unban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     if not user or not await is_admin_user(user.id): return
@@ -811,6 +958,7 @@ async def cmd_unban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await repo.unban_user(target_id)
     await update.message.reply_text(f"✅ مسدودی `{target_id}` برداشته شد.", parse_mode="HTML")
 
+
 async def cmd_forcepost(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     if not user or not await is_admin_user(user.id): return
@@ -824,6 +972,7 @@ async def cmd_forcepost(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             await status.edit_text("⚠️ متأسفانه پست ساخته نشد.")
     except Exception as e:
         await status.edit_text(f"❌ خطای فنی: {e}")
+
 
 # ---------------------------------------------------------------------------
 #  Lifecycle & Setup
@@ -847,13 +996,14 @@ async def post_init(application: Application) -> None:
         except: first = 600
         application.job_queue.run_repeating(_auto_post_job, interval=3600, first=first, name="auto_nutrition_post")
 
+
 async def post_shutdown(application: Application) -> None: 
     await dispose_engine()
+
 
 def build_application() -> Application:
     settings = get_settings()
     
-    # 👈 تنظیمات شبکه با تایم‌اوت بالاتر برای جلوگیری از کرش در سرورهای کند
     custom_request = HTTPXRequest(
         connection_pool_size=8,
         connect_timeout=20.0,
@@ -884,6 +1034,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("profile", cmd_profile)); app.add_handler(CommandHandler("mycard", cmd_mycard))
     app.add_handler(CommandHandler("setup", cmd_setup)); app.add_handler(CommandHandler("cancel", cmd_cancel))
     app.add_handler(CommandHandler("tagall", cmd_tagall))
+    app.add_handler(CommandHandler("blackfriday", cmd_blackfriday))
     
     # --- Tools Commands ---
     app.add_handler(CommandHandler("tts", tts_cmd.cmd_tts))
@@ -940,6 +1091,7 @@ def build_application() -> Application:
     app.add_error_handler(on_error)
     return app
 
+
 def main() -> None:
     settings = get_settings()
     application = build_application()
@@ -960,6 +1112,7 @@ def main() -> None:
         logger.info("Starting via POLLING...")
         _start_health_server()
         application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+
 
 if __name__ == "__main__":
     main()

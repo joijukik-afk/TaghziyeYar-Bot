@@ -1,21 +1,4 @@
-"""AutoHunter — background service that hunts 90%+ discounts automatically.
-
-Responsibilities
-----------------
-1. Query every configured MCP store (Digikala / Torob / SnappShop).
-2. Filter deals by minimum discount threshold (from settings).
-3. Send qualified deals to every registered target group in the DB.
-4. Log everything and NEVER crash the bot if a source is down.
-
-Usage in main.py
-----------------
-    from app.services.blackhunt import get_auto_hunter
-
-    hunter = get_auto_hunter(application.bot)
-    task   = asyncio.create_task(hunter.run_forever(), name="AutoHunter")
-    ...
-    task.cancel()
-"""
+"""AutoHunter — background service that hunts 90%+ discounts automatically."""
 
 from __future__ import annotations
 
@@ -33,11 +16,31 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# DB helpers (defensive: work even if project layout changes)
+# DB helpers
 # ---------------------------------------------------------------------------
 
 async def _load_target_groups() -> List[Any]:
-    """Return every group registered as a target in the DB."""
+    """Return every group registered as a target in the DB.
+
+    Primary path: use app.database.repository.list_all_groups() — the same
+    function main.py uses everywhere. That's the canonical way to read groups.
+    """
+    # ---- Primary: repository (matches main.py usage) ----
+    try:
+        from app.database import repository as repo
+        groups = await repo.list_all_groups()
+        if groups:
+            logger.info("AutoHunter: %d گروه از طریق repository پیدا شد", len(groups))
+            return list(groups)
+        logger.info("AutoHunter: repository برگرداند 0 گروه")
+        return []
+    except Exception as exc:
+        logger.warning(
+            "AutoHunter: repo.list_all_groups failed (%s). "
+            "Falling back to session-factory lookup.", exc,
+        )
+
+    # ---- Fallback: legacy session-factory lookup ----
     model_candidates: Sequence[tuple[str, str]] = (
         ("app.database.models", "Group"),
         ("app.database.models", "TargetGroup"),
@@ -197,10 +200,7 @@ class AutoHunter:
         self._last_report: Optional[HuntReport] = None
         self._seen_urls: set[str] = set()
 
-    # -- lifecycle ----------------------------------------------------------
-
     async def start(self) -> None:
-        """Spawn the hunter as a background asyncio task."""
         if not self.settings.auto_hunter_enabled:
             logger.info("AutoHunter is disabled via settings; not starting.")
             return
@@ -229,7 +229,6 @@ class AutoHunter:
         logger.info("AutoHunter stopped.")
 
     async def run_forever(self) -> None:
-        """Main loop. Can be run directly (via asyncio.create_task)."""
         if not self.settings.auto_hunter_enabled:
             logger.info("AutoHunter is disabled via settings; run_forever exits.")
             return
@@ -239,7 +238,6 @@ class AutoHunter:
 
         interval = max(30, int(self.settings.auto_hunter_interval_seconds))
 
-        # Small delay so the bot can finish startup cleanly.
         try:
             await asyncio.wait_for(self._stop_event.wait(), timeout=5)
             return
@@ -268,10 +266,7 @@ class AutoHunter:
     def last_report(self) -> Optional[HuntReport]:
         return self._last_report
 
-    # -- a single round -----------------------------------------------------
-
     async def run_once(self) -> HuntReport:
-        """Execute one hunt round and return a summary report."""
         report = HuntReport()
         min_discount = self.settings.auto_hunter_min_discount
 
@@ -346,8 +341,6 @@ class AutoHunter:
         )
         return report
 
-    # -- helpers ------------------------------------------------------------
-
     async def _send(self, chat_id: int, text: str) -> bool:
         try:
             await self.bot.send_message(
@@ -368,19 +361,13 @@ class AutoHunter:
 
 
 # ---------------------------------------------------------------------------
-# Public helpers (what main.py / __init__.py use)
+# Public helpers
 # ---------------------------------------------------------------------------
 
-# Process-wide singleton
 _auto_hunter_singleton: Optional[AutoHunter] = None
 
 
 def get_auto_hunter(bot: Any = None, settings=None) -> AutoHunter:
-    """Return the process-wide AutoHunter singleton.
-
-    - First call with no bot is allowed (main.py then attaches it later).
-    - Subsequent calls with a bot update the reference.
-    """
     global _auto_hunter_singleton
     if _auto_hunter_singleton is None:
         _auto_hunter_singleton = AutoHunter(bot=bot, settings=settings)
@@ -390,7 +377,6 @@ def get_auto_hunter(bot: Any = None, settings=None) -> AutoHunter:
 
 
 async def start_auto_hunter(bot: Any, settings=None) -> AutoHunter:
-    """Convenience: create (or reuse) the singleton and start it."""
     hunter = get_auto_hunter(bot=bot, settings=settings)
     await hunter.start()
     return hunter

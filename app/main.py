@@ -965,29 +965,36 @@ async def post_init(application: Application) -> None:
     logger.info("Bot started as @%s", me.username)
     try:
         await setup_commands(application.bot)
-    except Exception as e: 
-        logger.warning(f"Commands setup failed: {e}")
+    except Exception as e:
+        logger.warning("Commands setup failed: %s", e)
+
     if application.job_queue is not None:
-        try: first = int(os.environ.get("AUTO_POST_FIRST_DELAY", "600")) 
-        except: first = 600
-        application.job_queue.run_repeating(_auto_post_job, interval=3600, first=first, name="auto_nutrition_post")
-    
-    # 👈 شروع شکارچی خودکار تخفیف‌های ۹۰٪ (با لاگ کامل برای دیباگ)
+        try:
+            first = int(os.environ.get("AUTO_POST_FIRST_DELAY", "600"))
+        except Exception:
+            first = 600
+        application.job_queue.run_repeating(
+            _auto_post_job, interval=3600, first=first, name="auto_nutrition_post"
+        )
+
+    # 👈 AutoHunter — singleton را می‌سازیم و bot واقعی را به آن می‌دهیم
     try:
-        hunter = get_auto_hunter()
-        task = asyncio.create_task(hunter.run_forever())
-        # ذخیره در bot_data برای دسترسی/کنسل در آینده
+        hunter = get_auto_hunter(application.bot)
+        task = asyncio.create_task(hunter.run_forever(), name="AutoHunter")
         application.bot_data["auto_hunter_task"] = task
         logger.info("✅ AutoHunter background task started successfully.")
     except Exception as e:
-        logger.error(f"❌ AutoHunter not started: {e}", exc_info=True)
+        logger.error("❌ AutoHunter not started: %s", e, exc_info=True)
 
 
-async def post_shutdown(application: Application) -> None: 
-    # کنسل کردن AutoHunter قبل از خروج
+async def post_shutdown(application: Application) -> None:
     task = application.bot_data.get("auto_hunter_task")
     if task and not task.done():
         task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
         logger.info("AutoHunter task cancelled.")
     await dispose_engine()
 

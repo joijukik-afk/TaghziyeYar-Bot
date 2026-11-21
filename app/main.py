@@ -96,6 +96,30 @@ def _should_auto_black_friday(user_text: str, replied_text: str = "") -> bool:
     return False
 
 
+def _extract_replied_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> str:
+    """
+    استخراج متن پیام ریپلای‌شده با فیلترهای ایمنی:
+    - نباید از خودِ ربات باشد
+    - نباید طولانی باشد (>۳۰۰ کاراکتر)
+    - نباید پیام خوش‌آمد بلک‌فرایدی باشد
+    """
+    if not update.message or not update.message.reply_to_message:
+        return ""
+    replied_msg = update.message.reply_to_message
+    if not replied_msg.text:
+        return ""
+    replied_user = replied_msg.from_user
+    candidate = replied_msg.text
+    if (
+        replied_user
+        and replied_user.id != context.bot.id
+        and len(candidate) < 300
+        and "کارشناس بلک‌فرایدی فعال شد" not in candidate
+    ):
+        return candidate
+    return ""
+
+
 # ---------------------------------------------------------------------------
 #  🚨 Global Error Handler
 # ---------------------------------------------------------------------------
@@ -537,9 +561,8 @@ async def _process_ai_response(update: Update, context: ContextTypes.DEFAULT_TYP
         # 👈 بلوک بلک‌فرایدی — هرگز به AI اجازه ساخت داده جعلی نمی‌ده
         if persona_key == "black_friday":
             try:
-                replied_text = ""
-                if update.message.reply_to_message and update.message.reply_to_message.text:
-                    replied_text = update.message.reply_to_message.text
+                # 👈 استخراج ایمن متن ریپلای (فقط پیام‌های کاربر، نه خود ربات)
+                replied_text = _extract_replied_text(update, context)
 
                 search_query = f"{replied_text.strip()} {user_text.strip()}".strip() if replied_text else user_text.strip()
 
@@ -681,9 +704,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     else:
         if await wizard.handle_setup_input(update, context) or await pcmd.handle_weight_input(update, context): return
 
-    replied_text = ""
-    if update.message.reply_to_message and update.message.reply_to_message.text:
-        replied_text = update.message.reply_to_message.text
+    # 👈 استخراج ایمن متن ریپلای (فقط پیام‌های کاربر، نه خود ربات)
+    replied_text = _extract_replied_text(update, context)
 
     if _should_auto_black_friday(original_text, replied_text):
         context.user_data["override_persona"] = "black_friday"

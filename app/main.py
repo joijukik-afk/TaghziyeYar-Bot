@@ -97,12 +97,7 @@ def _should_auto_black_friday(user_text: str, replied_text: str = "") -> bool:
 
 
 def _extract_replied_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> str:
-    """
-    استخراج متن پیام ریپلای‌شده با فیلترهای ایمنی:
-    - نباید از خودِ ربات باشد
-    - نباید طولانی باشد (>۳۰۰ کاراکتر)
-    - نباید پیام خوش‌آمد بلک‌فرایدی باشد
-    """
+    """استخراج ایمن متن پیام ریپلای‌شده."""
     if not update.message or not update.message.reply_to_message:
         return ""
     replied_msg = update.message.reply_to_message
@@ -561,7 +556,6 @@ async def _process_ai_response(update: Update, context: ContextTypes.DEFAULT_TYP
         # 👈 بلوک بلک‌فرایدی — هرگز به AI اجازه ساخت داده جعلی نمی‌ده
         if persona_key == "black_friday":
             try:
-                # 👈 استخراج ایمن متن ریپلای (فقط پیام‌های کاربر، نه خود ربات)
                 replied_text = _extract_replied_text(update, context)
 
                 search_query = f"{replied_text.strip()} {user_text.strip()}".strip() if replied_text else user_text.strip()
@@ -592,12 +586,12 @@ async def _process_ai_response(update: Update, context: ContextTypes.DEFAULT_TYP
                 else:
                     fail_msg = (
                         f"🛍️ <b>جستجوی بلک‌فرایدی برای «{search_query}»</b>\n\n"
-                        f"⚠️ متأسفانه در این لحظه محصولی با تخفیف بلک‌فرایدی برای «{search_query}» در فروشگاه‌های ایرانی پیدا نکردم.\n\n"
+                        f"⚠️ متأسفانه در این لحظه محصولی با تخفیف بلک‌فرایدی برای «{search_query}» پیدا نکردم.\n\n"
                         f"📊 <b>آمار:</b> {stats.stores_searched} فروشگاه بررسی شد | ⏱ {stats.search_duration_seconds} ثانیه\n\n"
                         f"💡 <b>پیشنهاد:</b>\n"
                         f"• نام دقیق‌تر یا برند محصول را بنویسید (مثلاً «کراتین مونوهیدرات دایمتیز»)\n"
-                        f"• یا مستقیماً از دستور <code>/search</code> استفاده کنید\n"
-                        f"• یا نام فروشگاه خاص را بنویسید (مثلاً «دیجی‌کالا کراتین»)"
+                        f"• یا درصد تخفیف دلخواه را ذکر کنید (مثلاً «بالای ۹۰ درصد»)\n"
+                        f"• یا مستقیماً از دستور <code>/search</code> استفاده کنید"
                     )
                     await _send_html_safe(
                         bot=context.bot, chat_id=chat_id, text=fail_msg, reply_to=message_id
@@ -704,7 +698,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     else:
         if await wizard.handle_setup_input(update, context) or await pcmd.handle_weight_input(update, context): return
 
-    # 👈 استخراج ایمن متن ریپلای (فقط پیام‌های کاربر، نه خود ربات)
     replied_text = _extract_replied_text(update, context)
 
     if _should_auto_black_friday(original_text, replied_text):

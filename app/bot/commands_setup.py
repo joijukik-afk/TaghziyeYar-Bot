@@ -6,7 +6,6 @@ from app.config import get_settings
 
 logger = logging.getLogger(__name__)
 
-# 👈 ۱. دستورات عمومی (هم در گروه و هم در پیوی)
 GENERAL_COMMANDS = [
     BotCommand("start", "🚀 شروع کار با ربات"),
     BotCommand("help", "📖 راهنمای کامل"),
@@ -37,7 +36,6 @@ GENERAL_COMMANDS = [
     BotCommand("privacy", "🔒 حریم خصوصی"),
 ]
 
-# 👈 ۲. دستورات چت خصوصی (فقط در پیوی)
 PRIVATE_COMMANDS = [
     BotCommand("setup", "✏️ تکمیل اطلاعات"),
     BotCommand("profile", "👤 پروفایل من"),
@@ -55,7 +53,6 @@ PRIVATE_COMMANDS = [
     BotCommand("cancel", "❌ لغو عملیات"),
 ]
 
-# 👈 ۳. دستورات ادمین (فقط برای شما)
 ADMIN_COMMANDS = [
     BotCommand("tagall", "📢 تگ کردن اعضا"),
     BotCommand("setgroup", "📌 ثبت گروه"),

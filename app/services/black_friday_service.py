@@ -1,9 +1,8 @@
-"""سرویس پیشرفته بلک‌فرایدی — با اعتبارسنجی URL و جلوگیری از لینک جعلی."""
+"""سرویس پیشرفته بلک‌فرایدی — جستجوی هوشمند محصول و تخفیف‌های عمومی."""
 
 import logging
 import asyncio
 import re
-import json
 import datetime
 from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass
@@ -25,11 +24,9 @@ class DealResult:
     discounted_price: Optional[int] = None
     discount_percent: Optional[int] = None
     seller: Optional[str] = None
-    warranty: Optional[str] = None
     availability: Optional[str] = None
     rating: Optional[float] = None
     review_count: Optional[int] = None
-    image_url: Optional[str] = None
 
 
 @dataclass
@@ -44,7 +41,7 @@ class SearchStats:
 
 
 class BlackFridayService:
-    """موتور جستجوی تخفیف بلک‌فرایدی با اعتبارسنجی لینک محصول."""
+    """موتور جستجوی تخفیف بلک‌فرایدی با تشخیص قصد کاربر."""
 
     PRODUCT_URL_PATTERNS = {
         "digikala.com": r"^https?://(www\.)?digikala\.com/product/dkp-\d+",
@@ -53,29 +50,18 @@ class BlackFridayService:
         "technolife.com": r"^https?://(www\.)?technolife\.com/product/[a-z0-9\-]+",
         "banimode.com": r"^https?://(www\.)?banimode\.com/product/[a-z0-9\-]+",
         "janebi.com": r"^https?://(www\.)?janebi\.com/product/[a-z0-9\-]+",
-        "khanoumi.com": r"^https?://(www\.)?khanoumi\.com/product/[a-z0-9\-]+",
-        "digistyle.com": r"^https?://(www\.)?digistyle\.com/product/[a-z0-9\-]+",
-        "modiseh.com": r"^https?://(www\.)?modiseh\.com/product/[a-z0-9\-]+",
-        "basalam.com": r"^https?://(www\.)?basalam\.com/product/\d+",
-        "okala.com": r"^https?://(www\.)?okala\.com/product/[a-z0-9\-]+",
     }
 
-    STORES = {
-        "digikala": {"domain": "digikala.com", "category": "digital"},
-        "technolife": {"domain": "technolife.com", "category": "digital"},
-        "janebi": {"domain": "janebi.com", "category": "digital"},
-        "torob": {"domain": "torob.com", "category": "digital"},
-        "zanbil": {"domain": "zanbil.ir", "category": "digital"},
-        "emalls": {"domain": "emalls.ir", "category": "digital"},
-        "banimode": {"domain": "banimode.com", "category": "fashion"},
-        "digistyle": {"domain": "digistyle.com", "category": "fashion"},
-        "modiseh": {"domain": "modiseh.com", "category": "fashion"},
-        "shixon": {"domain": "shixon.com", "category": "fashion"},
-        "khanoumi": {"domain": "khanoumi.com", "category": "beauty"},
-        "basalam": {"domain": "basalam.com", "category": "general"},
-        "snappshop": {"domain": "snappshop.ir", "category": "grocery"},
-        "okala": {"domain": "okala.com", "category": "grocery"},
-    }
+    GENERAL_DEAL_KEYWORDS = [
+        "چه چیزی", "چه چیزهایی", "چی تخفیف", "چی‌ها تخفیف", "لیست تخفیف",
+        "همه تخفیف", "تخفیف‌ها", "تخفیف ها", "حراجی‌ها", "حراج ها",
+        "محصولات تخفیف", "کالاهای تخفیف", "پیشنهاد ویژه", "شگفت‌انگیز",
+        "تخفیف خورده", "تخفیف‌خورده",
+    ]
+
+    DISCOUNT_PERCENT_PATTERN = re.compile(
+        r"(\d{2,3})\s*(?:درصد|٪|%|percent)", re.IGNORECASE
+    )
 
     def __init__(self):
         settings = get_settings()
@@ -92,6 +78,25 @@ class BlackFridayService:
     async def close(self):
         await self._http.aclose()
 
+    def _is_general_deal_query(self, query: str) -> bool:
+        q_lower = query.lower().strip()
+        if any(kw in q_lower for kw in self.GENERAL_DEAL_KEYWORDS):
+            return True
+        if self.DISCOUNT_PERCENT_PATTERN.search(q_lower):
+            return True
+        return False
+
+    def _extract_min_discount(self, query: str) -> Optional[int]:
+        match = self.DISCOUNT_PERCENT_PATTERN.search(query)
+        if match:
+            try:
+                val = int(match.group(1))
+                if 1 <= val <= 100:
+                    return val
+            except ValueError:
+                pass
+        return None
+
     def _is_valid_product_url(self, url: str) -> bool:
         if not url or not url.startswith(("http://", "https://")):
             return False
@@ -101,14 +106,8 @@ class BlackFridayService:
         for domain, pattern in self.PRODUCT_URL_PATTERNS.items():
             if domain in url:
                 return bool(re.match(pattern, url, re.IGNORECASE))
-        product_paths = ["/product/", "/p/", "/dp/", "/dkp-", "/item/", "/goods/"]
+        product_paths = ["/product/", "/p/", "/dp/", "/dkp-", "/item/"]
         return any(p in url.lower() for p in product_paths)
-
-    def _extract_store_from_url(self, url: str) -> str:
-        for store_key, store_config in self.STORES.items():
-            if store_config.get("domain") and store_config["domain"] in url:
-                return store_key
-        return url.split("//")[-1].split("/")[0].replace("www.", "").split(".")[0]
 
     def _extract_prices_from_text(self, text: str) -> List[int]:
         if not text:
@@ -147,87 +146,201 @@ class BlackFridayService:
             return (None, None, None)
         return (original, discounted, percent)
 
-    async def _search_with_tavily_extract(
-        self, query: str, domain: str, store_key: str
+    async def _fetch_digikala_incredible_offers(
+        self, min_discount: Optional[int] = None, max_results: int = 10
+    ) -> List[DealResult]:
+        results = []
+        try:
+            url = "https://api.digikala.com/v1/incredible-offers/"
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0",
+                "Accept": "application/json",
+                "x-web-client": "desktop",
+                "x-web-version": "1",
+                "Referer": "https://www.digikala.com/",
+            }
+            resp = await self._http.get(url, headers=headers)
+            if resp.status_code != 200:
+                return await self._fetch_digikala_deals_via_search(min_discount, max_results)
+            data = resp.json()
+            products = data.get("data", {}).get("products", []) or data.get("data", {}).get("incredible_offers", [])
+            if not products:
+                return await self._fetch_digikala_deals_via_search(min_discount, max_results)
+            for p in products[:max_results]:
+                product_id = p.get("id")
+                if not product_id:
+                    continue
+                product_url = f"https://www.digikala.com/product/dkp-{product_id}/"
+                if not self._is_valid_product_url(product_url):
+                    continue
+                price_info = p.get("default_variant", {}).get("price", {})
+                original = price_info.get("rrp_price")
+                discounted = price_info.get("selling_price")
+                discount = p.get("discount_percent") or p.get("discount_pct")
+                if discount is None and original and discounted and original > discounted:
+                    discount = round((1 - discounted / original) * 100)
+                if min_discount is not None and (discount or 0) < min_discount:
+                    continue
+                results.append(DealResult(
+                    product_name=p.get("title_fa") or p.get("title", "")[:100],
+                    store="digikala",
+                    product_url=product_url,
+                    original_price=original,
+                    discounted_price=discounted,
+                    discount_percent=discount,
+                    seller="دیجی‌کالا",
+                    availability="موجود",
+                    rating=p.get("rating", {}).get("rate"),
+                    review_count=p.get("rating", {}).get("count"),
+                ))
+        except Exception as e:
+            logger.warning(f"Digikala incredible offers fetch failed: {e}")
+            return await self._fetch_digikala_deals_via_search(min_discount, max_results)
+        return results
+
+    async def _fetch_digikala_deals_via_search(
+        self, min_discount: Optional[int] = None, max_results: int = 10
+    ) -> List[DealResult]:
+        results = []
+        try:
+            url = "https://api.digikala.com/v1/search/?q=&sort=7&page=1"
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0",
+                "Accept": "application/json",
+                "x-web-client": "desktop",
+                "x-web-version": "1",
+                "Referer": "https://www.digikala.com/",
+            }
+            resp = await self._http.get(url, headers=headers)
+            if resp.status_code != 200:
+                return results
+            data = resp.json()
+            products = data.get("data", {}).get("products", [])
+            for p in products[:max_results]:
+                product_id = p.get("id")
+                if not product_id:
+                    continue
+                product_url = f"https://www.digikala.com/product/dkp-{product_id}/"
+                if not self._is_valid_product_url(product_url):
+                    continue
+                price_info = p.get("default_variant", {}).get("price", {})
+                original = price_info.get("rrp_price")
+                discounted = price_info.get("selling_price")
+                discount = p.get("discount_percent")
+                if discount is None and original and discounted and original > discounted:
+                    discount = round((1 - discounted / original) * 100)
+                if min_discount is not None and (discount or 0) < min_discount:
+                    continue
+                results.append(DealResult(
+                    product_name=p.get("title_fa") or p.get("title", "")[:100],
+                    store="digikala",
+                    product_url=product_url,
+                    original_price=original,
+                    discounted_price=discounted,
+                    discount_percent=discount,
+                    availability="موجود",
+                ))
+        except Exception as e:
+            logger.warning(f"Digikala search fallback failed: {e}")
+        return results
+
+    async def _fetch_torob_offers(
+        self, min_discount: Optional[int] = None, max_results: int = 10
+    ) -> List[DealResult]:
+        results = []
+        try:
+            url = "https://api.torob.com/v4/special-offers/"
+            resp = await self._http.get(url)
+            if resp.status_code != 200:
+                return results
+            data = resp.json()
+            products = data.get("results", []) or data.get("products", [])
+            for p in products[:max_results]:
+                product_id = p.get("id") or p.get("random_key")
+                if not product_id:
+                    continue
+                product_url = f"https://torob.com/p/{product_id}/"
+                if not self._is_valid_product_url(product_url):
+                    continue
+                price = p.get("price")
+                original = p.get("old_price") or p.get("price_before_discount")
+                discount = p.get("discount_percent")
+                if discount is None and original and price and original > price:
+                    discount = round((1 - price / original) * 100)
+                if min_discount is not None and (discount or 0) < min_discount:
+                    continue
+                results.append(DealResult(
+                    product_name=p.get("name", "")[:100],
+                    store="torob",
+                    product_url=product_url,
+                    original_price=original,
+                    discounted_price=price,
+                    discount_percent=discount,
+                    availability="موجود",
+                ))
+        except Exception as e:
+            logger.warning(f"Torob offers fetch failed: {e}")
+        return results
+
+    async def _search_general_deals_via_tavily(
+        self, min_discount: Optional[int] = None, max_results: int = 10
     ) -> List[DealResult]:
         if not self.tavily:
             return []
         results = []
         try:
-            tavily_query = f"site:{domain} {query} قیمت خرید تخفیف"
+            discount_text = f"بالای {min_discount} درصد" if min_discount else ""
+            query = f"محصولات تخفیف دار بلک فرایدی {discount_text} سایت فروشگاهی ایران"
             res = await asyncio.to_thread(
                 self.tavily.search,
-                query=tavily_query,
-                search_depth="advanced",
-                max_results=6,
-            )
-            urls = [r.get("url", "") for r in res.get("results", []) if r.get("url")]
-            urls = [u for u in urls if self._is_valid_product_url(u)]
-            if not urls:
-                return []
-
-            extract_res = await asyncio.to_thread(
-                self.tavily.extract,
-                urls=urls[:3],
-            )
-            for item in extract_res.get("results", []):
-                url = item.get("url", "")
-                content = item.get("raw_content", "") or item.get("content", "")
-                if not url or not content:
-                    continue
-                if not self._is_valid_product_url(url):
-                    continue
-                prices = self._extract_prices_from_text(content)
-                original, discounted, percent = self._parse_prices(prices)
-                title = item.get("title", "") or query
-                results.append(DealResult(
-                    product_name=title[:100],
-                    store=store_key,
-                    product_url=url,
-                    original_price=original,
-                    discounted_price=discounted,
-                    discount_percent=percent,
-                    availability="بررسی در صفحه محصول",
-                ))
-        except Exception as e:
-            logger.warning(f"Tavily extract failed for {store_key}: {e}")
-        return results
-
-    async def _search_generic_tavily(self, query: str) -> List[DealResult]:
-        if not self.tavily:
-            return []
-        results = []
-        try:
-            tavily_query = f"خرید {query} تخفیف بلک فرایدی قیمت سایت فروشگاهی ایران"
-            res = await asyncio.to_thread(
-                self.tavily.search,
-                query=tavily_query,
+                query=query,
                 search_depth="advanced",
                 max_results=10,
             )
             for item in res.get("results", []):
                 url = item.get("url", "")
+                if not url or not self._is_valid_product_url(url):
+                    continue
                 content = item.get("content", "")
-                if not url or not content:
-                    continue
-                if not self._is_valid_product_url(url):
-                    continue
                 prices = self._extract_prices_from_text(content)
                 original, discounted, percent = self._parse_prices(prices)
-                store_name = self._extract_store_from_url(url)
+                if min_discount is not None and (percent or 0) < min_discount:
+                    continue
+                store = self._extract_store_from_url(url)
                 results.append(DealResult(
-                    product_name=item.get("title", query)[:100],
-                    store=store_name,
+                    product_name=item.get("title", "")[:100],
+                    store=store,
                     product_url=url,
                     original_price=original,
                     discounted_price=discounted,
                     discount_percent=percent,
                 ))
         except Exception as e:
-            logger.warning(f"Generic Tavily search failed: {e}")
+            logger.warning(f"General deals Tavily search failed: {e}")
         return results
 
-    async def _search_digikala(self, query: str) -> List[DealResult]:
+    async def _search_product_deals(
+        self, query: str, min_discount: Optional[int] = None
+    ) -> List[DealResult]:
+        tasks = [
+            self._search_digikala_product(query, min_discount),
+            self._search_torob_product(query, min_discount),
+            self._search_generic_tavily_product(query, min_discount),
+        ]
+        all_results = await asyncio.gather(*tasks, return_exceptions=True)
+        merged: List[DealResult] = []
+        seen = set()
+        for result_list in all_results:
+            if isinstance(result_list, Exception):
+                continue
+            for deal in result_list:
+                if deal.product_url not in seen and self._is_valid_product_url(deal.product_url):
+                    seen.add(deal.product_url)
+                    merged.append(deal)
+        merged.sort(key=lambda d: (-(d.discount_percent or 0), d.discounted_price or 10**12))
+        return merged
+
+    async def _search_digikala_product(self, query: str, min_discount: Optional[int] = None) -> List[DealResult]:
         results = []
         try:
             url = f"https://api.digikala.com/v1/search/?q={query}&page=1"
@@ -240,7 +353,6 @@ class BlackFridayService:
             }
             resp = await self._http.get(url, headers=headers)
             if resp.status_code != 200:
-                logger.warning(f"Digikala API returned {resp.status_code}")
                 return results
             data = resp.json()
             products = data.get("data", {}).get("products", [])
@@ -254,11 +366,13 @@ class BlackFridayService:
                 price_info = p.get("default_variant", {}).get("price", {})
                 original = price_info.get("rrp_price")
                 discounted = price_info.get("selling_price")
-                discount = None
-                if original and discounted and original > discounted:
+                discount = p.get("discount_percent")
+                if discount is None and original and discounted and original > discounted:
                     discount = round((1 - discounted / original) * 100)
+                if min_discount is not None and (discount or 0) < min_discount:
+                    continue
                 results.append(DealResult(
-                    product_name=p.get("title", query)[:100],
+                    product_name=p.get("title_fa") or p.get("title", "")[:100],
                     store="digikala",
                     product_url=product_url,
                     original_price=original,
@@ -270,48 +384,117 @@ class BlackFridayService:
                     review_count=p.get("rating", {}).get("count"),
                 ))
         except Exception as e:
-            logger.warning(f"Digikala API search failed: {e}")
+            logger.warning(f"Digikala product search failed: {e}")
+        return results
+
+    async def _search_torob_product(self, query: str, min_discount: Optional[int] = None) -> List[DealResult]:
+        results = []
+        try:
+            url = f"https://api.torob.com/v4/base-product/search/?q={query}&page=0"
+            resp = await self._http.get(url)
+            if resp.status_code != 200:
+                return results
+            data = resp.json()
+            products = data.get("results", [])
+            for p in products[:5]:
+                product_id = p.get("id")
+                if not product_id:
+                    continue
+                product_url = f"https://torob.com/p/{product_id}/"
+                if not self._is_valid_product_url(product_url):
+                    continue
+                price = p.get("price")
+                original = p.get("old_price")
+                discount = None
+                if original and price and original > price:
+                    discount = round((1 - price / original) * 100)
+                if min_discount is not None and (discount or 0) < min_discount:
+                    continue
+                results.append(DealResult(
+                    product_name=p.get("name", "")[:100],
+                    store="torob",
+                    product_url=product_url,
+                    original_price=original,
+                    discounted_price=price,
+                    discount_percent=discount,
+                ))
+        except Exception as e:
+            logger.warning(f"Torob product search failed: {e}")
+        return results
+
+    async def _search_generic_tavily_product(self, query: str, min_discount: Optional[int] = None) -> List[DealResult]:
+        if not self.tavily:
+            return []
+        results = []
+        try:
+            tavily_query = f"خرید {query} تخفیف بلک فرایدی قیمت"
+            res = await asyncio.to_thread(
+                self.tavily.search,
+                query=tavily_query,
+                search_depth="advanced",
+                max_results=6,
+            )
+            for item in res.get("results", []):
+                url = item.get("url", "")
+                if not url or not self._is_valid_product_url(url):
+                    continue
+                content = item.get("content", "")
+                prices = self._extract_prices_from_text(content)
+                original, discounted, percent = self._parse_prices(prices)
+                if min_discount is not None and (percent or 0) < min_discount:
+                    continue
+                store = self._extract_store_from_url(url)
+                results.append(DealResult(
+                    product_name=item.get("title", "")[:100],
+                    store=store,
+                    product_url=url,
+                    original_price=original,
+                    discounted_price=discounted,
+                    discount_percent=percent,
+                ))
+        except Exception as e:
+            logger.warning(f"Generic Tavily product search failed: {e}")
         return results
 
     async def search_deals(
-        self, query: str, max_results_per_store: int = 3
+        self, query: str, max_results: int = 10
     ) -> Tuple[List[DealResult], SearchStats]:
         import time
         start_time = time.time()
-        tasks = [
-            self._search_digikala(query),
-            self._search_generic_tavily(query),
-        ]
-        for store_key, store_config in self.STORES.items():
-            if store_key == "digikala":
-                continue
-            if store_config.get("domain"):
-                tasks.append(
-                    self._search_with_tavily_extract(query, store_config["domain"], store_key)
-                )
+
+        min_discount = self._extract_min_discount(query)
+        is_general = self._is_general_deal_query(query)
+
+        if is_general:
+            tasks = [
+                self._fetch_digikala_incredible_offers(min_discount, max_results),
+                self._fetch_torob_offers(min_discount, max_results),
+                self._search_general_deals_via_tavily(min_discount, max_results),
+            ]
+        else:
+            tasks = [self._search_product_deals(query, min_discount)]
 
         all_results = await asyncio.gather(*tasks, return_exceptions=True)
         merged: List[DealResult] = []
-        seen_urls = set()
+        seen = set()
         for result_list in all_results:
             if isinstance(result_list, Exception):
                 logger.warning(f"Search task exception: {result_list}")
                 continue
             for deal in result_list:
-                if deal.product_url in seen_urls:
-                    continue
-                if not self._is_valid_product_url(deal.product_url):
-                    logger.warning(f"Skipping invalid URL: {deal.product_url}")
-                    continue
-                seen_urls.add(deal.product_url)
-                merged.append(deal)
+                if deal.product_url not in seen and self._is_valid_product_url(deal.product_url):
+                    seen.add(deal.product_url)
+                    merged.append(deal)
+
+        if min_discount is not None:
+            merged = [d for d in merged if (d.discount_percent or 0) >= min_discount]
 
         merged.sort(key=lambda d: (-(d.discount_percent or 0), d.discounted_price or 10**12))
-        merged = merged[: max_results_per_store * 6]
+        merged = merged[:max_results]
 
         stats = SearchStats(
             total_found=len(merged),
-            stores_searched=len(self.STORES),
+            stores_searched=3,
             stores_with_results=len({d.store for d in merged}),
             best_discount_percent=max((d.discount_percent for d in merged if d.discount_percent), default=None),
             best_price=min((d.discounted_price for d in merged if d.discounted_price), default=None),
@@ -320,26 +503,36 @@ class BlackFridayService:
         )
         return merged, stats
 
+    def _extract_store_from_url(self, url: str) -> str:
+        for store, domain in [
+            ("digikala", "digikala.com"), ("torob", "torob.com"),
+            ("snappshop", "snappshop.ir"), ("technolife", "technolife.com"),
+            ("banimode", "banimode.com"), ("janebi", "janebi.com"),
+        ]:
+            if domain in url:
+                return store
+        return url.split("//")[-1].split("/")[0].replace("www.", "").split(".")[0]
+
     def format_deals(self, deals: List[DealResult], stats: SearchStats, query: str) -> str:
         if not deals:
             return (
                 f"🛍️ <b>جستجوی بلک‌فرایدی برای «{query}»</b>\n\n"
                 f"⚠️ متأسفانه تخفیف فعالی پیدا نکردم.\n"
                 f"📊 {stats.stores_searched} فروشگاه بررسی شد | ⏱ {stats.search_duration_seconds} ثانیه\n\n"
-                f"💡 نام دقیق‌تر یا برند محصول را بنویسید."
+                f"💡 نام دقیق‌تر یا برند محصول را بنویسید، یا درصد تخفیف دلخواه را ذکر کنید (مثلاً «بالای ۹۰ درصد»)."
             )
-        lines = [f"🛍️ <b>بهترین تخفیف‌های بلک‌فرایدی برای «{query}»</b>\n"]
-        lines.append(
+
+        header = f"🛍️ <b>نتایج بلک‌فرایدی برای «{query}»</b>\n"
+        stats_line = (
             f"📊 <b>آمار:</b> {stats.total_found} محصول از {stats.stores_with_results} فروشگاه | ⏱ {stats.search_duration_seconds} ثانیه\n"
         )
         if stats.best_discount_percent:
-            lines.append(
-                f"🏆 <b>بهترین تخفیف:</b> {stats.best_discount_percent}٪"
-            )
+            stats_line += f"🏆 <b>بیشترین تخفیف:</b> {stats.best_discount_percent}٪"
             if stats.best_price:
-                lines[-1] += f" | 💰 <b>کمترین قیمت:</b> {stats.best_price:,} تومان"
-            lines[-1] += "\n"
-        lines.append("─" * 30 + "\n")
+                stats_line += f" | 💰 <b>کمترین قیمت:</b> {stats.best_price:,} تومان"
+            stats_line += "\n"
+
+        lines = [header, stats_line, "─" * 30 + "\n"]
 
         for i, deal in enumerate(deals[:8], 1):
             price_line = ""
@@ -350,16 +543,13 @@ class BlackFridayService:
                 )
             elif deal.discounted_price:
                 price_line = f"  💰 {deal.discounted_price:,} تومان\n"
+
             extra = ""
             if deal.rating:
                 extra += f"  ⭐ {deal.rating}"
                 if deal.review_count:
                     extra += f" ({deal.review_count} نظر)"
                 extra += "\n"
-            if deal.seller:
-                extra += f"  🏪 {deal.seller}\n"
-            if deal.availability:
-                extra += f"  📦 {deal.availability}\n"
 
             lines.append(
                 f"{i}. <b>{deal.product_name}</b>\n"
@@ -367,8 +557,10 @@ class BlackFridayService:
                 f"{price_line}{extra}"
                 f"  🔗 <a href='{deal.product_url}'>مشاهده و خرید</a>\n"
             )
+
         if len(deals) > 8:
             lines.append(f"\n➕ {len(deals) - 8} نتیجه دیگر...")
+
         lines.append(
             f"\n📅 <i>بلک‌فرایدی ۱۴۰۵: جمعه ۶ آذر — حراج‌ها از ۱ آذر</i>"
         )

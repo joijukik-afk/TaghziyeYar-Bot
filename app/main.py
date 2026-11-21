@@ -101,13 +101,10 @@ def _should_auto_black_friday(user_text: str, replied_text: str = "") -> bool:
 # ---------------------------------------------------------------------------
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.error("Exception while handling an update:", exc_info=context.error)
-    
     tb_list = traceback.format_exception(None, context.error, context.error.__traceback__)
     tb_string = "".join(tb_list)
     safe_tb = html.escape(tb_string)
-    
     error_text = f"🚨 <b>خطای دقیق سیستم:</b>\n\n<pre>{safe_tb[-3500:]}</pre>"
-    
     settings = get_settings()
     if settings.admin_ids:
         for admin_id in settings.admin_ids:
@@ -130,7 +127,6 @@ async def notify_owner(context: ContextTypes.DEFAULT_TYPE, actor: User, action: 
     settings = get_settings()
     owner_id = settings.admin_ids[0] if settings.admin_ids else None
     if not owner_id or actor.id == owner_id: return  
-    
     text = (
         f"🔔 <b>گزارش لحظه‌ای مدیریت:</b>\n\n"
         f"👤 <b>ادمین:</b> <a href='tg://user?id={actor.id}'>{actor.first_name}</a> (ID: <code>{actor.id}</code>)\n"
@@ -192,7 +188,6 @@ async def _auto_post_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         last_time = await repo.get_last_post_time()
         now = time.time()
         if last_time > 0 and (now - last_time < 28800): return
-
         specific_chat = os.environ.get("AUTO_POST_CHAT_ID", "").strip()
         if specific_chat:
             try: 
@@ -200,7 +195,6 @@ async def _auto_post_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                 if ok: await repo.set_last_post_time(now)
             except Exception: pass
             return
-
         sent = await broadcast_auto_content(context.bot)
         if sent > 0: await repo.set_last_post_time(now)
     except Exception as e:
@@ -217,13 +211,10 @@ def is_group(update: Update) -> bool:
 def is_for_me(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     if not is_group(update): return True
     if update.message is None: return False
-    
     text_lower = (update.message.text or "").lower()
     if f"@{context.bot.username or ''}".lower() in text_lower: return True
-    
     bot_names = ["تغذیه‌یار", "تغذیه یار", "taghziyeyar", "taghziye yar", "تغذیهیار"]
     if any(name in text_lower for name in bot_names): return True
-    
     replied = update.message.reply_to_message
     return replied and replied.from_user and replied.from_user.id == context.bot.id
 
@@ -288,7 +279,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await ensure_user_and_group(update)
     user = update.effective_user
     if not update.message or not user: return
-    
     if context.args and context.args[0] == "mycard":
         db_user = await repo.get_user_by_telegram_id(user.id)
         profile = await repo.get_profile(db_user.id) if db_user else None
@@ -332,19 +322,7 @@ async def cmd_blackfriday(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     """فعال‌سازی دستی کارشناس بلک‌فرایدی."""
     await ensure_user_and_group(update)
     context.user_data["override_persona"] = "black_friday"
-    
-    text = (
-        "🛍️ <b>کارشناس بلک‌فرایدی فعال شد!</b>\n\n"
-        "حالا هر محصولی که می‌خوای رو بفرست تا بهترین تخفیف‌های بلک‌فرایدی رو برات پیدا کنم.\n"
-        "می‌تونی روی پیام یک محصول هم <b>ریپلای</b> کنی تا دقیق‌تر جستجو کنم.\n\n"
-        "📅 <b>تاریخ‌های مهم:</b>\n"
-        "• شروع حراج‌های ایران: <b>۱ آذر ۱۴۰۵</b>\n"
-        "• روز اصلی بلک‌فرایدی: <b>جمعه ۶ آذر ۱۴۰۵</b>\n"
-        "• پایان معمول: <b>۱۰ آذر ۱۴۰۵</b>\n\n"
-        "📍 فروشگاه‌های تحت پوشش: دیجی‌کالا، اسنپ‌شاپ، تکنولایف، بانی‌مد، خانومی، جانبی، دیجی‌استایل، ترب.\n\n"
-        "💡 <i>این شخصیت تا پیام بعدی شما فعال است و بعد از آن به شخصیت قبلی برمی‌گردید.</i>"
-    )
-    
+    text = msg.BLACK_FRIDAY_WELCOME
     if update.callback_query:
         try:
             await update.callback_query.edit_message_text(with_signature(text), parse_mode="HTML", disable_web_page_preview=True)
@@ -360,10 +338,8 @@ async def cmd_tagall(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     chat = update.effective_chat
     user = update.effective_user
     if chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP): return
-
     try: status_msg = await update.message.reply_text("⏳ در حال پردازش /tagall...")
     except: return
-
     try:
         is_admin = await is_admin_user(user.id)
         if not is_admin:
@@ -372,31 +348,25 @@ async def cmd_tagall(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     except Exception as e:
         await status_msg.edit_text(f"❌ خطا در بررسی ادمین: {e}")
         return
-
     count = 20; custom_text = "🔔 توجه!"
     if context.args:
         args = list(context.args)
         if args[0].isdigit(): count = min(int(args[0]), 100); args.pop(0)
         if args: custom_text = " ".join(args)
-
     try: members = await repo.get_group_members(chat.id, limit=count)
     except Exception as e:
         await status_msg.edit_text(f"❌ خطا در دیتابیس: {e}")
         return
-
     if not members:
         await status_msg.edit_text("⚠️ <b>هیچ عضوی توی دیتابیس پیدا نشد.</b>", parse_mode="HTML")
         return
-
     mentions = []
     for m in members:
         safe_name = (m.first_name or "کاربر").replace("<", "").replace(">", "")
         if m.username: mentions.append(f"@{m.username}")
         else: mentions.append(f'<a href="tg://user?id={m.user_id}">{safe_name}</a>')
-
     chunks = [mentions[i:i + 20] for i in range(0, len(mentions), 20)]
     await status_msg.edit_text(f"⏳ در حال تگ کردن {len(members)} نفر...")
-
     for i, chunk in enumerate(chunks):
         text = " ".join(chunk)
         if i == 0: text = f"{custom_text}\n\n{text}"
@@ -406,7 +376,6 @@ async def cmd_tagall(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             try: await context.bot.send_message(chat_id=chat.id, text=" ".join([m.first_name for m in members[i*20:(i+1)*20]]))
             except: pass
         await asyncio.sleep(1.5)
-
     try: await status_msg.delete()
     except: pass
 
@@ -537,23 +506,19 @@ async def cmd_remind(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     args = context.args
     if len(args) < 2:
         return await update.message.reply_text("⚠️ فرمت: `/remind 10m آب بخورم`", parse_mode="HTML")
-    
     time_str = args[0]
     text = " ".join(args[1:])
-    
     match = re.match(r"(\d+)([smh])", time_str.lower())
     if not match:
         return await update.message.reply_text("⚠️ زمان اشتباه است. از `s`، `m` یا `h` استفاده کن.", parse_mode="HTML")
-    
     amount = int(match.group(1)); unit = match.group(2)
     seconds = amount if unit == "s" else amount * 60 if unit == "m" else amount * 3600
-    
     context.job_queue.run_once(_send_reminder, when=seconds, chat_id=update.effective_chat.id, data={"text": f"⏰ <b>یادآوری:</b>\n{text}"})
     await update.message.reply_text(f"✅ ثبت شد! بعد از {amount}{unit} یادآوری می‌کنم.")
 
 
 # ---------------------------------------------------------------------------
-#  Text -> AI (با پشتیبانی از بلک‌فرایدی و ریپلای)
+#  Text -> AI (با پشتیبانی کامل از بلک‌فرایدی و ریپلای)
 # ---------------------------------------------------------------------------
 async def _process_ai_response(update: Update, context: ContextTypes.DEFAULT_TYPE, user_text: str, reply_context: str):
     user = update.effective_user
@@ -563,35 +528,38 @@ async def _process_ai_response(update: Update, context: ContextTypes.DEFAULT_TYP
     try:
         override_persona = context.user_data.pop("override_persona", None)
         state = await get_user_state(user.id)
-        
         real_persona_key = state.persona_key if state else "default"
         persona_key = override_persona if override_persona else real_persona_key
-        
         chat_history = json.loads(state.chat_history_json) if state else []
         persona_data = persona_cmd.PERSONAS.get(persona_key, {})
         persona_prompt = persona_data.get("prompt")
 
-        # 👈 اگر شخصیت بلک‌فرایدی فعال است، جستجوی هدفمند تخفیف انجام بده
+        # 👈 بلوک بلک‌فرایدی
         if persona_key == "black_friday":
             try:
                 replied_text = ""
                 if update.message.reply_to_message and update.message.reply_to_message.text:
                     replied_text = update.message.reply_to_message.text
-                
-                search_query = user_text if not replied_text else f"{replied_text} {user_text}"
+                if replied_text:
+                    search_query = f"{replied_text.strip()} {user_text.strip()}"
+                else:
+                    search_query = user_text.strip()
+                for remove_word in ["تخفیف", "بلک فرایدی", "حراج", "قیمت", "چنده", "چقدره", "پیدا کن"]:
+                    search_query = search_query.replace(remove_word, "")
                 search_query = search_query.strip()
-                
+                if not search_query:
+                    search_query = user_text.strip()
+
                 status_msg = await context.bot.send_message(
-                    chat_id=chat_id, text="🛍️ در حال جستجوی تخفیف‌های بلک‌فرایدی..."
+                    chat_id=chat_id,
+                    text=f"🛍️ در حال جستجوی جامع «{search_query[:50]}» در ۳۰+ فروشگاه ایرانی...",
                 )
                 bf = get_black_friday_service()
-                deals = await bf.search_deals(search_query)
+                deals, stats = await bf.search_deals(search_query)
                 await status_msg.delete()
-                
+
                 if deals:
-                    formatted = bf.format_deals(
-                        deals, title=f"تخفیف‌های بلک‌فرایدی برای «{search_query[:60]}»"
-                    )
+                    formatted = bf.format_deals(deals, stats, search_query)
                     await _send_html_safe(bot=context.bot, chat_id=chat_id, text=formatted, reply_to=message_id)
                     chat_history.append({"role": "user", "content": user_text})
                     chat_history.append({"role": "assistant", "content": formatted})
@@ -601,12 +569,12 @@ async def _process_ai_response(update: Update, context: ContextTypes.DEFAULT_TYP
             except Exception as e:
                 logger.error(f"Black Friday search failed: {e}", exc_info=True)
 
+        # 👈 ادامه پردازش عادی AI
         text_lower = user_text.lower()
         voice_triggers = ["ویس", "صوتی", "صدا", "بخون", "ضبط کن"]
         is_voice_request = any(w in text_lower for w in voice_triggers)
         voice_type = "male"
         if any(w in text_lower for w in ["زن", "خانم", "دختر", "دیلارا"]): voice_type = "female"
-        
         clean_text = user_text
         if is_voice_request:
             for w in ["با صدای زن", "با صدای مرد", "با صدای", "با ویس", "ویس بفرست", "صوتی بگو", "صدا بگو"]:
@@ -616,14 +584,12 @@ async def _process_ai_response(update: Update, context: ContextTypes.DEFAULT_TYP
         search_context = ""
         casual_chats = ["خوبی", "چطوری", "چه خبر", "خسته نباشی", "مرسی", "ممنون", "سلام"]
         is_casual = any(chat == clean_text.lower().strip() for chat in casual_chats)
-        
         if not is_casual and not is_voice_request and len(clean_text) > 3:
             try:
                 status_msg = await context.bot.send_message(chat_id=chat_id, text="🔍 در حال جستجوی زنده در اینترنت...")
                 agent = get_agent_search_service()
                 result = await agent.process(clean_text)
                 await status_msg.delete()
-                
                 if result and not result.startswith(("💰", "🎟️", "⚠️")):
                     search_context = result
                 elif result:
@@ -633,14 +599,12 @@ async def _process_ai_response(update: Update, context: ContextTypes.DEFAULT_TYP
                 logger.error(f"Search error: {e}", exc_info=True)
 
         final_input = f"{reply_context}{clean_text}"
-        
         if search_context:
             final_input = (
                 f"اطلاعات جستجو (از اینترنت):\n{search_context}\n\n"
                 f"سوال کاربر: {clean_text}\n\n"
                 f"⚠️ دستور: تو باید بر اساس اطلاعات بالا جواب بدهی. اگر در اطلاعات عددی یا کدی وجود دارد، آن را در پاسخ خود ذکر کن. هرگز نگو 'دسترسی ندارم'."
             )
-
         if is_voice_request:
             final_prompt = f"You are acting as: {persona_prompt}. CRITICAL: Only natural Persian text, NO emojis, NO English, NO markdown." if persona_prompt else VOICE_SYSTEM_PROMPT
         else:
@@ -654,20 +618,16 @@ async def _process_ai_response(update: Update, context: ContextTypes.DEFAULT_TYP
             custom_system_prompt=final_prompt,
             chat_history=chat_history 
         )
-        
         if reply:
             reply = remove_leading_greeting(reply)
-        
         chat_history.append({"role": "user", "content": clean_text})
         chat_history.append({"role": "assistant", "content": reply})
         if len(chat_history) > 10: chat_history = chat_history[-10:]
         await save_user_state(user.id, real_persona_key, chat_history)
-
         if is_voice_request and reply:
             await voice_cmd.generate_and_send_voice(context.bot, chat_id, reply, voice_type)
         else:
             await _send_html_safe(bot=context.bot, chat_id=chat_id, text=reply or "پاسخی دریافت نشد.", reply_to=message_id)
-            
     except Exception as e:
         logger.error(f"AI Processing Error: {e}", exc_info=True)
         try:
@@ -682,11 +642,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await ensure_user_and_group(update)
     original_text = clean_mention(update.message.text, context.bot.username or "")
     if not original_text: return
-    
     user = update.effective_user
     greetings = ["سلام", "درود", "hi", "hello", "سلم", "سلام خوبی", "سلام خسته نباشی"]
     user_greeted = original_text.strip().lower() in greetings
-    
     if user_greeted:
         current_time = time.time()
         last_interaction = context.user_data.get("last_interaction", 0)
@@ -696,7 +654,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             context.user_data["last_interaction"] = current_time
             return await update.message.reply_text(with_signature(random.choice(replies)), parse_mode="HTML")
     context.user_data["last_interaction"] = time.time()
-
     if is_group(update):
         if context.user_data.get("awaiting_weight") or context.user_data.get("setup_step", "IDLE") != "IDLE":
             await update.message.reply_text("🛡️ ثبت اطلاعات در گروه ممنوع است.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔒 چت خصوصی", url=f"https://t.me/{context.bot.username}?start=private_setup")]])); return
@@ -725,7 +682,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     query = update.callback_query
     if not query: return
     await query.answer(); data = query.data or ""
-    
     if data == "menu_black_friday":
         await cmd_blackfriday(update, context)
         return
@@ -744,21 +700,17 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await query.edit_message_text(with_signature("🎧 <b>COMA</b>\n\n<code>/koma</code>"), parse_mode="HTML"); return
     if data == "menu_music":
         await query.edit_message_text(with_signature("🎵 <b>دانلود آهنگ</b>\n\n<code>/music نام آهنگ</code>"), parse_mode="HTML"); return
-    
     if data == "menu_quiz": await query.edit_message_text(with_signature("🎮 /quiz"), parse_mode="HTML"); return
     if data == "menu_lb": await query.edit_message_text(with_signature("🏆 /leaderboard"), parse_mode="HTML"); return
     if data == "menu_help": await query.edit_message_text(with_signature(msg.HELP), parse_mode="HTML"); return
     if data == "menu_tip": await query.edit_message_text(with_signature(f"💡 {get_tip()}"), parse_mode="HTML"); return
     if data == "menu_fact": await query.edit_message_text(with_signature(f"🍎 {get_fact()}"), parse_mode="HTML"); return
     if data == "menu_myth": m, t = get_myth(); await query.edit_message_text(with_signature(f"❌ {m}\n\n✅ {t}"), parse_mode="HTML"); return
-    
     hints = {"menu_plan": "🍽 /plan", "menu_today": "📅 /today", "menu_shopping": "🛒 /shopping", "menu_food": "🥗 /food", "menu_ideal": "🎯 /ideal (پیوی)", "menu_weight": "⚖️ /weight (پیوی)", "menu_calories": "🔥 /calories (پیوی)", "menu_protein": "🥩 /protein (پیوی)", "menu_macros": "🧮 /macros (پیوی)", "menu_progress": "📊 /progress (پیوی)", "menu_profile": "👤 /profile (پیوی)", "menu_ai": "💬 پیام بفرست."}
     text = hints.get(data, msg.UNKNOWN_COMMAND)
-    
     if is_group(update) and data in ["menu_weight", "menu_calories", "menu_protein", "menu_macros", "menu_progress", "menu_profile", "menu_ideal"]:
         kb = [[InlineKeyboardButton("🔒 ورود به چت خصوصی", url=f"https://t.me/{context.bot.username}?start=private_setup")]]
         await query.edit_message_text(with_signature("🛡️ این بخش خصوصی است."), reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML"); return
-    
     await query.edit_message_text(with_signature(text), parse_mode="HTML")
 
 
@@ -831,7 +783,8 @@ async def cmd_advertise(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "با ربات <b>تغذیه‌یار</b>، یک کارت دیجیتال اختصاصی دریافت کنید! 🪪\n\n"
         "🎨 <b>و همچنین:</b>\n"
         "👁️ تحلیل عکس با AI | 🔍 جستجوی هوشمند | 🌐 ترجمه\n"
-        "🎭 تغییر شخصیت | 🔊 تبدیل متن به صدا | 🎧 موسیقی\n\n"
+        "🎭 تغییر شخصیت | 🔊 تبدیل متن به صدا | 🎧 موسیقی\n"
+        "🛍️ کارشناس بلک‌فرایدی\n\n"
         "👇 همین حالا کلیک کنید:"
     )
     keyboard = [[InlineKeyboardButton("🪪 دریافت کارت سلامت", url=f"https://t.me/{context.bot.username}?start=mycard")]]
@@ -982,15 +935,12 @@ async def post_init(application: Application) -> None:
     import app.database.models, app.database.quiz_models, app.database.music_models
     import app.database.group_models, app.database.state_models
     await create_all()
-    
     me = await application.bot.get_me()
     logger.info("Bot started as @%s", me.username)
-    
     try:
         await setup_commands(application.bot)
     except Exception as e: 
         logger.warning(f"Commands setup failed: {e}")
-    
     if application.job_queue is not None:
         try: first = int(os.environ.get("AUTO_POST_FIRST_DELAY", "600")) 
         except: first = 600
@@ -1003,14 +953,12 @@ async def post_shutdown(application: Application) -> None:
 
 def build_application() -> Application:
     settings = get_settings()
-    
     custom_request = HTTPXRequest(
         connection_pool_size=8,
         connect_timeout=20.0,
         read_timeout=30.0,
         write_timeout=30.0
     )
-
     app = (
         ApplicationBuilder()
         .token(settings.telegram_bot_token)
@@ -1020,14 +968,12 @@ def build_application() -> Application:
         .post_shutdown(post_shutdown)
         .build()
     )
-    
     # --- Security & Background (Group -2, -1) ---
     app.add_handler(TypeHandler(Update, check_user_ban), group=-2)
     app.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.ALL, save_member_handler), group=-2)
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS & filters.ChatType.GROUPS, track_new_members), group=-2)
     app.add_handler(ChatMemberHandler(gmanager.on_bot_added, ChatMemberHandler.MY_CHAT_MEMBER), group=-1)
     app.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.ALL, gmanager.on_group_message), group=-1)
-
     # --- Core Commands ---
     app.add_handler(CommandHandler("start", cmd_start)); app.add_handler(CommandHandler("help", cmd_help)); app.add_handler(CommandHandler("menu", cmd_menu))
     app.add_handler(CommandHandler("about", cmd_about)); app.add_handler(CommandHandler("privacy", cmd_privacy)); app.add_handler(CommandHandler("settings", cmd_settings))
@@ -1035,59 +981,48 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("setup", cmd_setup)); app.add_handler(CommandHandler("cancel", cmd_cancel))
     app.add_handler(CommandHandler("tagall", cmd_tagall))
     app.add_handler(CommandHandler("blackfriday", cmd_blackfriday))
-    
     # --- Tools Commands ---
     app.add_handler(CommandHandler("tts", tts_cmd.cmd_tts))
     app.add_handler(CommandHandler("voice", voice_cmd.cmd_voice))
     app.add_handler(MessageHandler(filters.VOICE, voice_cmd.handle_voice_message))
     app.add_handler(CommandHandler("remind", cmd_remind))
-    
     app.add_handler(CommandHandler("persona", persona_cmd.cmd_persona))
     app.add_handler(CallbackQueryHandler(persona_cmd.handle_persona_callback, pattern=r"^persona_"))
-    
     app.add_handler(CommandHandler("vision", vision_cmd.cmd_vision))
     app.add_handler(CommandHandler("roast", vision_cmd.cmd_roast))
     app.add_handler(CommandHandler("ocr", vision_cmd.cmd_ocr))
     app.add_handler(CommandHandler("food_vision", vision_cmd.cmd_food)) 
     app.add_handler(CommandHandler("barcode", barcode_cmd.cmd_barcode))
-    
     app.add_handler(CommandHandler("imagine", img_cmd.cmd_imagine))
     app.add_handler(CallbackQueryHandler(img_cmd.handle_reimagine, pattern=r"^reimg_"))
-    
     app.add_handler(CommandHandler("getconfig", conf_cmd.cmd_getconfig))
     app.add_handler(CallbackQueryHandler(conf_cmd.handle_config_callback, pattern=r"^(copy_cfg_|refresh_cfg)"))
     app.add_handler(CommandHandler("translate", trans_cmd.cmd_translate)) 
     app.add_handler(CommandHandler("search", search_cmd.cmd_search))
     app.add_handler(CommandHandler("sticker", sticker_cmd.cmd_sticker))
-    
     # --- Health Commands ---
     app.add_handler(CommandHandler("bmi", cmd_bmi)); app.add_handler(CommandHandler("calories", cmd_calories)); app.add_handler(CommandHandler("weight", cmd_weight))
     app.add_handler(CommandHandler("progress", cmd_progress)); app.add_handler(CommandHandler("macros", cmd_macros)); app.add_handler(CommandHandler("protein", cmd_protein))
     app.add_handler(CommandHandler("ideal", cmd_ideal)); app.add_handler(CommandHandler("bodyfat", cmd_bodyfat)); app.add_handler(CommandHandler("bmr", cmd_bmr))
     app.add_handler(CommandHandler("tip", cmd_tip)); app.add_handler(CommandHandler("fact", cmd_fact)); app.add_handler(CommandHandler("myth", cmd_myth)); app.add_handler(CommandHandler("water", cmd_water))
     app.add_handler(CommandHandler("plan", cmd_plan)); app.add_handler(CommandHandler("today", cmd_today)); app.add_handler(CommandHandler("shopping", cmd_shopping)); app.add_handler(CommandHandler("food", cmd_food))
-    
     # --- Games & Music Commands ---
     app.add_handler(CommandHandler("quiz", gquiz.cmd_quiz)); app.add_handler(CommandHandler("leaderboard", gquiz.cmd_leaderboard)); app.add_handler(CommandHandler("mystats", gquiz.cmd_mystats))
     app.add_handler(PollAnswerHandler(gquiz.on_poll_answer)); app.add_handler(CallbackQueryHandler(gquiz.on_inline_answer, pattern=r"^gq_\d+$"))
     app.add_handler(CallbackQueryHandler(gquiz.handle_next_quiz, pattern=r"^gq_next$"))
-    
     app.add_handler(CommandHandler("snake", snake_game.cmd_snake)); app.add_handler(CallbackQueryHandler(snake_game.handle_snake, pattern=r"^snake_"))
     app.add_handler(CommandHandler("koma", kcmd.cmd_koma)); app.add_handler(CommandHandler("music", kcmd.cmd_music))
     app.add_handler(CommandHandler("proxy", prox_cmd.cmd_proxy)); app.add_handler(CallbackQueryHandler(prox_cmd.handle_proxy_callback, pattern=r"^proxy_"))
-    
     # --- Admin Commands ---
     app.add_handler(CommandHandler("setgroup", gmanager.cmd_setgroup)); app.add_handler(CommandHandler("groups", gmanager.cmd_groups)); app.add_handler(CommandHandler("unsetgroup", gmanager.cmd_unsetgroup))
     app.add_handler(CommandHandler("addadmin", cmd_addadmin)); app.add_handler(CommandHandler("removeadmin", cmd_removeadmin)); app.add_handler(CommandHandler("admins", cmd_admins))
     app.add_handler(CommandHandler("broadcast_covers", cmd_broadcast_covers)); app.add_handler(CommandHandler("leave", cmd_leave_group)); app.add_handler(CommandHandler("leavegroup", cmd_leave_group))
     app.add_handler(CommandHandler("sendto", cmd_send_to_group)); app.add_handler(CommandHandler("globalnews", cmd_global_news)); app.add_handler(CommandHandler("ban", cmd_ban)); app.add_handler(CommandHandler("unban", cmd_unban))
     app.add_handler(CommandHandler("forcepost", cmd_forcepost)); app.add_handler(CommandHandler("advertise", cmd_advertise))
-    
     # --- Media & Text Handlers ---
     app.add_handler(MessageHandler(filters.PHOTO & filters.ChatType.PRIVATE, vision_cmd.handle_photo_message))
     app.add_handler(CallbackQueryHandler(handle_callback)) 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text)) 
-    
     app.add_error_handler(on_error)
     return app
 
@@ -1095,7 +1030,6 @@ def build_application() -> Application:
 def main() -> None:
     settings = get_settings()
     application = build_application()
-    
     render_url = os.environ.get("RENDER_EXTERNAL_URL", "").strip()
     if render_url and settings.webhook_path:
         logger.info("Starting via WEBHOOK...")

@@ -1,207 +1,210 @@
-"""BlackHunt search engine.
-
-Orchestrates:
-    - MCP adapters (Digikala / Torob / SnappShop)
-    - Optional AI intent detection
-    - Ranking + HTML report generation
-
-Used by main.py's BLACK FRIDAY persona:
-
-    engine = get_engine()
-    deals, stats, intent = await engine.search(user_request)
-    report = await engine.format_report(deals, stats, intent)
-"""
-
+"""Orchestrates discovery → verification → ranking."""
 from __future__ import annotations
 
-import json
+import asyncio
 import logging
+import statistics
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
-from app.config import get_settings
-from app.services.blackhunt.adapters import search_all_adapters
-from app.services.blackhunt.models import DealResult
+from app.services.blackhunt.adapters import (
+    BaseAdapter,
+    build_adapters,
+)
+from app.services.blackhunt.analyzer import (
+    DealRanker,
+    PriceVerifier,
+    VerificationResult,
+)
+from app.services.blackhunt.models import DealResult, HuntReport
 
 logger = logging.getLogger(__name__)
 
 
-class BlackHuntEngine:
-    """High-level engine for interactive product search."""
+@dataclass
+class SearchStats:
+    queried_sources: int = 0
+    total_deals: int = 0
+    verified_deals: int = 0
+    failed_sources: List[str] = None
+    hunt_report: Optional[HuntReport] = None
 
-    def __init__(self) -> None:
-        self._intent_cache: Dict[str, Dict[str, Any]] = {}
+    def __post_init__(self) -> None:
+        if self.failed_sources is None:
+            self.failed_sources = []
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
+
+class HuntEngine:
+    def __init__(
+        self, adapters: Optional[List[BaseAdapter]] = None,
+    ) -> None:
+        self.adapters: List[BaseAdapter] = adapters or build_adapters()
+        self.ranker = DealRanker()
 
     async def search(
-        self, query: str
-    ) -> Tuple[List[DealResult], Dict[str, Any], Dict[str, Any]]:
-        """Search every enabled store and return (deals, stats, intent)."""
-        settings = get_settings()
-        query = (query or "").strip()
-
-        if not query:
-            return [], {"found": 0, "stores": []}, {"query": ""}
-
-        # 1. Detect intent (best-effort, non-blocking)
-        intent = await self._detect_intent(query)
-
-        # 2. Search all adapters in parallel
-        try:
-            deals = await search_all_adapters(
-                query, settings.auto_hunter_max_results_per_store
-            )
-        except Exception as exc:
-            logger.exception("BlackHunt search failed: %s", exc)
-            deals = []
-
-        # 3. Rank & finalise
-        deals = self._rank(deals, intent)
-
-        stats: Dict[str, Any] = {
-            "found": len(deals),
-            "stores": sorted({d.store for d in deals if d.store}),
-            "total_stores_searched": len(settings.enabled_mcp_stores),
-            "min_discount": settings.auto_hunter_min_discount,
-        }
-        return deals, stats, intent
-
-    async def format_report(
         self,
-        deals: List[DealResult],
-        stats: Dict[str, Any],
-        intent: Dict[str, Any],
-    ) -> str:
-        """Render the search result as a Telegram-friendly HTML message."""
-        q = (intent or {}).get("query", "")
+        query: str,
+        max_per_source: int = 10,
+        max_concurrency: int = 4,
+    ) -> Tuple[
+        List[VerificationResult], SearchStats, Dict[str, Any]
+    ]:
+        stats = SearchStats()
+        report = HuntReport()
+        sem = asyncio.Semaphore(max_concurrency)
+
+        async def run(adapter: BaseAdapter):
+            async with sem:
+                try:
+                    return adapter, await adapter.search(
+                        query, max_results=max_per_source
+                    )
+                except Exception as exc:
+                    logger.exception(
+                        "[%s] search failed", adapter.name
+                    )
+                    return adapter, exc
+
+        tasks = [run(a) for a in self.adapters]
+        results = await asyncio.gather(
+            *tasks, return_exceptions=False
+        )
+
+        all_deals: List[DealResult] = []
+        for adapter, res in results:
+            if isinstance(res, Exception):
+                stats.failed_sources.append(adapter.name)
+                report.errors.append(f"{adapter.name}: {res}")
+                continue
+            stats.queried_sources += 1
+            stats.total_deals += len(res)
+            all_deals.extend(res)
+
+        report.deals_found = len(all_deals)
+
+        verified: List[VerificationResult] = []
+        for deal in all_deals:
+            median = self._cross_seller_median(deal, all_deals)
+            v = PriceVerifier(
+                cross_seller_median=median
+            ).verify(deal)
+            verified.append(v)
+
+        stats.verified_deals = sum(
+            1 for v in verified if v.real_discount > 0
+        )
+        ranked = self.ranker.rank(verified)
+        report.deals_qualified = sum(
+            1 for v in ranked if v.tier in ("S", "A", "B")
+        )
+        report.finish()
+        stats.hunt_report = report
+
+        logger.info(
+            "HuntEngine: query='%s' sources=%d deals=%d "
+            "verified=%d failed=%s",
+            query,
+            stats.queried_sources,
+            stats.total_deals,
+            stats.verified_deals,
+            stats.failed_sources or "none",
+        )
+
+        intent_dict: Dict[str, Any] = {
+            "query": query,
+            "original_request": query,
+        }
+        return ranked, stats, intent_dict
+
+    @staticmethod
+    def _cross_seller_median(
+        deal: DealResult, all_deals: List[DealResult]
+    ) -> int:
+        if not deal.title:
+            return 0
+        norm_title = deal.title.strip().lower()
+        prices = [
+            d.price
+            for d in all_deals
+            if d.price > 0
+            and d.title.strip().lower() == norm_title
+        ]
+        if len(prices) < 3:
+            return 0
+        return int(statistics.median(prices))
+
+    async def format_report(self, deals, stats, intent) -> str:
+        q = ""
+        if isinstance(intent, dict):
+            q = intent.get("query", "") or intent.get(
+                "original_request", ""
+            )
+        elif isinstance(intent, str):
+            q = intent
+        elif hasattr(intent, "query"):
+            q = getattr(intent, "query", "") or ""
+        elif hasattr(intent, "original_request"):
+            q = getattr(intent, "original_request", "") or ""
+
         if not deals:
+            failed = (
+                ", ".join(stats.failed_sources or [])
+                or "هیچ منبعی"
+            )
             return (
-                f"🛍️ <b>جستجو برای «{_esc(q)}»</b>\n\n"
-                "متأسفانه در حال حاضر تخفیف قابل ارائه‌ای پیدا نشد.\n\n"
-                "💡 ممکن است سرورهای فروشگاه‌ها موقتاً در دسترس نباشند. "
-                "چند دقیقه بعد دوباره امتحان کنید."
+                f"🔍 جستجو برای «{q}»\n\n"
+                f"متأسفانه در این دور تخفیف قابل ارائه‌ای "
+                f"پیدا نشد.\n\n"
+                f"📡 منابع پرسیده‌شده: "
+                f"{stats.queried_sources}\n"
+                f"⚠️ منابع ناموفق: {failed}\n\n"
+                f"💡 راهنمایی: اگر ترب و اسنپ‌شاپ ناموفق‌اند، "
+                f"به دلیل محدودیت IP ایران است. دیجی‌کالا "
+                f"باید کار کند."
             )
 
-        lines: List[str] = [
-            f"🛍️ <b>نتایج جستجو برای «{_esc(q)}»</b>",
+        lines = [f"🛍️ نتایج جستجو برای «{q}»", ""]
+        lines.append(
             f"📊 {len(deals)} محصول از "
-            f"{len(stats.get('stores', []))} فروشگاه",
-            "",
-        ]
+            f"{stats.queried_sources} فروشگاه"
+        )
+        lines.append("")
 
-        for i, deal in enumerate(deals[:10], 1):
-            title = _esc((deal.title or "بدون عنوان")[:90])
-            lines.append(f"{i}. <b>{title}</b>")
-
-            if deal.price:
-                lines.append(f"   💵 {deal.price:,} تومان")
-            if deal.old_price and deal.old_price > deal.price:
-                lines.append(f"   ❌ قبلاً: {deal.old_price:,} تومان")
-            if deal.discount:
-                lines.append(f"   🔥 تخفیف: {deal.discount:.0f}%")
-            if deal.product_url:
-                store = _esc(deal.store or "فروشگاه")
+        for i, v in enumerate(deals[:10], 1):
+            d = v.deal
+            lines.append(f"{i}. {d.title[:80]}")
+            if d.price:
+                lines.append(f"   ⚡ {d.price:,} تومان")
+            if d.old_price and d.old_price > d.price:
+                lines.append(f"   ❌ قبلاً: {d.old_price:,} تومان")
+            if v.real_discount > 0:
                 lines.append(
-                    f'   🔗 <a href="{_esc(deal.product_url)}">'
-                    f"مشاهده در {store}</a>"
+                    f"   📉 تخفیف: {v.real_discount:.0f}%"
                 )
+            else:
+                lines.append("   📉 تخفیف: قابل تأیید نیست")
+            lines.append(f"   🏪 {d.store}")
+            lines.append(f"   🔗 {d.product_url}")
             lines.append("")
 
-        if len(deals) > 10:
-            lines.append(f"… و {len(deals) - 10} نتیجه دیگر")
-
-        return "\n".join(lines).strip()
-
-    # ------------------------------------------------------------------
-    # Internals
-    # ------------------------------------------------------------------
-
-    async def _detect_intent(self, query: str) -> Dict[str, Any]:
-        """Extract structured intent from the user's Persian query.
-
-        Fails silently: on any error, only the raw query is returned.
-        """
-        if query in self._intent_cache:
-            return dict(self._intent_cache[query])
-
-        intent: Dict[str, Any] = {"query": query, "category": None, "budget": None}
-
-        try:
-            # Lazy import: AI service may not be available in tests
-            from app.services.ai_service import get_ai_service
-
-            ai = get_ai_service()
-            prompt = (
-                "Extract shopping intent from the following Persian query. "
-                "Reply ONLY with valid JSON, no markdown, no explanation:\n"
-                '{"category": "mobile|laptop|tv|food|clothes|..." '
-                'or null, "budget": integer_toman or null}\n\n'
-                f"Query: {query}"
+        if stats.failed_sources:
+            lines.append(
+                f"⚠️ منابع ناموفق: "
+                f"{', '.join(stats.failed_sources)}"
             )
-            reply, _status = await ai.ask(
-                user_message=prompt,
-                user_name="system",
-                user_id=0,
-                custom_system_prompt=(
-                    "You are a JSON extractor. Output ONLY JSON."
-                ),
-                chat_history=[],
-            )
-            text = (reply or "").strip()
-            # Strip possible code fences
-            if text.startswith("```"):
-                text = text.strip("`").split("\n", 1)[-1]
-            data = json.loads(text)
-            if isinstance(data, dict):
-                intent["category"] = data.get("category")
-                intent["budget"] = data.get("budget")
-        except Exception as exc:
-            logger.debug("Intent detection skipped: %s", exc)
 
-        self._intent_cache[query] = dict(intent)
-        return intent
-
-    def _rank(
-        self, deals: List[DealResult], intent: Dict[str, Any]
-    ) -> List[DealResult]:
-        """Sort by discount desc; drop duplicates by URL."""
-        seen: set[str] = set()
-        valid: List[DealResult] = []
-        for deal in deals:
-            if not deal.product_url or deal.product_url in seen:
-                continue
-            seen.add(deal.product_url)
-            valid.append(deal)
-        valid.sort(key=lambda d: d.discount, reverse=True)
-        return valid
+        return "\n".join(lines)
 
 
-# ---------------------------------------------------------------------------
-# Singleton
-# ---------------------------------------------------------------------------
-
-_engine_singleton: Optional[BlackHuntEngine] = None
+_engine: Optional[HuntEngine] = None
 
 
-def get_engine() -> BlackHuntEngine:
-    global _engine_singleton
-    if _engine_singleton is None:
-        _engine_singleton = BlackHuntEngine()
-    return _engine_singleton
-
-
-def _esc(text: Any) -> str:
-    """HTML-escape for Telegram parse_mode=HTML."""
-    if text is None:
-        return ""
-    return (
-        str(text)
-        .replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-    )
-
-
-__all__ = ["BlackHuntEngine", "get_engine"]
+def get_engine() -> HuntEngine:
+    global _engine
+    if _engine is None:
+        _engine = HuntEngine()
+        logger.info(
+            "HuntEngine initialized with %d adapters",
+            len(_engine.adapters),
+        )
+    return _engine

@@ -94,7 +94,7 @@ class Settings(BaseSettings):
     rate_limit_seconds: float = 2.0
 
     # ============================================================
-    # MCP Endpoints (Digikala / Torob / SnappShop)
+    # MCP Endpoints (backward compatibility - not used)
     # ============================================================
     mcp_digikala_url: str = Field(
         default="http://localhost:8000/mcp",
@@ -117,7 +117,7 @@ class Settings(BaseSettings):
     )
 
     # ============================================================
-    # MCP Toggles / Behavior
+    # MCP Toggles (backward compatibility - not used)
     # ============================================================
     mcp_digikala_enabled: bool = Field(
         default=True,
@@ -156,7 +156,7 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("AUTO_HUNTER_ENABLED", "auto_hunter_enabled"),
     )
     auto_hunter_min_discount: int = Field(
-        default=90,
+        default=10,
         validation_alias=AliasChoices(
             "AUTO_HUNTER_MIN_DISCOUNT", "auto_hunter_min_discount",
         ),
@@ -174,6 +174,12 @@ class Settings(BaseSettings):
             "auto_hunter_max_results_per_store",
         ),
     )
+    auto_hunter_query: str = Field(
+        default="تخفیف بلک فرایدی",
+        validation_alias=AliasChoices(
+            "AUTO_HUNTER_QUERY", "auto_hunter_query",
+        ),
+    )
 
     # ============================================================
     # Validators
@@ -181,12 +187,6 @@ class Settings(BaseSettings):
     @field_validator("admin_ids", mode="before")
     @classmethod
     def parse_admin_ids(cls, v):
-        """
-        پشتیبانی از سه حالت ورودی برای ادمین آیدی:
-        - int (مثل 6409367884)
-        - str (مثل "123,456")
-        - list (مثل [123, 456])
-        """
         if isinstance(v, list):
             result = []
             for item in v:
@@ -195,10 +195,8 @@ class Settings(BaseSettings):
                 except (ValueError, TypeError):
                     continue
             return result
-
         if isinstance(v, int):
             return [v]
-
         if isinstance(v, str):
             stripped = v.strip()
             if not stripped:
@@ -209,7 +207,6 @@ class Settings(BaseSettings):
                 if part.isdigit():
                     result.append(int(part))
             return result
-
         return []
 
     @field_validator(
@@ -218,7 +215,6 @@ class Settings(BaseSettings):
     )
     @classmethod
     def normalize_mcp_url(cls, v):
-        """اطمینان از اینکه آدرس MCP با http/https شروع می‌شود."""
         if v is None:
             return v
         if isinstance(v, str):
@@ -234,21 +230,24 @@ class Settings(BaseSettings):
     @classmethod
     def validate_discount_range(cls, v: int) -> int:
         if not (0 <= v <= 100):
-            raise ValueError("auto_hunter_min_discount must be between 0 and 100")
+            raise ValueError(
+                "auto_hunter_min_discount must be between 0 and 100"
+            )
         return v
 
     @field_validator("auto_hunter_interval_seconds")
     @classmethod
     def validate_interval(cls, v: int) -> int:
         if v < 30:
-            raise ValueError("auto_hunter_interval_seconds must be >= 30")
+            raise ValueError(
+                "auto_hunter_interval_seconds must be >= 30"
+            )
         return v
 
     # ============================================================
     # Helper Methods
     # ============================================================
     def is_admin(self, user_id: int) -> bool:
-        """بررسی اینکه آیا کاربر ادمین است یا نه"""
         return user_id in self.admin_ids
 
     @property
@@ -257,7 +256,6 @@ class Settings(BaseSettings):
 
     @property
     def enabled_mcp_stores(self) -> List[str]:
-        """لیست فروشگاه‌های MCP فعال."""
         stores: List[str] = []
         if self.mcp_digikala_enabled:
             stores.append("digikala")
@@ -268,7 +266,6 @@ class Settings(BaseSettings):
         return stores
 
     def mcp_endpoint_for(self, store: str) -> str:
-        """دریافت آدرس MCP بر اساس نام فروشگاه."""
         mapping = {
             "digikala": self.mcp_digikala_url,
             "torob": self.mcp_torob_url,
@@ -281,7 +278,6 @@ class Settings(BaseSettings):
         return mapping[key]
 
     def is_mcp_store_enabled(self, store: str) -> bool:
-        """آیا این فروشگاه MCP فعال است؟"""
         key = (store or "").lower().replace("-", "_")
         return {
             "digikala": self.mcp_digikala_enabled,
@@ -293,5 +289,4 @@ class Settings(BaseSettings):
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    """دریافت تنظیمات با کش (فقط یک بار خوانده می‌شود)"""
     return Settings()

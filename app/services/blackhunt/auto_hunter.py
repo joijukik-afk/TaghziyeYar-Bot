@@ -1,165 +1,20 @@
-"""AutoHunter — background service that hunts 90%+ discounts automatically."""
-
+"""Autonomous BlackHunt runner that publishes to Telegram groups."""
 from __future__ import annotations
 
 import asyncio
 import html
 import logging
-from datetime import datetime
-from typing import Any, List, Optional, Sequence
+from typing import Any, List, Optional
+
+from telegram.constants import ParseMode
 
 from app.config import get_settings
-from app.services.blackhunt.adapters import search_all_adapters
-from app.services.blackhunt.models import DealResult, HuntReport
+from app.services.blackhunt.analyzer import format_deal_message
+from app.services.blackhunt.engine import get_engine
+from app.services.blackhunt.models import HuntReport
 
 logger = logging.getLogger(__name__)
 
-
-# ---------------------------------------------------------------------------
-# DB helpers
-# ---------------------------------------------------------------------------
-
-async def _load_target_groups() -> List[Any]:
-    """Return every group registered as a target in the DB.
-
-    Primary path: use app.database.repository.list_all_groups() — the same
-    function main.py uses everywhere. That's the canonical way to read groups.
-    """
-    # ---- Primary: repository (matches main.py usage) ----
-    try:
-        from app.database import repository as repo
-        groups = await repo.list_all_groups()
-        if groups:
-            logger.info("AutoHunter: %d گروه از طریق repository پیدا شد", len(groups))
-            return list(groups)
-        logger.info("AutoHunter: repository برگرداند 0 گروه")
-        return []
-    except Exception as exc:
-        logger.warning(
-            "AutoHunter: repo.list_all_groups failed (%s). "
-            "Falling back to session-factory lookup.", exc,
-        )
-
-    # ---- Fallback: legacy session-factory lookup ----
-    model_candidates: Sequence[tuple[str, str]] = (
-        ("app.database.models", "Group"),
-        ("app.database.models", "TargetGroup"),
-        ("app.database.models", "Chat"),
-        ("app.database.group_models", "Group"),
-        ("app.models", "Group"),
-        ("app.models.group", "Group"),
-    )
-    session_candidates: Sequence[tuple[str, str]] = (
-        ("app.database.session", "async_session_maker"),
-        ("app.database.session", "async_session"),
-        ("app.database.session", "SessionLocal"),
-        ("app.database.session", "get_session"),
-        ("app.database", "async_session_maker"),
-    )
-
-    model = None
-    for module_name, attr in model_candidates:
-        try:
-            module = __import__(module_name, fromlist=[attr])
-            model = getattr(module, attr, None)
-            if model is not None:
-                break
-        except Exception:
-            continue
-
-    if model is None:
-        logger.warning("AutoHunter: no Group/TargetGroup model found in DB layer.")
-        return []
-
-    session_factory = None
-    for module_name, attr in session_candidates:
-        try:
-            module = __import__(module_name, fromlist=[attr])
-            session_factory = getattr(module, attr, None)
-            if session_factory is not None:
-                break
-        except Exception:
-            continue
-
-    if session_factory is None:
-        logger.warning("AutoHunter: no session factory found in DB layer.")
-        return []
-
-    try:
-        session = session_factory()
-        if hasattr(session, "__aenter__"):
-            async with session as db:
-                return await _select_groups(db, model)
-        try:
-            return await _select_groups(session, model)
-        finally:
-            closer = getattr(session, "close", None)
-            if closer:
-                result = closer()
-                if asyncio.iscoroutine(result):
-                    await result
-    except Exception as exc:
-        logger.warning("AutoHunter: failed to read groups from DB: %s", exc)
-        return []
-    return []
-
-
-async def _select_groups(db: Any, model: Any) -> List[Any]:
-    try:
-        from sqlalchemy import select
-    except Exception:
-        return []
-
-    try:
-        stmt = select(model)
-        result = db.execute(stmt)
-        if asyncio.iscoroutine(result):
-            result = await result
-
-        scalars = getattr(result, "scalars", None)
-        if scalars:
-            scalars = scalars()
-            if asyncio.iscoroutine(scalars):
-                scalars = await scalars
-            all_method = getattr(scalars, "all", None)
-            if all_method:
-                items = all_method()
-                if asyncio.iscoroutine(items):
-                    items = await items
-                return list(items or [])
-
-        rows = getattr(result, "all", None)
-        if rows:
-            items = rows()
-            if asyncio.iscoroutine(items):
-                items = await items
-            return [r[0] if isinstance(r, (tuple, list)) else r for r in (items or [])]
-    except Exception as exc:
-        logger.debug("AutoHunter select failed: %s", exc)
-    return []
-
-
-def _group_chat_id(group: Any) -> Optional[int]:
-    for attr in ("chat_id", "group_id", "tg_id", "telegram_id", "id"):
-        value = getattr(group, attr, None)
-        if value is not None:
-            try:
-                return int(value)
-            except (TypeError, ValueError):
-                continue
-    if isinstance(group, dict):
-        for key in ("chat_id", "group_id", "tg_id", "telegram_id", "id"):
-            if key in group:
-                try:
-                    return int(group[key])
-                except (TypeError, ValueError):
-                    continue
-    return None
-
-
-# ---------------------------------------------------------------------------
-# Formatting
-# ---------------------------------------------------------------------------
 
 def _fmt_price(value: int) -> str:
     try:
@@ -168,29 +23,61 @@ def _fmt_price(value: int) -> str:
         return str(value)
 
 
-def format_deal(deal: DealResult) -> str:
+def format_deal(deal) -> str:
     lines = [
-        f"🔥 <b>تخفیف {deal.discount:.0f}٪</b>",
-        f"🛍 <b>{html.escape(deal.title or 'بدون عنوان')}</b>",
+        f"🔥 تخفیف {deal.discount:.0f}٪",
+        f"🎯 {html.escape(deal.title or 'بدون عنوان')}",
         "",
-        f"💵 قیمت: <b>{_fmt_price(deal.price)}</b> تومان",
+        f"⚡ قیمت: {_fmt_price(deal.price)} تومان",
     ]
     if deal.old_price and deal.old_price > deal.price:
-        lines.append(f"❌ قیمت قبل: <s>{_fmt_price(deal.old_price)}</s> تومان")
-        lines.append(f"💰 صرفه‌جویی: <b>{_fmt_price(deal.savings)}</b> تومان")
-    lines.append(f"🏬 فروشگاه: {deal.store}")
+        lines.append(
+            f"❌ قیمت قبل: "
+            f"<s>{_fmt_price(deal.old_price)}</s> تومان"
+        )
+        lines.append(
+            f"💎 صرفه‌جویی: {_fmt_price(deal.savings)} تومان"
+        )
+    lines.append(f"🏪 فروشگاه: {deal.store}")
     lines.append("")
-    lines.append(f'🔗 <a href="{html.escape(deal.product_url)}">مشاهده محصول</a>')
+    lines.append(
+        f'🛒 <a href="{deal.product_url}">مشاهده محصول</a>'
+    )
     return "\n".join(lines)
 
 
-# ---------------------------------------------------------------------------
-# AutoHunter
-# ---------------------------------------------------------------------------
+async def _load_target_groups() -> List[Any]:
+    try:
+        from app.database import repository as repo
+        groups = await repo.list_all_groups()
+        if groups:
+            logger.info(
+                "AutoHunter: %d گروه از دیتابیس پیدا شد",
+                len(groups),
+            )
+            return list(groups)
+    except Exception as exc:
+        logger.warning(
+            "AutoHunter: failed to load groups: %s", exc
+        )
+    return []
+
+
+def _group_chat_id(group: Any) -> Optional[int]:
+    for attr in (
+        "chat_id", "group_id", "tg_id",
+        "telegram_id", "id",
+    ):
+        value = getattr(group, attr, None)
+        if value is not None:
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                continue
+    return None
+
 
 class AutoHunter:
-    """Periodic hunter that scans stores and announces deals."""
-
     def __init__(self, bot: Any = None, settings=None):
         self.bot = bot
         self.settings = settings or get_settings()
@@ -198,18 +85,22 @@ class AutoHunter:
         self._stop_event = asyncio.Event()
         self._running = False
         self._last_report: Optional[HuntReport] = None
-        self._seen_urls: set[str] = set()
+        self._seen_urls: set = set()
 
     async def start(self) -> None:
         if not self.settings.auto_hunter_enabled:
-            logger.info("AutoHunter is disabled via settings; not starting.")
+            logger.info(
+                "AutoHunter is disabled via settings; not starting."
+            )
             return
         if self._task and not self._task.done():
             logger.info("AutoHunter already running.")
             return
         self._stop_event = asyncio.Event()
         self._running = True
-        self._task = asyncio.create_task(self.run_forever(), name="AutoHunter")
+        self._task = asyncio.create_task(
+            self.run_forever(), name="AutoHunter"
+        )
         logger.info(
             "AutoHunter started: min_discount=%s%%, interval=%ss",
             self.settings.auto_hunter_min_discount,
@@ -229,94 +120,100 @@ class AutoHunter:
         logger.info("AutoHunter stopped.")
 
     async def run_forever(self) -> None:
-        if not self.settings.auto_hunter_enabled:
-            logger.info("AutoHunter is disabled via settings; run_forever exits.")
-            return
-        if not self._running:
-            self._stop_event = asyncio.Event()
-            self._running = True
-
-        interval = max(30, int(self.settings.auto_hunter_interval_seconds))
-
+        interval = max(
+            30, int(self.settings.auto_hunter_interval_seconds)
+        )
+        logger.info(
+            "AutoHunter started: min_discount=%s%%, interval=%ss",
+            self.settings.auto_hunter_min_discount,
+            interval,
+        )
+        # Initial 5-second warm-up so the bot startup completes
         try:
-            await asyncio.wait_for(self._stop_event.wait(), timeout=5)
+            await asyncio.wait_for(
+                self._stop_event.wait(), timeout=5
+            )
             return
         except asyncio.TimeoutError:
             pass
 
-        while self._running:
+        while not self._stop_event.is_set():
             try:
                 await self.run_once()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                logger.exception("AutoHunter round crashed: %s", exc)
-
+                logger.exception(
+                    "AutoHunter round failed: %s", exc
+                )
             try:
-                await asyncio.wait_for(self._stop_event.wait(), timeout=interval)
-                break
+                await asyncio.wait_for(
+                    self._stop_event.wait(), timeout=interval
+                )
             except asyncio.TimeoutError:
                 continue
-
-    @property
-    def is_running(self) -> bool:
-        return self._running
-
-    @property
-    def last_report(self) -> Optional[HuntReport]:
-        return self._last_report
 
     async def run_once(self) -> HuntReport:
         report = HuntReport()
         min_discount = self.settings.auto_hunter_min_discount
 
         if not self.bot:
-            logger.warning("AutoHunter has no bot instance; skipping round.")
+            logger.warning(
+                "AutoHunter has no bot instance; skipping round."
+            )
             report.finish()
             self._last_report = report
             return report
 
         groups = await _load_target_groups()
         report.groups_count = len(groups)
-        logger.info("AutoHunter: %d گروه از دیتابیس پیدا شد", len(groups))
         if not groups:
-            report.finish()
-            self._last_report = report
-            return report
-
-        query = getattr(self.settings, "auto_hunter_query", None) or "تخفیف ویژه"
-        max_per_store = self.settings.auto_hunter_max_results_per_store
-
-        try:
-            deals = await search_all_adapters(query, max_per_store)
-        except Exception as exc:
-            logger.exception("AutoHunter: search failed entirely: %s", exc)
-            report.errors.append(str(exc))
-            report.finish()
-            self._last_report = report
-            return report
-
-        report.deals_found = len(deals)
-
-        qualified: List[DealResult] = []
-        for deal in deals:
-            if deal.product_url in self._seen_urls:
-                continue
-            if not deal.is_qualified(min_discount):
-                continue
-            qualified.append(deal)
-        report.deals_qualified = len(qualified)
-
-        if not qualified:
-            logger.info(
-                "AutoHunter: در این دور تخفیف %s٪+ پیدا نشد", min_discount
+            logger.warning(
+                "AutoHunter: no target groups found in DB."
             )
             report.finish()
             self._last_report = report
             return report
 
-        for deal in qualified:
-            text = format_deal(deal)
+        query = (
+            getattr(self.settings, "auto_hunter_query", None)
+            or "تخفیف بلک فرایدی"
+        )
+        max_per_store = (
+            self.settings.auto_hunter_max_results_per_store
+        )
+
+        engine = get_engine()
+        try:
+            ranked, stats, _ = await engine.search(
+                query, max_per_source=max_per_store
+            )
+        except Exception as exc:
+            logger.exception(
+                "AutoHunter: engine.search failed: %s", exc
+            )
+            report.errors.append(str(exc))
+            report.finish()
+            self._last_report = report
+            return report
+
+        report.deals_found = stats.total_deals
+
+        for v in ranked:
+            if v.tier in ("C", "UNVERIFIED"):
+                continue
+            if v.real_discount < min_discount:
+                continue
+            fp = (
+                f"{v.deal.store}:{v.deal.product_url}"
+                .lower()
+                .strip()
+            )
+            if fp in self._seen_urls:
+                report.duplicates_skipped += 1
+                continue
+
+            text = format_deal_message(v)
             sent_for_deal = 0
             for group in groups:
                 chat_id = _group_chat_id(group)
@@ -324,20 +221,28 @@ class AutoHunter:
                     continue
                 if await self._send(chat_id, text):
                     sent_for_deal += 1
+                await asyncio.sleep(1.2)
+
             if sent_for_deal:
-                self._seen_urls.add(deal.product_url)
+                self._seen_urls.add(fp)
                 report.deals_sent += sent_for_deal
                 logger.info(
-                    "AutoHunter: deal '%s' (%s%%) sent to %d group(s)",
-                    deal.title, deal.discount, sent_for_deal,
+                    "AutoHunter: deal '%s' (%s%%) "
+                    "sent to %d group(s)",
+                    v.deal.title,
+                    v.real_discount,
+                    sent_for_deal,
                 )
 
         report.finish()
         self._last_report = report
         logger.info(
-            "AutoHunter round done in %.1fs — found=%d qualified=%d sent=%d",
-            report.duration_seconds, report.deals_found,
-            report.deals_qualified, report.deals_sent,
+            "AutoHunter round done in %.1fs — "
+            "found=%d qualified=%d sent=%d",
+            report.duration_seconds,
+            report.deals_found,
+            report.deals_qualified,
+            report.deals_sent,
         )
         return report
 
@@ -346,23 +251,20 @@ class AutoHunter:
             await self.bot.send_message(
                 chat_id=chat_id,
                 text=text,
-                parse_mode="HTML",
+                parse_mode=ParseMode.HTML,
                 disable_web_page_preview=False,
             )
             return True
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            logger.warning("AutoHunter: send to %s failed: %s", chat_id, exc)
+            logger.warning(
+                "AutoHunter: send to %s failed: %s",
+                chat_id,
+                exc,
+            )
             return False
 
-    def reset_seen(self) -> None:
-        self._seen_urls.clear()
-
-
-# ---------------------------------------------------------------------------
-# Public helpers
-# ---------------------------------------------------------------------------
 
 _auto_hunter_singleton: Optional[AutoHunter] = None
 
@@ -370,13 +272,17 @@ _auto_hunter_singleton: Optional[AutoHunter] = None
 def get_auto_hunter(bot: Any = None, settings=None) -> AutoHunter:
     global _auto_hunter_singleton
     if _auto_hunter_singleton is None:
-        _auto_hunter_singleton = AutoHunter(bot=bot, settings=settings)
+        _auto_hunter_singleton = AutoHunter(
+            bot=bot, settings=settings
+        )
     elif bot is not None:
         _auto_hunter_singleton.bot = bot
     return _auto_hunter_singleton
 
 
-async def start_auto_hunter(bot: Any, settings=None) -> AutoHunter:
+async def start_auto_hunter(
+    bot: Any, settings=None,
+) -> AutoHunter:
     hunter = get_auto_hunter(bot=bot, settings=settings)
     await hunter.start()
     return hunter

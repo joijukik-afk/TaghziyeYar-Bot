@@ -51,12 +51,21 @@ from app.bot import search_commands as search_cmd
 from app.bot import voice_chat_commands as voice_cmd
 from app.bot import image_commands as img_cmd
 from app.bot import persona_commands as persona_cmd
-from app.bot import vision_commands as vision_cmd 
+from app.bot import vision_commands as vision_cmd
 from app.bot import sticker_commands as sticker_cmd
 from app.bot import barcode_commands as barcode_cmd
 
+# ✅ NEW: Smart Search Wizard
+from app.bot.search_wizard import (
+    build_search_wizard_conversation,
+    start_wizard as srch_wizard_start,
+    cb_page as srch_cb_page,
+    cb_toggle_unverified as srch_cb_toggle,
+    cb_noop as srch_cb_noop,
+)
+
 from app.bot.content import get_fact, get_myth, get_tip
-from app.services.ai_service import get_ai_service, VOICE_SYSTEM_PROMPT 
+from app.services.ai_service import get_ai_service, VOICE_SYSTEM_PROMPT
 from app.services.auto_content import broadcast_auto_content, post_auto_content
 from app.services.card_generator import generate_ai_health_card
 from app.services.image_generator import generate_group_cover
@@ -145,7 +154,7 @@ async def is_admin_user(user_id: int) -> bool:
 async def notify_owner(context: ContextTypes.DEFAULT_TYPE, actor: User, action: str):
     settings = get_settings()
     owner_id = settings.admin_ids[0] if settings.admin_ids else None
-    if not owner_id or actor.id == owner_id: return  
+    if not owner_id or actor.id == owner_id: return
     text = (
         f"🔔 <b>گزارش لحظه‌ای مدیریت:</b>\n\n"
         f"👤 <b>ادمین:</b> <a href='tg://user?id={actor.id}'>{actor.first_name}</a> (ID: <code>{actor.id}</code>)\n"
@@ -162,7 +171,7 @@ async def notify_owner(context: ContextTypes.DEFAULT_TYPE, actor: User, action: 
 # ---------------------------------------------------------------------------
 async def check_user_ban(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
-    if user and await repo.is_user_banned(user.id): 
+    if user and await repo.is_user_banned(user.id):
         raise ApplicationHandlerStop
 
 
@@ -209,7 +218,7 @@ async def _auto_post_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         if last_time > 0 and (now - last_time < 28800): return
         specific_chat = os.environ.get("AUTO_POST_CHAT_ID", "").strip()
         if specific_chat:
-            try: 
+            try:
                 ok = await post_auto_content(context.bot, int(specific_chat))
                 if ok: await repo.set_last_post_time(now)
             except Exception: pass
@@ -238,7 +247,7 @@ def is_for_me(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     return replied and replied.from_user and replied.from_user.id == context.bot.id
 
 
-def clean_mention(text: str, bot_username: str) -> str: 
+def clean_mention(text: str, bot_username: str) -> str:
     text = text.replace(f"@{bot_username}", "").strip()
     bot_names = ["تغذیه‌یار", "تغذیه یار", "taghziyeyar", "taghziye yar", "تغذیهیار"]
     for name in bot_names:
@@ -251,7 +260,7 @@ def remove_leading_greeting(text: str) -> str:
     pattern = r'^(سلام|درود|hello|hi)[\s!،.,?؟]*'
     cleaned = re.sub(pattern, '', text.strip(), flags=re.IGNORECASE).strip()
     if not cleaned:
-        return "چطور می‌تونم کمکت کنم؟" 
+        return "چطور می‌تونم کمکت کنم؟"
     return cleaned[0].upper() + cleaned[1:]
 
 
@@ -281,10 +290,10 @@ async def ensure_user_and_group(update: Update) -> None:
 
 
 async def _send_html_safe(bot, chat_id: int, text: str, reply_to: int | None = None) -> None:
-    try: 
+    try:
         await bot.send_message(chat_id=chat_id, text=with_signature(text), parse_mode="HTML", reply_to_message_id=reply_to, disable_web_page_preview=True)
-    except BadRequest: 
-        try: 
+    except BadRequest:
+        try:
             clean_text = re.sub(r"<[^>]+>", "", text)
             await bot.send_message(chat_id=chat_id, text=with_signature(clean_text), reply_to_message_id=reply_to)
         except Exception: pass
@@ -408,7 +417,7 @@ async def cmd_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     db_user = await repo.get_user_by_telegram_id(user.id)
     if not db_user: return
     profile = await repo.get_profile(db_user.id)
-    if not profile or not profile.setup_complete: 
+    if not profile or not profile.setup_complete:
         await update.message.reply_text(with_signature(msg.NOT_SETUP_YET), parse_mode="HTML"); return
     lines = ["👤 <b>پروفایل من</b>\n"]
     if profile.age: lines.append(f"• سن: {profile.age} سال")
@@ -543,7 +552,7 @@ async def _process_ai_response(update: Update, context: ContextTypes.DEFAULT_TYP
     user = update.effective_user
     chat_id = update.effective_chat.id
     message_id = update.message.message_id
-    
+
     try:
         override_persona = context.user_data.pop("override_persona", None)
         state = await get_user_state(user.id)
@@ -590,7 +599,7 @@ async def _process_ai_response(update: Update, context: ContextTypes.DEFAULT_TYP
                 try:
                     await context.bot.send_message(
                         chat_id=chat_id,
-                        text="❌ در شکار تخفیف خطایی رخ داد. لطفاً دوباره تلاش کنید یا از /search استفاده کنید.",
+                        text="❌ در شکار تخفیف خطایی رخ داد. لطفاً دوباره تلاش کنید یا از /advsearch استفاده کنید.",
                     )
                 except:
                     pass
@@ -640,11 +649,11 @@ async def _process_ai_response(update: Update, context: ContextTypes.DEFAULT_TYP
 
         ai = get_ai_service()
         reply, status = await ai.ask(
-            user_message=final_input, 
-            user_name=(user.first_name or "") if user else "", 
+            user_message=final_input,
+            user_name=(user.first_name or "") if user else "",
             user_id=user.id,
             custom_system_prompt=final_prompt,
-            chat_history=chat_history 
+            chat_history=chat_history
         )
         if reply:
             reply = remove_leading_greeting(reply)
@@ -666,6 +675,8 @@ async def _process_ai_response(update: Update, context: ContextTypes.DEFAULT_TYP
 @rate_limited
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.message.text: return
+    # ✅ NEW: اگر wizard متن را مصرف کرده، از پردازش مجدد جلوگیری کن
+    if context.user_data.pop("srch_consume_next_text", False): return
     if not is_for_me(update, context): return
     await ensure_user_and_group(update)
     original_text = clean_mention(update.message.text, context.bot.username or "")
@@ -709,7 +720,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if not query: return
     await query.answer(); data = query.data or ""
     if data == "menu_black_friday":
-        await cmd_blackfriday(update, context)
+        # ✅ NEW: به‌جای persona، wizard جستجوی هوشمند باز شود
+        await srch_wizard_start(update, context)
         return
     if data == "menu_persona": await persona_cmd.cmd_persona(update, context); return
     if data == "menu_vision":
@@ -718,7 +730,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await query.edit_message_text(with_signature("🔊 <b>TTS</b>\n\nروش‌ها:\n<code>/tts سلام خوبی؟</code>\nیا روی متن ریپلای کن و بزن <code>/tts</code>"), parse_mode="HTML"); return
     if data == "menu_imagine":
         await query.edit_message_text(with_signature("🎨 <b>تولید عکس</b>\n\n<code>/imagine یک گربه فضانورد</code>"), parse_mode="HTML"); return
-    if data == "menu_search": 
+    if data == "menu_search":
         await query.edit_message_text(with_signature("🔍 <b>جستجو</b>\n\n<code>/search قیمت دلار</code>"), parse_mode="HTML"); return
     if data == "menu_translate":
         await query.edit_message_text(with_signature("🌐 <b>ترجمه</b>\n\n<code>/translate en سلام</code>"), parse_mode="HTML"); return
@@ -745,7 +757,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 # ---------------------------------------------------------------------------
 async def cmd_addadmin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
-    if not user or not get_settings().is_admin(user.id): 
+    if not user or not get_settings().is_admin(user.id):
         return await update.message.reply_text("⛔️ این دستور فقط برای صاحب ربات است.")
     target_id, target_name = None, "کاربر"
     if update.message.reply_to_message:
@@ -767,7 +779,7 @@ async def cmd_addadmin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 async def cmd_removeadmin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
-    if not user or not get_settings().is_admin(user.id): 
+    if not user or not get_settings().is_admin(user.id):
         return await update.message.reply_text("⛔️ این دستور فقط برای صاحب ربات است.")
     target_id = None
     if update.message.reply_to_message:
@@ -787,7 +799,7 @@ async def cmd_removeadmin(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 async def cmd_admins(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
-    if not user or not get_settings().is_admin(user.id): 
+    if not user or not get_settings().is_admin(user.id):
         return await update.message.reply_text("⛔️ این دستور فقط برای صاحب ربات است.")
     dyn_admins = await repo.get_dynamic_admins()
     if not dyn_admins: return await update.message.reply_text("📋 هیچ ادمین داینامیکی ثبت نشده است.")
@@ -819,7 +831,7 @@ async def cmd_advertise(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     for g in groups:
         try:
             await context.bot.send_message(chat_id=g.chat_id, text=ad_text, parse_mode="HTML", reply_markup=reply_markup)
-            success += 1; await asyncio.sleep(1) 
+            success += 1; await asyncio.sleep(1)
         except Forbidden: await repo.deactivate_group(chat_id=g.chat_id); fail += 1
         except Exception: fail += 1
     await status_msg.edit_text(f"✅ تبلیغ به {success} گروه ارسال شد.\n❌ {fail} ناموفق.")
@@ -836,7 +848,7 @@ async def cmd_broadcast_covers(update: Update, context: ContextTypes.DEFAULT_TYP
         try:
             photo = await generate_group_cover(g.title or "Nutrition Group")
             await context.bot.send_photo(chat_id=g.chat_id, photo=photo, caption=f"🎨 کاور اختصاصی گروه <b>{g.title}</b>", parse_mode="HTML")
-            success += 1; await asyncio.sleep(3) 
+            success += 1; await asyncio.sleep(3)
         except Forbidden: await repo.deactivate_group(chat_id=g.chat_id); dead += 1
         except Exception: pass
     await status_msg.edit_text(f"✅ کاور برای {success} گروه ارسال شد.\n🧹 {dead} گروه حذف شد.")
@@ -1022,6 +1034,13 @@ def build_application() -> Application:
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS & filters.ChatType.GROUPS, track_new_members), group=-2)
     app.add_handler(ChatMemberHandler(gmanager.on_bot_added, ChatMemberHandler.MY_CHAT_MEMBER), group=-1)
     app.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.ALL, gmanager.on_group_message), group=-1)
+
+    # --- Smart Search Wizard (group -1 → runs before TEXT handler) ---
+    app.add_handler(build_search_wizard_conversation(), group=-1)
+    app.add_handler(CallbackQueryHandler(srch_cb_page, pattern=r"^srch:page:"), group=-1)
+    app.add_handler(CallbackQueryHandler(srch_cb_toggle, pattern=r"^srch:toggle_unverified$"), group=-1)
+    app.add_handler(CallbackQueryHandler(srch_cb_noop, pattern=r"^srch:noop$"), group=-1)
+
     # --- Core Commands ---
     app.add_handler(CommandHandler("start", cmd_start)); app.add_handler(CommandHandler("help", cmd_help)); app.add_handler(CommandHandler("menu", cmd_menu))
     app.add_handler(CommandHandler("about", cmd_about)); app.add_handler(CommandHandler("privacy", cmd_privacy)); app.add_handler(CommandHandler("settings", cmd_settings))
@@ -1039,13 +1058,13 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("vision", vision_cmd.cmd_vision))
     app.add_handler(CommandHandler("roast", vision_cmd.cmd_roast))
     app.add_handler(CommandHandler("ocr", vision_cmd.cmd_ocr))
-    app.add_handler(CommandHandler("food_vision", vision_cmd.cmd_food)) 
+    app.add_handler(CommandHandler("food_vision", vision_cmd.cmd_food))
     app.add_handler(CommandHandler("barcode", barcode_cmd.cmd_barcode))
     app.add_handler(CommandHandler("imagine", img_cmd.cmd_imagine))
     app.add_handler(CallbackQueryHandler(img_cmd.handle_reimagine, pattern=r"^reimg_"))
     app.add_handler(CommandHandler("getconfig", conf_cmd.cmd_getconfig))
     app.add_handler(CallbackQueryHandler(conf_cmd.handle_config_callback, pattern=r"^(copy_cfg_|refresh_cfg)"))
-    app.add_handler(CommandHandler("translate", trans_cmd.cmd_translate)) 
+    app.add_handler(CommandHandler("translate", trans_cmd.cmd_translate))
     app.add_handler(CommandHandler("search", search_cmd.cmd_search))
     app.add_handler(CommandHandler("sticker", sticker_cmd.cmd_sticker))
     # --- Health Commands ---
@@ -1069,8 +1088,8 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("forcepost", cmd_forcepost)); app.add_handler(CommandHandler("advertise", cmd_advertise))
     # --- Media & Text Handlers ---
     app.add_handler(MessageHandler(filters.PHOTO & filters.ChatType.PRIVATE, vision_cmd.handle_photo_message))
-    app.add_handler(CallbackQueryHandler(handle_callback)) 
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text)) 
+    app.add_handler(CallbackQueryHandler(handle_callback))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_error_handler(on_error)
     return app
 
@@ -1082,12 +1101,12 @@ def main() -> None:
     if render_url and settings.webhook_path:
         logger.info("Starting via WEBHOOK...")
         application.run_webhook(
-            listen="0.0.0.0", 
-            port=settings.port, 
-            url_path=settings.webhook_path, 
-            webhook_url=f"{render_url}/{settings.webhook_path}", 
+            listen="0.0.0.0",
+            port=settings.port,
+            url_path=settings.webhook_path,
+            webhook_url=f"{render_url}/{settings.webhook_path}",
             secret_token=settings.webhook_secret_token or None,
-            allowed_updates=Update.ALL_TYPES, 
+            allowed_updates=Update.ALL_TYPES,
             drop_pending_updates=True
         )
     else:

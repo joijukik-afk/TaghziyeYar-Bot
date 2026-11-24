@@ -180,9 +180,12 @@ async def start_wizard(
                 text, reply_markup=kb, parse_mode=ParseMode.HTML,
             )
         except Exception:
-            await update.callback_query.message.reply_text(
-                text, reply_markup=kb, parse_mode=ParseMode.HTML,
-            )
+            try:
+                await update.callback_query.message.reply_text(
+                    text, reply_markup=kb, parse_mode=ParseMode.HTML,
+                )
+            except Exception:
+                pass
     else:
         await update.message.reply_text(
             text, reply_markup=kb, parse_mode=ParseMode.HTML,
@@ -213,9 +216,12 @@ async def _cb_store(
         sq.stores.append(key)
 
     context.user_data["srch_q"] = sq
-    await q.edit_message_reply_markup(
-        reply_markup=_store_kb(set(sq.stores)),
-    )
+    try:
+        await q.edit_message_reply_markup(
+            reply_markup=_store_kb(set(sq.stores)),
+        )
+    except Exception:
+        pass  # Message is not modified → ignore
     return STORE
 
 
@@ -223,14 +229,17 @@ async def _to_discount(update, context):
     q = update.callback_query
     await q.answer()
     sq = _get_q(context)
-    await q.edit_message_text(
-        f"💰 <b>مرحله ۲ از ۴ — حداقل تخفیف</b>\n\n"
-        f"فروشگاه‌ها: "
-        f"{_esc(', '.join(STORES[s] for s in sq.stores))}\n\n"
-        f"حداقل چند درصد تخفیف داشته باشه؟",
-        reply_markup=_discount_kb(sq.min_discount),
-        parse_mode=ParseMode.HTML,
-    )
+    try:
+        await q.edit_message_text(
+            f"💰 <b>مرحله ۲ از ۴ — حداقل تخفیف</b>\n\n"
+            f"فروشگاه‌ها: "
+            f"{_esc(', '.join(STORES[s] for s in sq.stores))}\n\n"
+            f"حداقل چند درصد تخفیف داشته باشه؟",
+            reply_markup=_discount_kb(sq.min_discount),
+            parse_mode=ParseMode.HTML,
+        )
+    except Exception:
+        pass
     return DISCOUNT
 
 
@@ -241,9 +250,12 @@ async def _cb_discount(update, context):
     sq = _get_q(context)
     sq.min_discount = float(q.data.split(":")[-1])
     context.user_data["srch_q"] = sq
-    await q.edit_message_reply_markup(
-        reply_markup=_discount_kb(sq.min_discount),
-    )
+    try:
+        await q.edit_message_reply_markup(
+            reply_markup=_discount_kb(sq.min_discount),
+        )
+    except Exception:
+        pass
     return DISCOUNT
 
 
@@ -251,12 +263,15 @@ async def _to_sort(update, context):
     q = update.callback_query
     await q.answer()
     sq = _get_q(context)
-    await q.edit_message_text(
-        f"📊 <b>مرحله ۳ از ۴ — ترتیب نمایش</b>\n\n"
-        f"حداقل تخفیف: {sq.min_discount:.0f}٪",
-        reply_markup=_sort_kb(sq.sort),
-        parse_mode=ParseMode.HTML,
-    )
+    try:
+        await q.edit_message_text(
+            f"📊 <b>مرحله ۳ از ۴ — ترتیب نمایش</b>\n\n"
+            f"حداقل تخفیف: {sq.min_discount:.0f}٪",
+            reply_markup=_sort_kb(sq.sort),
+            parse_mode=ParseMode.HTML,
+        )
+    except Exception:
+        pass
     return SORT
 
 
@@ -267,9 +282,12 @@ async def _cb_sort(update, context):
     sq = _get_q(context)
     sq.sort = q.data.split(":")[-1]
     context.user_data["srch_q"] = sq
-    await q.edit_message_reply_markup(
-        reply_markup=_sort_kb(sq.sort),
-    )
+    try:
+        await q.edit_message_reply_markup(
+            reply_markup=_sort_kb(sq.sort),
+        )
+    except Exception:
+        pass
     return SORT
 
 
@@ -277,17 +295,20 @@ async def _to_text(update, context):
     q = update.callback_query
     await q.answer()
     sq = _get_q(context)
-    await q.edit_message_text(
-        "✍️ <b>مرحله ۴ از ۴ — محصول</b>\n\n"
-        "اسم محصول یا دسته‌بندی رو بنویس:\n"
-        "<i>می‌تونی یکی از دکمه‌ها رو بزنی یا خودت تایپ کنی.</i>\n\n"
-        f"📋 خلاصه: "
-        f"{_esc(', '.join(STORES[s] for s in sq.stores))} | "
-        f"≥{sq.min_discount:.0f}٪ | "
-        f"{_esc(SORT_OPTIONS.get(sq.sort, ''))}",
-        reply_markup=_text_kb(),
-        parse_mode=ParseMode.HTML,
-    )
+    try:
+        await q.edit_message_text(
+            "✍️ <b>مرحله ۴ از ۴ — محصول</b>\n\n"
+            "اسم محصول یا دسته‌بندی رو بنویس:\n"
+            "<i>می‌تونی یکی از دکمه‌ها رو بزنی یا خودت تایپ کنی.</i>\n\n"
+            f"📋 خلاصه: "
+            f"{_esc(', '.join(STORES[s] for s in sq.stores))} | "
+            f"≥{sq.min_discount:.0f}٪ | "
+            f"{_esc(SORT_OPTIONS.get(sq.sort, ''))}",
+            reply_markup=_text_kb(),
+            parse_mode=ParseMode.HTML,
+        )
+    except Exception:
+        pass
     return TEXT
 
 
@@ -318,10 +339,13 @@ async def _run_and_render(update, context, text: str):
     engine = get_engine()
 
     if update.callback_query:
-        await update.callback_query.edit_message_text(
-            f"⏳ در حال جستجو در "
-            f"{_esc(', '.join(STORES[s] for s in sq.stores))} ..."
-        )
+        try:
+            await update.callback_query.edit_message_text(
+                f"⏳ در حال جستجو در "
+                f"{_esc(', '.join(STORES[s] for s in sq.stores))} ..."
+            )
+        except Exception:
+            pass
         chat_id = update.callback_query.message.chat_id
     else:
         await update.message.reply_text(
@@ -542,6 +566,7 @@ def build_search_wizard_conversation() -> ConversationHandler:
         ],
         per_user=True,
         per_chat=True,
+        per_message=False,
         allow_reentry=True,
     )
 

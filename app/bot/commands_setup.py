@@ -11,6 +11,7 @@ GENERAL_COMMANDS = [
     BotCommand("help", "📖 راهنمای کامل"),
     BotCommand("menu", "🏠 منوی اصلی"),
     BotCommand("blackfriday", "🛍️ تخفیف‌های بلک‌فرایدی"),
+    BotCommand("advsearch", "🔎 جستجوی پیشرفته با فیلتر"),  # ✅ NEW
     BotCommand("search", "🔍 جستجوی هوشمند"),
     BotCommand("translate", "🌐 ترجمه هوشمند"),
     BotCommand("voice", "🎙️ چت صوتی"),
@@ -76,11 +77,11 @@ async def setup_commands(bot: Bot) -> None:
     """تنظیم منوهای ربات برای سطوح مختلف دسترسی"""
     try:
         settings = get_settings()
-        
+
         await bot.set_my_commands(GENERAL_COMMANDS, scope=BotCommandScopeDefault())
         await bot.set_my_commands(GENERAL_COMMANDS + PRIVATE_COMMANDS, scope=BotCommandScopeAllPrivateChats())
         await bot.set_my_commands(GENERAL_COMMANDS, scope=BotCommandScopeAllGroupChats())
-        
+
         for admin_id in settings.admin_ids:
             try:
                 await bot.set_my_commands(
@@ -89,8 +90,8 @@ async def setup_commands(bot: Bot) -> None:
                 )
             except Exception as e:
                 logger.warning(f"Could not set admin commands for {admin_id}: {e}")
-                
+
         logger.info("Bot commands registered successfully with Scopes.")
-        
+
     except Exception as e:
         logger.error("Failed to register commands: %s", e, exc_info=True)

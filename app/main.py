@@ -720,7 +720,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if not query: return
     await query.answer(); data = query.data or ""
     if data == "menu_black_friday":
-        # ✅ NEW: به‌جای persona، wizard جستجوی هوشمند باز شود
+        # ✅ به‌جای persona، wizard جستجوی هوشمند باز شود
         await srch_wizard_start(update, context)
         return
     if data == "menu_persona": await persona_cmd.cmd_persona(update, context); return

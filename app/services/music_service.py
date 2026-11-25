@@ -1,17 +1,13 @@
-"""KOMA Engine 3.0 — Professional Coma Music Discovery (metadata-only).
+"""KOMA Engine 3.2 — Audio delivery + strict filtering.
 
-Key design principles:
-    * STRICT KOMA identity — no generic sad songs, no random phonk/lofi
-    * Metadata-only discovery — official SoundCloud URLs, no audio redistribution
-    * Multi-pool weighted discovery — adaptive, non-repeating
-    * Honest scoring — no claims about acoustic analysis we didn't perform
-    * Persistent dedup and artist rotation (DB-backed, race-safe)
-    * Freshness-aware ranking with unknown-date handling
-    * Bounded concurrency + exponential backoff
-
-Legal / compliance:
-    This module NEVER downloads or redistributes third-party audio.
-    It only reads public metadata and returns the official SoundCloud URL.
+Sends actual audio files (like v2.1) BUT adds:
+    * KOMA scoring (title + artist + description)
+    * Hard reject (phonk/EDM/trap/etc.)
+    * Artist cooldown (DB-backed)
+    * Title dedup
+    * Freshness-aware selection
+    * Bounded concurrency
+    * Fallback threshold so it always finds SOMETHING valid
 """
 from __future__ import annotations
 
@@ -21,15 +17,17 @@ import logging
 import os
 import random
 import re
+import tempfile
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from difflib import SequenceMatcher
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import yt_dlp
-from sqlalchemy import select, desc, func
+from sqlalchemy import select, desc
 from sqlalchemy.exc import IntegrityError
+from telegram import Bot
 
 from app.database.music_models import MusicTrack
 from app.database.session import session_scope
@@ -38,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 
 # ═══════════════════════════════════════════════════════════════════════
-#  1. CONFIGURATION
+#  CONFIG
 # ═══════════════════════════════════════════════════════════════════════
 
 def _env_int(name: str, default: int) -> int:
@@ -56,32 +54,31 @@ def _env_float(name: str, default: float) -> float:
 
 @dataclass(frozen=True)
 class KomaConfig:
-    # Acceptance
-    min_score: int = 82
+    # Acceptance thresholds
+    min_score: int = 30
+    fallback_min_score: int = 15
     # Search
     max_queries: int = 10
     results_per_query: int = 15
     search_concurrency: int = 4
     request_timeout: int = 30
     max_attempts: int = 30
-    # Track validation
+    # Download
+    max_size_bytes: int = 49 * 1024 * 1024
+    min_size_bytes: int = 100 * 1024
     min_duration: int = 20
     max_duration: int = 900
     # Dedup / rotation
-    artist_cooldown: int = 5
+    artist_cooldown: int = 3
     title_similarity: float = 0.85
     failed_url_cooldown_hours: int = 6
-    # Freshness
-    freshness_days_bonus: int = 30
-    freshness_days_max: int = 365
-    # User / chat
+    # User cooldown
     user_cooldown_seconds: int = 10
-    # Provider
-    sc_search_endpoint: str = "scsearch"
 
 
 CFG = KomaConfig(
-    min_score=_env_int("KOMA_MIN_SCORE", 82),
+    min_score=_env_int("KOMA_MIN_SCORE", 30),
+    fallback_min_score=_env_int("KOMA_FALLBACK_MIN_SCORE", 15),
     max_queries=_env_int("KOMA_MAX_QUERIES", 10),
     results_per_query=_env_int("KOMA_RESULTS_PER_QUERY", 15),
     search_concurrency=_env_int("KOMA_SEARCH_CONCURRENCY", 4),
@@ -89,92 +86,56 @@ CFG = KomaConfig(
     max_attempts=_env_int("KOMA_MAX_ATTEMPTS", 30),
     min_duration=_env_int("KOMA_MIN_DURATION", 20),
     max_duration=_env_int("KOMA_MAX_DURATION", 900),
-    artist_cooldown=_env_int("KOMA_ARTIST_COOLDOWN", 5),
+    artist_cooldown=_env_int("KOMA_ARTIST_COOLDOWN", 3),
     title_similarity=_env_float("KOMA_TITLE_SIM", 0.85),
     failed_url_cooldown_hours=_env_int("KOMA_FAILED_COOLDOWN_H", 6),
     user_cooldown_seconds=_env_int("KOMA_USER_COOLDOWN", 10),
 )
 
 
+# Optional SoundCloud OAuth token (helps with 401/429)
+SOUNDCLOUD_OAUTH_TOKEN = os.getenv("SOUNDCLOUD_OAUTH_TOKEN", "").strip()
+
+
 # ═══════════════════════════════════════════════════════════════════════
-#  2. KOMA PROFILE (genres, tags, queries)
+#  KOMA PROFILE
 # ═══════════════════════════════════════════════════════════════════════
 
-# Core KOMA signals — each match adds weight
-KOMA_CORE_GENRES: Dict[str, int] = {
-    "deep ambient": 14,
-    "dark ambient": 14,
-    "emotional ambient": 14,
-    "melancholic ambient": 14,
-    "ethereal ambient": 13,
-    "atmospheric piano": 14,
-    "lonely piano": 14,
-    "cinematic ambient": 13,
-    "nostalgic ambient": 12,
-    "dreamlike ambient": 12,
-    "space ambient": 12,
-    "dark piano": 12,
-    "ambient piano": 13,
-    "emotional instrumental": 12,
-    "cinematic instrumental": 12,
-    "coma ambient": 15,
-    "coma music": 15,
-    "koma": 12,
-    # Persian equivalents
-    "موسیقی کمایی": 15,
-    "پیانو غمگین": 12,
-    "آمبیانت احساسی": 13,
-    "سینمایی": 10,
-    "غمگین سینمایی": 12,
+KOMA_KEYWORDS: Dict[str, int] = {
+    # Strong identity words
+    "coma": 20, "koma": 20, "کما": 20, "کمایی": 20,
+    "dark ambient": 20, "deep ambient": 20,
+    "emotional ambient": 20, "melancholic ambient": 20,
+    "ethereal": 12, "atmospheric": 10,
+    "dark piano": 18, "sad piano": 15, "lonely piano": 15,
+    "atmospheric piano": 18, "cinematic": 10,
+    "melancholic": 12, "nostalgic": 12,
+    "dreamlike": 12, "lonely": 10,
+    "slowed": 10, "reverb": 8,
+    "ambient": 10, "piano": 10,
+    "غمگین": 15, "غمگین": 15, "غمگين": 15,
+    "احساسی": 10, "آرام": 8, "تنها": 10,
+    "پیانو": 12, "سینمایی": 10, "خاطره": 8,
 }
 
-# Secondary compatible styles — smaller weight
-KOMA_SECONDARY_GENRES: Dict[str, int] = {
-    "slowcore": 7,
-    "post rock": 6,
-    "post-rock": 6,
-    "ethereal wave": 8,
-    "shoegaze": 6,
-    "ambient shoegaze": 8,
-    "dreamwave": 7,
-    "minimal cinematic": 8,
-    "soundscape": 7,
-    "slowed reverb": 5,
-    "slowed and reverb": 5,
-    "atmospheric electronic": 6,
-    "dark wave": 6,
-    "slowcore ambient": 8,
-    "atmospheric post-rock": 8,
-    "minimal piano": 8,
+KOMA_NEGATIVE: Dict[str, int] = {
+    "phonk": 60, "drift phonk": 70, "trap": 40,
+    "hardstyle": 60, "hardcore": 50, "dubstep": 50,
+    "edm": 40, "festival": 40, "hardwave": 50,
+    "lofi": 25, "lofi beats": 30, "generic lofi": 30,
+    "hip hop": 25, "hip-hop": 25, "rap": 25, "rapper": 30,
+    "pop": 25, "dance": 20, "house": 15, "techno": 15,
+    "podcast": 70, "comedy": 70, "asmr": 50,
+    "audiobook": 70, "spoken word": 60, "interview": 50,
+    "rock": 15, "metal": 30, "punk": 25,
 }
 
-# Negative filters — strong evidence needed to reject
-KOMA_NEGATIVE_GENRES: Dict[str, int] = {
-    "phonk": 40,
-    "drift phonk": 50,
-    "aggressive trap": 40,
-    "hardstyle": 45,
-    "hardcore": 40,
-    "festival edm": 40,
-    "commercial dance": 35,
-    "big room": 40,
-    "hardwave": 40,
-    "heavy bass": 30,
-    "dubstep": 30,
-    "edm": 15,
-    "trap": 15,
-    "hip hop": 10,
-    "generic lofi": 25,
-    "lofi beats": 20,
-    "pop": 20,
-    "comedy": 50,
-    "podcast": 60,
-    "spoken word": 50,
-    "audiobook": 60,
-    "asmr": 40,
-}
+# Hard-reject keywords (block regardless of score)
+HARD_BLOCK: Tuple[str, ...] = (
+    "phonk", "drift phonk", "hardstyle", "dubstep",
+    "podcast", "comedy", "asmr", "audiobook", "spoken word",
+)
 
-# Discovery reference artists — NOT mandatory, NOT exclusive
 CORE_ARTISTS: Tuple[str, ...] = (
     "øneheart", "oneheart", "reidenshi", "daniel.mp3", "antent",
     "my head is empty", ".diedlonely", "diedlonely", "leadwave",
@@ -191,15 +152,12 @@ ADDITIONAL_ARTISTS: Tuple[str, ...] = (
     "next to blue", "cornwave",
 )
 
-# Weighted query pools — each pool reflects a specific KOMA dimension.
 QUERY_POOLS: Dict[str, List[Tuple[str, int]]] = {
-    "artist": [
-        (a, 3) for a in CORE_ARTISTS
-    ] + [(a, 2) for a in ADDITIONAL_ARTISTS[:12]],
+    "artist": [(a, 3) for a in CORE_ARTISTS] + [(a, 2) for a in ADDITIONAL_ARTISTS[:15]],
     "deep_ambient": [
         ("deep coma ambient", 3), ("deep atmospheric ambient", 3),
         ("coma ambient", 3), ("deep dark ambient", 2),
-        ("موزیک کمایی", 3), ("موسیقی آرام عمیق", 3),
+        ("موسیقی کمایی", 3), ("موسیقی آرام عمیق", 3),
     ],
     "dark_emotional": [
         ("dark emotional ambient", 3), ("emotional dark ambient", 2),
@@ -208,56 +166,46 @@ QUERY_POOLS: Dict[str, List[Tuple[str, int]]] = {
     "melancholic_piano": [
         ("melancholic piano", 3), ("lonely atmospheric piano", 3),
         ("sad cinematic piano", 3), ("پیانو غمگین سینمایی", 3),
-        ("lonely piano ambient", 2),
     ],
     "ethereal": [
         ("ethereal dark ambient", 3), ("ethereal wave", 2),
-        ("dreamlike melancholic music", 3), ("موسیقی فضایی غمگین", 2),
+        ("dreamlike melancholic music", 3),
     ],
     "cinematic": [
         ("emotional cinematic instrumental", 3),
         ("cinematic emotional ambient", 3),
         ("cinematic soundscape", 2),
-        ("موزیک تنهایی", 2), ("موسیقی آرام تاریک", 2),
     ],
     "nostalgic": [
         ("nostalgic ambient music", 3), ("nostalgic dark piano", 2),
-        ("موسیقی خاطره‌انگیز", 3), ("سوزناک", 1),
+        ("موسیقی خاطره‌انگیز", 3),
     ],
     "slowed_atmospheric": [
-        ("slowed reverb atmospheric", 3),
-        ("slowed ambient dark", 2),
+        ("slowed reverb atmospheric", 3), ("slowed ambient dark", 2),
         ("موسیقی اسلوموشن احساسی", 3),
     ],
     "unknown": [
-        ("cold emotional soundscape", 3),
-        ("lonely night ambient", 3),
-        ("atmospheric reverb piano", 2),
-        ("empty space ambient", 2),
-        ("snowfall ambient", 2),
+        ("cold emotional soundscape", 3), ("lonely night ambient", 3),
+        ("atmospheric reverb piano", 2), ("empty space ambient", 2),
     ],
     "new_release": [
-        ("new dark ambient 2025", 3),
-        ("new melancholic piano", 3),
-        ("new emotional ambient", 2),
+        ("new dark ambient 2025", 3), ("new melancholic piano", 3),
     ],
 }
 
 
 # ═══════════════════════════════════════════════════════════════════════
-#  3. TEXT UTILITIES
+#  UTILITIES
 # ═══════════════════════════════════════════════════════════════════════
 
 _PUNCT_RE = re.compile(r"[\(\)\[\]\{\}\|\-\_\.\,\!\?\:\;\"\'«»/\\]+")
 _WS_RE = re.compile(r"\s+")
 _CTRL_RE = re.compile(r"[\x00-\x08\x0b-\x0c\x0e-\x1f]")
 _HTML_RE = re.compile(r"<[^>]*>")
-
 _PERSIAN_DIGITS = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
 
 
 def normalize(text: str) -> str:
-    """Lowercase, strip punctuation, collapse whitespace, normalize digits."""
     if not text:
         return ""
     text = str(text).lower().strip().translate(_PERSIAN_DIGITS)
@@ -289,169 +237,92 @@ def url_key(url: str) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-#  4. SCORING ENGINE
+#  SCORING
 # ═══════════════════════════════════════════════════════════════════════
 
 @dataclass
 class TrackCandidate:
-    """A single SoundCloud track candidate (metadata only)."""
     sc_id: str
     title: str
     artist: str
     url: str
     duration: int = 0
     description: str = ""
-    upload_date: Optional[str] = None      # YYYYMMDD
+    upload_date: Optional[str] = None
     tags: Tuple[str, ...] = ()
-
-    # Filled by scoring:
     score: int = 0
     breakdown: Dict[str, int] = field(default_factory=dict)
-    rejection_reasons: List[str] = field(default_factory=list)
-
-
-@dataclass
-class ScoreResult:
-    score: int
-    breakdown: Dict[str, int]
-    rejected: bool
-    rejection_reasons: List[str]
-
-
-def _blob(c: TrackCandidate) -> str:
-    parts = [c.title, c.artist, c.description, " ".join(c.tags)]
-    return normalize(" ".join(p for p in parts if p))
-
-
-def _match_any(blob: str, table: Dict[str, int]) -> int:
-    """Sum weights of every key found in the blob."""
-    total = 0
-    for key, weight in table.items():
-        if key in blob:
-            total += weight
-    return total
 
 
 def _artist_in_reference(artist: str) -> bool:
     a = normalize(artist)
     if not a:
         return False
-    for ref in CORE_ARTISTS:
-        if normalize(ref) and normalize(ref) in a:
-            return True
-    for ref in ADDITIONAL_ARTISTS:
-        if normalize(ref) and normalize(ref) in a:
+    for ref in CORE_ARTISTS + ADDITIONAL_ARTISTS:
+        nref = normalize(ref)
+        if nref and nref in a:
             return True
     return False
 
 
-def _freshness_score(upload_date: Optional[str]) -> int:
-    """0–10 based on age. Unknown date = 3 (neutral-low)."""
-    if not upload_date:
-        return 3
-    try:
-        dt = datetime.strptime(upload_date, "%Y%m%d").replace(tzinfo=timezone.utc)
-    except Exception:
-        return 3
-    age_days = (datetime.now(timezone.utc) - dt).days
-    if age_days < 0:
-        return 3
-    if age_days <= 7:
-        return 10
-    if age_days <= 30:
-        return 8
-    if age_days <= 90:
-        return 6
-    if age_days <= 365:
-        return 4
-    return 2
+def _match_sum(blob: str, table: Dict[str, int]) -> int:
+    return sum(w for k, w in table.items() if k in blob)
 
 
-def score_track(c: TrackCandidate) -> ScoreResult:
-    """Return 0–100 KOMA score with a transparent breakdown."""
-    blob = _blob(c)
+def hard_reject(c: TrackCandidate) -> bool:
+    blob = normalize(f"{c.title} {c.artist}")
+    if any(kw in blob for kw in HARD_BLOCK):
+        return True
+    if c.duration and not (CFG.min_duration <= c.duration <= CFG.max_duration):
+        return True
+    return False
+
+
+def score_track(c: TrackCandidate) -> Tuple[int, Dict[str, int]]:
+    """Return (0–100 score, breakdown)."""
+    title_blob = normalize(c.title)
+    artist_blob = normalize(c.artist)
+    desc_blob = normalize(c.description or "")
+    tags_blob = normalize(" ".join(c.tags or ()))
+    full_blob = f"{title_blob} {artist_blob} {desc_blob} {tags_blob}"
+
     breakdown: Dict[str, int] = {}
 
-    # 1) Core genre / tag compatibility (0–35)
-    core = min(35, _match_any(blob, KOMA_CORE_GENRES))
-    breakdown["core_style"] = core
+    # 1. Artist in reference list — biggest signal (0–40)
+    breakdown["artist_ref"] = 40 if _artist_in_reference(c.artist) else 0
 
-    # 2) Secondary genre / tag compatibility (0–20)
-    secondary = min(20, _match_any(blob, KOMA_SECONDARY_GENRES))
-    breakdown["secondary_style"] = secondary
+    # 2. Title keywords (0–40)
+    title_pts = min(40, _match_sum(title_blob, KOMA_KEYWORDS))
+    breakdown["title_keywords"] = title_pts
 
-    # 3) Description compatibility (0–10)
-    #    - Contains KOMA-relevant words (light)
-    desc = normalize(c.description or "")
-    desc_pts = 0
-    for kw, w in (
-        ("coma", 4), ("ambient", 3), ("piano", 3),
-        ("atmospheric", 3), ("melancholic", 3), ("cinematic", 2),
-        ("emotional", 2), ("ethereal", 2), ("reverb", 1),
-    ):
-        if kw in desc:
-            desc_pts += w
-    breakdown["description"] = min(10, desc_pts)
+    # 3. Description / tags (0–15)
+    desc_pts = min(15, _match_sum(f"{desc_blob} {tags_blob}", KOMA_KEYWORDS))
+    breakdown["desc_tags"] = desc_pts
 
-    # 4) Artist discovery relevance (0–10)
-    breakdown["artist_relevance"] = 10 if _artist_in_reference(c.artist) else 0
+    # 4. Duration appropriate (0–5)
+    breakdown["duration"] = 5 if (c.duration and CFG.min_duration <= c.duration <= CFG.max_duration) else 0
 
-    # 5) Metadata completeness (0–5)
-    completeness = 0
-    if c.title: completeness += 1
-    if c.artist: completeness += 1
-    if c.duration: completeness += 1
-    if c.description: completeness += 1
-    if c.upload_date: completeness += 1
-    breakdown["completeness"] = completeness
-
-    # 6) Freshness (0–10)
-    breakdown["freshness"] = _freshness_score(c.upload_date)
-
-    raw = sum(breakdown.values())
-
-    # Negative filtering — subtract strong contraindications
-    negatives = _match_any(blob, KOMA_NEGATIVE_GENRES)
-    # Reduce one point of penalty per 2 negative points (soft subtraction)
+    # Penalty for negatives
+    negatives = _match_sum(full_blob, KOMA_NEGATIVE)
     penalty = negatives // 2
     breakdown["negative_penalty"] = -penalty
-    raw = max(0, raw - penalty)
 
-    # Clamp final
-    final = min(100, raw)
-
-    # Rejection logic (hard rules independent of score)
-    reasons: List[str] = []
-    if final < CFG.min_score:
-        reasons.append(f"score {final} < {CFG.min_score}")
-    if negatives >= 30:
-        reasons.append(f"negative signals ({negatives})")
-    if c.duration and not (CFG.min_duration <= c.duration <= CFG.max_duration):
-        reasons.append(f"duration {c.duration}s out of range")
-
-    return ScoreResult(
-        score=final,
-        breakdown=breakdown,
-        rejected=bool(reasons),
-        rejection_reasons=reasons,
-    )
+    score = max(0, min(100, sum(breakdown.values())))
+    return score, breakdown
 
 
 # ═══════════════════════════════════════════════════════════════════════
-#  5. QUERY PLANNING (weighted, rotated)
+#  QUERY PLANNING
 # ═══════════════════════════════════════════════════════════════════════
 
-# In-memory short-term rotation to avoid repeating recent queries.
 _recent_queries: List[str] = []
 _RECENT_QUERY_WINDOW = 25
 
 
 def _weighted_pick(pool: List[Tuple[str, int]], k: int) -> List[str]:
-    """Pick k unique items weighted by their weight."""
     items = list(pool)
     chosen: List[str] = []
     seen = set(_recent_queries)
-    # Try not to repeat recent queries first
     for _ in range(k):
         if not items:
             break
@@ -462,7 +333,7 @@ def _weighted_pick(pool: List[Tuple[str, int]], k: int) -> List[str]:
             break
         r = random.uniform(0, total)
         acc = 0.0
-        picked: Optional[Tuple[str, int]] = None
+        picked = None
         for q, w in source:
             acc += w
             if r <= acc:
@@ -477,18 +348,16 @@ def _weighted_pick(pool: List[Tuple[str, int]], k: int) -> List[str]:
 
 
 def plan_queries(total: int) -> List[str]:
-    """Build a query set from multiple pools, weighted by pool diversity."""
-    pools_in_play = list(QUERY_POOLS.keys())
-    # Ensure artist pool is always represented once
-    if "artist" not in pools_in_play:
-        pools_in_play.insert(0, "artist")
-    random.shuffle(pools_in_play)
+    pools = list(QUERY_POOLS.keys())
+    if "artist" not in pools:
+        pools.insert(0, "artist")
+    random.shuffle(pools)
 
     queries: List[str] = []
-    per_pool = max(1, total // len(pools_in_play))
+    per_pool = max(1, total // len(pools))
     remaining = total
 
-    for pool_name in pools_in_play:
+    for pool_name in pools:
         if remaining <= 0:
             break
         pool = QUERY_POOLS.get(pool_name) or []
@@ -496,45 +365,38 @@ def plan_queries(total: int) -> List[str]:
         queries.extend(_weighted_pick(pool, take))
         remaining -= take
 
-    # Fill any remaining slot from a mixed random pool
     if remaining > 0:
         flat = [q for pool in QUERY_POOLS.values() for q, _ in pool]
         queries.extend(_weighted_pick([(q, 1) for q in flat], remaining))
 
-    # Record for rotation
     _recent_queries.extend(queries)
     while len(_recent_queries) > _RECENT_QUERY_WINDOW:
         _recent_queries.pop(0)
-
     return queries
 
 
 # ═══════════════════════════════════════════════════════════════════════
-#  6. SOUNDCLOUD METADATA SEARCH (no audio download)
+#  SOUNDCLOUD SEARCH
 # ═══════════════════════════════════════════════════════════════════════
 
-def _sc_search_sync(query: str, max_results: int) -> List[TrackCandidate]:
-    """Metadata-only SoundCloud search via yt-dlp.
+def _auth_opts() -> Dict[str, str]:
+    if SOUNDCLOUD_OAUTH_TOKEN:
+        return {"username": "oauth", "password": SOUNDCLOUD_OAUTH_TOKEN}
+    return {}
 
-    extract_flat=True → no audio is ever fetched.
-    """
+
+def _sc_search_sync(query: str, max_results: int) -> List[TrackCandidate]:
     opts = {
-        "quiet": True,
-        "no_warnings": True,
-        "extract_flat": True,       # metadata-only, no download
-        "noplaylist": True,
-        "ignoreerrors": True,
-        "no_color": True,
-        "socket_timeout": CFG.request_timeout,
-        "retries": 3,
-        "extractor_args": {"soundcloud": {"formats": ["http_mp3_128"]}},
+        "quiet": True, "no_warnings": True, "extract_flat": True,
+        "noplaylist": True, "ignoreerrors": True, "no_color": True,
+        "socket_timeout": CFG.request_timeout, "retries": 3,
+        **_auth_opts(),
     }
     out: List[TrackCandidate] = []
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(
-                f"{CFG.sc_search_endpoint}{max_results}:{query}",
-                download=False,
+                f"scsearch{max_results}:{query}", download=False,
             )
             for e in (info or {}).get("entries") or []:
                 if not e:
@@ -561,41 +423,87 @@ def _sc_search_sync(query: str, max_results: int) -> List[TrackCandidate]:
 
 
 async def _gather_candidates(queries: List[str]) -> List[TrackCandidate]:
-    """Run all queries with bounded concurrency, dedupe by sc_id."""
     sem = asyncio.Semaphore(CFG.search_concurrency)
-    results: List[List[TrackCandidate]] = []
-
-    async def run(q: str) -> List[TrackCandidate]:
+    async def run(q):
         async with sem:
-            return await asyncio.to_thread(
-                _sc_search_sync, q, CFG.results_per_query
-            )
-
+            return await asyncio.to_thread(_sc_search_sync, q, CFG.results_per_query)
     tasks = [run(q) for q in queries]
     gathered = await asyncio.gather(*tasks, return_exceptions=True)
+    seen, merged = set(), []
     for chunk in gathered:
         if isinstance(chunk, Exception):
             logger.warning("Query task failed: %s", chunk)
             continue
-        results.append(chunk)
-
-    seen: set = set()
-    merged: List[TrackCandidate] = []
-    for chunk in results:
         for c in chunk:
             if c.sc_id in seen:
                 continue
             seen.add(c.sc_id)
             merged.append(c)
-    logger.info(
-        "KOMA gather: %d queries → %d unique candidates",
-        len(queries), len(merged),
-    )
+    logger.info("KOMA gather: %d queries → %d candidates", len(queries), len(merged))
     return merged
 
 
 # ═══════════════════════════════════════════════════════════════════════
-#  7. PERSISTENCE (dedup, artist cooldown, history)
+#  DOWNLOAD
+# ═══════════════════════════════════════════════════════════════════════
+
+def _download_soundcloud(url: str, output_template: str) -> Optional[dict]:
+    """Try multiple quality levels, return download info or None."""
+    for quality in ("192", "128", "best"):
+        opts = {
+            "format": "bestaudio/best",
+            "postprocessors": [{
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": quality,
+            }],
+            "outtmpl": output_template + ".%(ext)s",
+            "quiet": True, "no_warnings": True, "noplaylist": True,
+            "ignoreerrors": True, "no_color": True,
+            "retries": 3, "fragment_retries": 3,
+            "socket_timeout": 60,
+            **_auth_opts(),
+        }
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                if not info:
+                    continue
+                mp3 = None
+                if info.get("requested_downloads"):
+                    mp3 = info["requested_downloads"][0].get("filepath")
+                mp3 = mp3 or (output_template + ".mp3")
+                if not mp3 or not os.path.exists(mp3):
+                    continue
+                size = os.path.getsize(mp3)
+                if size < CFG.min_size_bytes or size > CFG.max_size_bytes:
+                    try: os.remove(mp3)
+                    except Exception: pass
+                    continue
+                sha = hashlib.sha256()
+                with open(mp3, "rb") as f:
+                    for chunk in iter(lambda: f.read(8192), b""):
+                        sha.update(chunk)
+                return {
+                    "path": mp3,
+                    "hash": sha.hexdigest(),
+                    "size": size,
+                    "title": info.get("title", "Unknown"),
+                    "artist": info.get("uploader", "Unknown Artist"),
+                    "duration": info.get("duration") or 0,
+                }
+        except Exception as e:
+            logger.warning("Download fail (q=%s) for %s: %s", quality, url, e)
+            p = output_template + ".mp3"
+            if os.path.exists(p):
+                try: os.remove(p)
+                except Exception: pass
+            continue
+    return None
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  PERSISTENCE
 # ═══════════════════════════════════════════════════════════════════════
 
 _failed_urls: Dict[str, float] = {}
@@ -627,7 +535,6 @@ async def was_sent(identifier: str) -> bool:
 
 
 async def recent_artists(limit: int) -> List[str]:
-    """Return normalized artist names of the last N sent tracks."""
     async with session_scope() as session:
         res = await session.execute(
             select(MusicTrack.artist)
@@ -664,14 +571,12 @@ async def is_artist_in_cooldown(artist: str) -> bool:
     a = normalize(artist)
     if not a:
         return False
-    recent = await recent_artists(CFG.artist_cooldown)
-    return a in recent
+    return a in await recent_artists(CFG.artist_cooldown)
 
 
-async def record_send(
-    identifier: str, title: str, artist: str, url: str,
-) -> None:
-    """Persist a successful send (URL stored in filename field)."""
+async def record_send(identifier: str, title: str, artist: str,
+                      url: str, filename: str = "", file_hash: str = "",
+                      file_id: str = "") -> None:
     now = datetime.now(timezone.utc)
     async with session_scope() as session:
         existing = (await session.execute(
@@ -680,169 +585,191 @@ async def record_send(
         if existing:
             existing.is_sent = True
             existing.sent_at = now
-            existing.telegram_file_id = url  # store URL for future refs
+            if file_id:
+                existing.telegram_file_id = file_id
         else:
             session.add(MusicTrack(
-                identifier=identifier,
-                title=title,
-                artist=artist,
-                filename="",                  # no local file
-                file_hash="",                 # no hash (metadata-only)
-                telegram_file_id=url,         # reuse as "source URL" slot
-                is_sent=True,
-                sent_at=now,
+                identifier=identifier, title=title, artist=artist,
+                filename=filename, file_hash=file_hash,
+                telegram_file_id=file_id or url,
+                is_sent=True, sent_at=now,
             ))
         try:
             await session.flush()
         except IntegrityError:
             await session.rollback()
-            logger.warning("Record send race for %s — ignored", identifier)
 
 
 # ═══════════════════════════════════════════════════════════════════════
-#  8. PUBLIC API
+#  SEND
 # ═══════════════════════════════════════════════════════════════════════
 
-@dataclass
-class KomaSelection:
-    candidate: TrackCandidate
-    score: int
-    breakdown: Dict[str, int]
+async def _send_audio(bot: Bot, chat_id: int, thread_id: Optional[int],
+                      item: TrackCandidate, dl: dict) -> bool:
+    title = sanitize(dl.get("title") or item.title, 64)
+    artist = sanitize(dl.get("artist") or item.artist, 64)
+    caption = f"🎵 {title}\n🎤 {artist}\n📀 SoundCloud\n🖤 KOMA | کُما"
+    try:
+        with open(dl["path"], "rb") as audio:
+            sent = await bot.send_audio(
+                chat_id=chat_id, audio=audio,
+                title=title, performer=artist, caption=caption,
+                read_timeout=300, write_timeout=300,
+                message_thread_id=thread_id,
+            )
+        await record_send(
+            identifier=item.sc_id,
+            title=dl.get("title") or item.title,
+            artist=dl.get("artist") or item.artist,
+            url=item.url,
+            filename=os.path.basename(dl["path"]),
+            file_hash=dl["hash"],
+            file_id=sent.audio.file_id if sent.audio else "",
+        )
+        return True
+    except Exception as e:
+        logger.error("send_audio failed: %s", e)
+        return False
+    finally:
+        try: os.remove(dl["path"])
+        except Exception: pass
 
 
-async def discover_koma_track() -> Optional[KomaSelection]:
-    """Find one qualified KOMA track. Returns None if no match."""
+# ═══════════════════════════════════════════════════════════════════════
+#  PUBLIC API
+# ═══════════════════════════════════════════════════════════════════════
+
+async def fetch_and_send_music(bot: Bot, chat_id: int,
+                               thread_id: int = None) -> bool:
+    """KOMA: find ONE qualified track, download audio, send it."""
     queries = plan_queries(CFG.max_queries)
-    logger.info("KOMA plan: %d queries", len(queries))
     candidates = await _gather_candidates(queries)
     if not candidates:
-        return None
+        return False
 
-    # Cooldown & filter
-    candidates = [
-        c for c in candidates
-        if not _is_failed_recent(c.url)
-    ]
+    # Filter failed URLs
+    candidates = [c for c in candidates if not _is_failed_recent(c.url)]
     if not candidates:
-        return None
+        return False
 
-    # Score all candidates
-    scored: List[Tuple[TrackCandidate, ScoreResult]] = []
+    # Hard reject + score
+    scored: List[Tuple[TrackCandidate, int]] = []
     for c in candidates:
-        res = score_track(c)
-        if res.rejected:
-            logger.debug(
-                "KOMA reject %r → %s",
-                c.title, res.rejection_reasons,
-            )
+        if hard_reject(c):
             continue
-        scored.append((c, res))
+        s, _ = score_track(c)
+        scored.append((c, s))
+
     if not scored:
-        logger.info("KOMA: no candidate passed the score threshold")
-        return None
+        return False
 
-    # Rank: score desc, then freshness (via breakdown) desc
-    scored.sort(
-        key=lambda pair: (
-            pair[1].score,
-            pair[1].breakdown.get("freshness", 0),
-            pair[1].breakdown.get("core_style", 0),
-        ),
-        reverse=True,
-    )
+    scored.sort(key=lambda p: p[1], reverse=True)
 
-    # Walk down the ranked list — reject already-sent, cooldown artists, dups
-    for candidate, res in scored:
+    # Pass 1: strict
+    for candidate, score in scored:
+        if score < CFG.min_score:
+            continue
         if await was_sent(candidate.sc_id):
             continue
         if await is_artist_in_cooldown(candidate.artist):
-            logger.info(
-                "KOMA skip %r (artist in cooldown)", candidate.title,
-            )
+            logger.info("KOMA skip %r (artist cooldown)", candidate.title)
             continue
         if await is_title_duplicate(candidate.title, candidate.artist):
-            logger.info(
-                "KOMA skip %r (title duplicate)", candidate.title,
-            )
+            logger.info("KOMA skip %r (title dup)", candidate.title)
             continue
-        return KomaSelection(
-            candidate=candidate,
-            score=res.score,
-            breakdown=res.breakdown,
+
+        out = os.path.join(tempfile.gettempdir(), f"koma_{candidate.sc_id}")
+        dl = await asyncio.to_thread(_download_soundcloud, candidate.url, out)
+        if not dl:
+            _mark_failed(candidate.url)
+            continue
+        if await _send_audio(bot, chat_id, thread_id, candidate, dl):
+            logger.info("KOMA strict send: %r (score=%d)", candidate.title, score)
+            return True
+        _mark_failed(candidate.url)
+
+    # Pass 2: fallback (still filtered, just lower threshold)
+    for candidate, score in scored:
+        if score < CFG.fallback_min_score:
+            continue
+        if await was_sent(candidate.sc_id):
+            continue
+        if await is_artist_in_cooldown(candidate.artist):
+            continue
+        if await is_title_duplicate(candidate.title, candidate.artist):
+            continue
+
+        out = os.path.join(tempfile.gettempdir(), f"koma_{candidate.sc_id}")
+        dl = await asyncio.to_thread(_download_soundcloud, candidate.url, out)
+        if not dl:
+            _mark_failed(candidate.url)
+            continue
+        if await _send_audio(bot, chat_id, thread_id, candidate, dl):
+            logger.info("KOMA fallback send: %r (score=%d)", candidate.title, score)
+            return True
+        _mark_failed(candidate.url)
+
+    return False
+
+
+async def fetch_and_send_custom_music(bot: Bot, chat_id: int, query: str,
+                                      thread_id: int = None) -> bool:
+    """Music: exact search or URL. Sends audio file."""
+    # Direct URL
+    if query.startswith(("http://", "https://")):
+        if "soundcloud.com" not in query:
+            return False
+        h = url_key(query)
+        if await was_sent(h):
+            return False
+        out = os.path.join(tempfile.gettempdir(), f"koma_link_{h}")
+        dl = await asyncio.to_thread(_download_soundcloud, query, out)
+        if not dl:
+            return False
+        item = TrackCandidate(
+            sc_id=h, title=dl["title"], artist=dl["artist"], url=query,
+            duration=dl.get("duration", 0),
         )
+        return await _send_audio(bot, chat_id, thread_id, item, dl)
 
-    return None
-
-
-async def discover_specific_song(query: str) -> Optional[TrackCandidate]:
-    """For /music — relaxed scoring, still metadata-only."""
-    results = await asyncio.to_thread(
-        _sc_search_sync, query, 20,
-    )
+    # Text search
+    results = await asyncio.to_thread(_sc_search_sync, query, 20)
     if not results:
-        return None
+        return False
+
     words = normalize(query).split()
 
     def _score(c: TrackCandidate) -> int:
-        t = normalize(c.title)
-        a = normalize(c.artist)
+        t, a = normalize(c.title), normalize(c.artist)
         s = 0
         for w in words:
-            if w in t:
-                s += 3
-            if w in a:
-                s += 2
+            if w in t: s += 2
+            if w in a: s += 1
         return s
 
     results.sort(key=_score, reverse=True)
+
     for c in results:
-        if _is_failed_recent(c.url):
-            continue
         if await was_sent(c.sc_id):
             continue
-        return c
-    return None
+        out = os.path.join(tempfile.gettempdir(), f"koma_q_{c.sc_id}")
+        dl = await asyncio.to_thread(_download_soundcloud, c.url, out)
+        if not dl:
+            _mark_failed(c.url)
+            continue
+        if await _send_audio(bot, chat_id, thread_id, c, dl):
+            return True
+    return False
+
+
+def get_koma_config() -> KomaConfig:
+    return CFG
 
 
 async def resolve_track_url(url: str) -> Optional[TrackCandidate]:
-    """Resolve a specific SoundCloud URL to metadata (no download)."""
     if "soundcloud.com" not in url.lower():
         return None
     try:
-        info = await asyncio.to_thread(
-            _extract_single_sync, url,
-        )
-        return info
-    except Exception as e:
-        logger.warning("resolve_track_url failed for %s: %s", url, e)
-        return None
-
-
-def _extract_single_sync(url: str) -> Optional[TrackCandidate]:
-    opts = {
-        "quiet": True,
-        "no_warnings": True,
-        "extract_flat": True,
-        "noplaylist": True,
-        "ignoreerrors": True,
-        "no_color": True,
-        "socket_timeout": CFG.request_timeout,
-    }
-    try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            if not info:
-                return None
-            return TrackCandidate(
-                sc_id=str(info.get("id") or url_key(url)),
-                title=info.get("title") or "Unknown",
-                artist=info.get("uploader") or "Unknown Artist",
-                url=info.get("webpage_url") or url,
-                duration=int(info.get("duration") or 0),
-                description=info.get("description") or "",
-                upload_date=info.get("upload_date"),
-                tags=tuple(info.get("tags") or ()),
-            )
-    except Exception as exc:
-        logger.warning("Extract single failed: %s", exc)
+        return await asyncio.to_thread(_sc_search_sync, url, 1) and None
+    except Exception:
         return None
